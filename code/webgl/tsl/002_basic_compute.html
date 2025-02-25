@@ -1,0 +1,91 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map-gpu.js"></script><script type="module">
+// #region IMPORTS
+import useForcedWebGL, { THREE, useDarkScene } from '@lib/useForcedWebGL.js';
+import * as TSL from 'three/tsl';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useForcedWebGL() );
+let Debug = {};
+
+// https://gist.github.com/sketchpunk/a282edc9a11fd16233fabb3662e66dd1
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    await App.renderer.init();
+    App.sphericalLook( 0, 20, 6 );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const data     = new Float32Array( [ 1,2,3, 4,5,6 ] );  // Raw Data
+    const compCnt  = 3;                                     // Component Count: Vec3 has 3 Components
+    const elmCnt   = data.length / compCnt;                 // How many elements in data, Twp Vec3s
+
+    // Create GPU buffer space to store data
+    const bufAttr  = new THREE.StorageInstancedBufferAttribute( data, compCnt );
+    
+    // Create a TSL node as an Accessor for the buffer
+    // NOTE: .label doesn't work to name variable in GLSL
+    const nBuf     = TSL.storage( bufAttr, 'vec3', data.length );
+
+    // -----------------------------------------
+    // Create compute shader using TSL instead of GLSL
+    const nCode     = TSL.code( '#define XX 10.0');
+
+    const nTestFunc = TSL.glslFn(`vec3 testFunc( vec3 a ){ return a + vec3( 1.0 ) * XX; }`, [ nCode ] );
+
+    const fnCompute = TSL.Fn( ()=>{
+        // NOTE: Examples use element, but its not really needed.
+        // const attr   = nBuf.element( THREE.instanceIndex ).label( 'attr' );
+        const attr   = nBuf; // Dont use ".toVar", assign won't work correctly if so
+
+        const offset = TSL.vec3( 1,2,3 ).toVar( 'offset' );   // Create const vec3
+        const val    = attr.add( offset ).toVar( 'val');        // Input + Offset
+        const val2   = nTestFunc( val ).toVar( 'val2' );        // Change val with custom GLSL function
+
+        // The attribute is used as both Input and Output, so save final value
+        // to the buffer/attribute/varying tsl ndoe
+        attr.assign( val2 );
+    } );
+
+    // -----------------------------------------
+    // Create a Compute Node
+    const nCompute = fnCompute().compute( elmCnt );
+
+    // Execute Compute node
+    await App.renderer.computeAsync( nCompute );
+    
+    // Transfer Byte Array from GPU into a Float Array on the CPU
+    const result = new Float32Array( await App.renderer.getArrayBufferAsync( bufAttr ) );
+    console.log( result );
+
+    // -----------------------------------------
+    // Hack into THREEJS's new WebGL Backend to extract the GLSL generated from Compute Node
+    console.log( App.renderer._pipelines.nodes.getForCompute( nCompute ).computeShader );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+});
+
+function onPreRender( dt, et ){}
+// #endregion
+
+// https://github.com/mrdoob/three.js/issues/29760
+
+// https://threejs.org/examples/webgpu_tsl_editor.html
+
+// https://github.com/mrdoob/three.js/blob/master/examples/webgpu_tsl_interoperability.html
+
+// https://github.com/mrdoob/three.js/blob/f19ca733aff1316f66e64cddf34e55adf42836ef/src/renderers/webgl-fallback/nodes/GLSLNodeBuilder.js#L851
+
+// https://github.com/mrdoob/three.js/blob/37d6f280a5cd642e801469bb048f52300d31258e/examples/webgpu_compute_audio.html#L54C56-L54C75
+// https://discourse.threejs.org/t/how-to-read-and-log-the-output-from-a-compute-shader/72519
+
+// https://github.com/mrdoob/three.js/blob/master/examples/webgpu_compute_texture_pingpong.html
+
+// https://github.com/mrdoob/three.js/blob/dev/src/renderers/webgl-fallback/WebGLBackend.js#L19
+
+// https://github.com/brunosimon/three.js-tsl-sandbox
+
+</script></body></html>

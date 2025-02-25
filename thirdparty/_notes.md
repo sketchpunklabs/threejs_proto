@@ -1,0 +1,9 @@
+### THREE.JS
+- https://cdnjs.com/libraries/three.js
+- https://cdnjs.cloudflare.com/ajax/libs/three.js/0.172.0/three.module.min.js
+- https://cdnjs.cloudflare.com/ajax/libs/three.js/0.172.0/three.core.min.js
+- https://cdnjs.cloudflare.com/ajax/libs/three.js/0.172.0/three.webgpu.min.js
+- https://cdnjs.cloudflare.com/ajax/libs/three.js/0.172.0/three.tsl.min.js
+- https://cdn.jsdelivr.net/npm/three@0.172.0/
+- https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/controls/OrbitControls.js
+- https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/controls/TransformControls.js

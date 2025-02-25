@@ -1,0 +1,36 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 20, 6 );
+    Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Debug.pnt
+        .add( [-1,0,0], 0x00ffff, 4, 1 )
+        .add( [1,0,0],  0x00ffff, 6, 2 )
+        .add( [0,1,0],  0xffff00, 6, 5 );
+
+    Debug.ln
+        .add( [-1,0,0], [-1,1,0], 0x00ffff, 0xffff00, false )
+        .add( [1,0,0],  [1,1,0],  0x00ffff, 0xffff00, false )
+        .add( [-1,1,0], [1,1,0],  0xffff00, null, true );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+});
+
+function onPreRender( dt, et ){}
+// #endregion
+</script></body></html>
