@@ -1,0 +1,150 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    rect    : null,
+    downX   : 0,
+    downY   : 0,
+};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 20, 6 );
+    Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    Ref.rect = new ScreenRect();
+    Ref.rect.resolution = App.getBufferSize();
+    App.scene.add( Ref.rect );
+
+    // Ref.rect.minPos = [0,0];
+    // Ref.rect.maxPos = [100,100];
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+
+    const canvas = App.renderer.domElement;
+    canvas.addEventListener( 'pointerdown', onPointerDown );
+});
+
+function onPreRender( dt, et ){}
+
+function onPointerDown( e ){
+    if( e.shiftKey ){
+        Ref.downX           = e.clientX;
+        Ref.downY           = e.clientY;
+        App.camCtrl.enabled = false;
+
+        e.target.addEventListener( 'pointermove', onPointerMove );
+        e.target.addEventListener( 'pointerup',   onPointerUp, { once:true } );
+    }
+ }
+
+function onPointerMove( e ){
+    Ref.rect.minPos = [
+        Math.min( Ref.downX, e.clientX ),
+        Math.min( Ref.downY, e.clientY ),
+    ];
+
+    Ref.rect.maxPos = [
+        Math.max( Ref.downX, e.clientX ),
+        Math.max( Ref.downY, e.clientY ),
+    ];
+}
+
+function onPointerUp( e ){
+    App.camCtrl.enabled = true;
+    e.target.removeEventListener( 'pointermove', onPointerMove );
+}
+// #endregion
+
+class ScreenRect extends THREE.Mesh{
+    constructor(){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Unit rectangle in normalized device coordinates)
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute( 'position', new THREE.BufferAttribute( new Float32Array([
+            -1.0, -1.0, 0,  // Bottom left
+             1.0, -1.0, 0,  // Bottom right
+            -1.0,  1.0, 0,  // Top left
+            // 1.0,  1.0, 0,   // Top right
+             1.0, -1.0, 0,  // Bottom right
+             1.0,  1.0, 0,  // Top right
+            -1.0,  1.0, 0,  // Top left
+        ]), 3));
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // super( geo, new THREE.MeshBasicMaterial() );
+        super( geo, new ScreenRectMaterial() );
+    }
+
+    set resolution( v ){ this.material.uniforms.res.value = v; }
+    set color( v ){ this.material.uniforms.color.value.set( v );}
+    set alpha( v ){ this.material.uniforms.alpha.value.set( v ); }
+
+    set minPos( v ){ this.material.uniforms.min.value = v; }
+    set maxPos( v ){ this.material.uniforms.max.value = v; }
+
+    get minPos(){ return this.material.uniforms.min.value; }
+    get maxPos(){ return this.material.uniforms.max.value; }
+}
+
+class ScreenRectMaterial extends THREE.RawShaderMaterial{
+    constructor(){
+        super({
+        // side            : THREE.DoubleSide,
+        glslVersion     : THREE.GLSL3,
+        depthTest       : true,
+        transparent 	: true, 
+
+        uniforms : {
+            min     : { value: [ 0, 0 ] },      // Min in pixel coordinates
+            max     : { value: [ 1, 1] },       // Max in pixel coordinates
+            res     : { value: [ 500, 500] },   // Screen resolution
+
+            color   : { value: new THREE.Color( 0xffff00 ) },
+            alpha   : { value: 0.1 },
+        },
+
+        vertexShader:`
+        in vec3 position;
+        uniform vec2 min;
+        uniform vec2 max;
+        uniform vec2 res;
+
+        const vec2 invY = vec2( 1.0, -1.0 );
+
+        void main() {
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Convert MinMax to sceen space [-1,1] plus invert Y because
+            // vertical coord are reversed between screenspace & canvas pixel space
+            vec2 smin = invY * (( min / res ) * 2.0 - 1.0); // Normalize min
+            vec2 smax = invY * (( max / res ) * 2.0 - 1.0); // Normalize max
+
+            // Interpolate between min / max using position
+            vec2 pos = mix( smin, smax, ( position.xy * invY ) * 0.5 + 0.5 );
+            
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            gl_Position = vec4( pos, 0.0, 1.0 );
+        }`,
+
+        fragmentShader:`
+        precision mediump float;
+        uniform vec3  color;
+        uniform float alpha;
+        out     vec4  outColor;
+        void main(){ outColor = vec4( color, alpha ); }`
+        });
+    }
+}
+
+</script></body></html>
