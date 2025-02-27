@@ -1,0 +1,564 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    picker  : null,
+    rect    : null,
+
+    tasks   : [],       // Execute tasks during render loop
+    xColor  : 0xaa0000, // Default Color
+    sColor  : 0xFFA500, // Selection Color
+    sel     : [],       // Selected Objects
+    list    : {},       // Short list of IDs to Object KeyValue Pair
+
+    downX   : 0,        // Initial 2D coords for rect select
+    downY   : 0,
+};
+
+// Really great idea of using internal WebGLRenderer functionality & data to
+// perform the same kind of scene picking without having an extra scene of objects to run on.
+// The magic bits are .renderLists.get(scene, 0) & .renderBufferDirect( camera, null, geo, pickMat, renderObject.object, null )
+// but to make it work you need to render an emptyScene thats setup with a post render callback for it to work without error
+// Ex: https://github.com/bzztbomb/three_js_gpu_picking/blob/main/src/gpupicker.js
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 20, 6 );
+    Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Meshes to Select
+    const cube = createCube( [-1.5,0.5,0], 0.5 );
+    const pyrm = createPyramid( [1.5,0.7,-0.6] );
+    const sph  = createSphere( [0, 0.9, 0.7] );
+
+    Ref.list[ uuidToInt( cube.uuid ) ] = cube;
+    Ref.list[ uuidToInt( pyrm.uuid ) ] = pyrm;
+    Ref.list[ uuidToInt( sph.uuid ) ]  = sph;
+
+    App.scene.add( cube, pyrm, sph );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Setup
+    Ref.picker = new ScreenPicker();
+
+    Ref.rect            = new ScreenRect();
+    Ref.rect.resolution = App.getBufferSize();
+    Ref.rect.visible    = false;
+    App.scene.add( Ref.rect );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.createRenderLoop( onPreRender ).start();
+    // App.renderLoop();
+});
+
+function onPreRender( dt, et ){
+    if( Ref.tasks.length > 0 ) Ref.tasks.pop()();
+}
+
+function pickerTask( posA, posB=null ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Deselect anything current
+    if( Ref.sel.length > 0 ){
+        for( const i of Ref.sel ) i.material.color.setHex( Ref.xColor );
+        Ref.sel.length = 0;
+        Debug.pnt.reset();
+    }
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    if( posB ){
+        // ----------------------------------
+        // RECT SELECT
+        const list = Ref.picker.pickRect( App.camera, App.scene, App.renderer, posA, posB );
+        let o;
+        for( const id of list ){
+            o = Ref.list[ id ];
+            if( o ){
+                o.material.color.setHex( Ref.sColor );
+                Ref.sel.push( o );   
+            }
+        }
+    }else{
+        // ----------------------------------
+        // POINT SELECT
+        const { id, hitPos } = Ref.picker.pickPoint( App.camera, App.scene, App.renderer, posA );
+        // console.log( id, hitPos );
+
+        if( id !== - 1 ){
+            const o = Ref.list[ id ];
+            if( o ){
+                o.material.color.setHex( Ref.sColor );
+                Ref.sel.push( o );
+                Debug.pnt.add( hitPos, 0x00ff00, 2, 1 );
+            }
+        }
+    }
+}
+
+function computeRect( e ){
+    return { 
+        min : [
+            Math.min( Ref.downX, e.clientX ),
+            Math.min( Ref.downY, e.clientY ),
+        ],
+
+        max : [
+            Math.max( Ref.downX, e.clientX ),
+            Math.max( Ref.downY, e.clientY ),
+        ],
+    };
+}
+
+window.addEventListener( 'pointerdown', e=>{
+    if( e.shiftKey ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Start Rect Select
+        Ref.downX           = e.clientX;    // Save Starting point
+        Ref.downY           = e.clientY;
+        App.camCtrl.enabled = false;        // Disable camera controller
+
+        Ref.rect.visible    = true;         // Show rect box
+        Ref.rect.minPos     = [0,0];
+        Ref.rect.maxPos     = [1,1];
+
+        e.target.addEventListener( 'pointermove', onPointerMove );
+        e.target.addEventListener( 'pointerup',   onPointerUp, { once:true } );
+    }else{
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Pick a single pixel
+        Ref.tasks.push( ()=>pickerTask( [ e.clientX, e.clientY ] ) );
+    }
+});
+
+function onPointerMove( e ){
+    const r = computeRect( e );
+    Ref.rect.minPos = r.min;
+    Ref.rect.maxPos = r.max;
+}
+
+function onPointerUp( e ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.rect.visible    = false;    // Hide rect
+    App.camCtrl.enabled = true;     // Turn on camera controller
+    e.target.removeEventListener( 'pointermove', onPointerMove );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const r = computeRect( e );
+    Ref.tasks.push( ()=>pickerTask( r.min, r.max ) );
+}
+// #endregion
+
+
+// #region MESH HELPERS
+function createCube( pos=[0,0,0], s=0.4 ){
+    const geo   = new THREE.BoxGeometry( 1, 1, 1 ); 
+    const mat   = new THREE.MeshPhongMaterial( {color: Ref.xColor } ); 
+    const mesh  = new THREE.Mesh( geo, mat );
+
+    mesh.scale.setScalar( 0.4 );
+    mesh.position.fromArray( pos );
+    mesh.name = 'cube';
+
+    return mesh;
+}
+
+function createPyramid( pos=[0,0,0], r=0.4, h=0.6 ){
+    const geo   = new THREE.CylinderGeometry( 0, r, h, 4 ); 
+    const mat   = new THREE.MeshPhongMaterial( {color: Ref.xColor } ); 
+    const mesh  = new THREE.Mesh( geo, mat );
+
+    mesh.position.fromArray( pos );
+    mesh.name = 'pyramid';
+
+    return mesh;
+}
+
+function createSphere( pos=[0,0,0], r=0.4, ws=8, hs=8 ){
+    const geo   = new THREE.SphereGeometry( r, ws, hs ); 
+    const mat   = new THREE.MeshPhongMaterial( {color: Ref.xColor } ); 
+    const mesh  = new THREE.Mesh( geo, mat );
+
+    mesh.position.fromArray( pos );
+    mesh.name = 'sphere';
+
+    return mesh;
+}
+// #endregion
+
+
+// #region PICKING
+function uuidToInt( id ){
+    // First 8 characters are a random in hex form
+    // MAX int32 Value : 0x7FFFFFFF, 2_147_483_647
+    // Need to grab the first 7 char else using 8
+    // can overflow the value. Truncating the first 
+    // 24 bits out of a 128 bit number
+
+    return parseInt( id.substring( 0, 7 ), 16 );
+}
+
+function genIntRenderTarget( w=1, h=1, size=4 ){
+    let format          = null;
+    let internalFormat  = null;
+    switch( size ){
+        case 1: format = THREE.RedIntegerFormat;    internalFormat = 'R32I'; break;
+        case 4: format = THREE.RGBAIntegerFormat;   internalFormat = 'RGBA32I'; break;
+        default: return null;
+    }
+
+    return new THREE.WebGLRenderTarget( w, h, {
+        minFilter   : THREE.NearestFilter,
+        magFilter   : THREE.NearestFilter,
+        type        : THREE.IntType,
+        format,
+        internalFormat,
+    });
+}
+
+class ScreenPicker{
+    // #region MAIN
+    floatScale      = 10000;
+    emptyScene      = new THREE.Scene();              // Needed to render an empty scene to get renderList
+    targetScene     = null;                           // The scene that created the last renderList
+    targetRenderer  = null;
+    targetCamera    = null;
+    
+    bakClearColor   = new THREE.Color();                      // Backup Clear color of renderer
+    nulClearColor   = new THREE.Color().setRGB( -1, -1, -1 ); // Clear color for picking
+    
+    texPoint        = genIntRenderTarget( 1, 1, 4 );    // 1x1 Pixel storing RGBA
+    matHitID        = new PickingHitIDMaterial();       // Render meshes to get ID and Hit World Space Position
+
+    constructor(){
+        this.emptyScene.onAfterRender = this.onAfterRender;
+    }
+    // #endregion
+
+    // #region PICKING METHODS
+    pickPoint( cam, scene, rend, p ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        /// Setup references used by onAfterRender
+        this.targetRenderer = rend;
+        this.targetScene    = scene;
+        this.targetCamera   = cam;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Set the render viewport size, for this mode we
+        // only need to render a single pixel worth
+        const dpr = window.devicePixelRatio;
+        cam.setViewOffset(
+            rend.domElement.width,      // fullWidth
+            rend.domElement.height,     // fullHeight
+            Math.floor( p[0] * dpr ),   // X
+            Math.floor( p[1] * dpr ),   // Y
+            1,                          // Width
+            1,                          // Height
+        );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Execute
+        this.pickingRender( this.texPoint, cam, rend );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Read Pixel
+        const pxBuf = new Int32Array( 4 );
+        rend.readRenderTargetPixels( this.texPoint, 0, 0, 1, 1, pxBuf );
+        // console.log( pxBuf );
+        
+        if( pxBuf[0] < 0 ) return { id:-1, hitPos:[0,0,0 ] };
+
+        return { 
+            id      : pxBuf[ 0 ],
+            hitPos  : [
+                pxBuf[ 1 ] / this.floatScale,
+                pxBuf[ 2 ] / this.floatScale,
+                pxBuf[ 3 ] / this.floatScale,
+            ],
+        };
+    }
+    
+    pickRect( cam, scene, rend, pMin, pMax ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        /// Setup references used by onAfterRender
+        this.targetRenderer = rend;
+        this.targetScene    = scene;
+        this.targetCamera   = cam;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Set the render viewport size, for this mode we
+        // only need to render a single pixel worth
+        const w   = pMax[0] - pMin[0];
+        const h   = pMax[1] - pMin[1];
+        const dpr = window.devicePixelRatio;
+        cam.setViewOffset(
+            rend.domElement.width,          // fullWidth
+            rend.domElement.height,         // fullHeight
+            Math.floor( pMin[0] * dpr ),    // X
+            Math.floor( pMin[1] * dpr ),    // Y
+            w,                              // Width
+            h,                              // Height
+        );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Execute
+        const tex = genIntRenderTarget( w, h, 1 ); // Custom texture to fit rect select
+        this.pickingRender( tex, cam, rend );
+        
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Read Pixel
+        const pxBuf = new Int32Array( w * h );
+        rend.readRenderTargetPixels( tex, 0, 0, w, h, pxBuf );
+        // console.log( pxBuf );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Create unique list of IDs
+        const idList = new Set();
+        for( const i of pxBuf ) if( i > 0 ) idList.add( i );
+
+        return idList; // Array.from( idList );
+    }
+    // #endregion
+
+    // #region RENDERING
+    // Begin render process to compute texture that will hold the pixel ID
+    pickingRender( tex, cam, rend ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Need to render an empty scene with a post render callback setup
+        // to properly have access to internal bits that allows us to
+        // render objects manually along with getting a list of objects
+        // that was used to render the last frame. This list is how we can
+        // use the main scene to render without needing to keep track
+        // of a picking specific scene with cloned meshes.
+        rend.setRenderTarget( tex );                // Set which texture to render to
+        rend.getClearColor( this.bakClearColor );   // Backup existing clear color
+        rend.setClearColor( this.nulClearColor );   // Set new clear color used for picking
+        rend.render( this.emptyScene, cam );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Cleanup		
+        cam.clearViewOffset();
+        rend.setRenderTarget( null );
+        rend.setClearColor( this.bakClearColor );
+    }
+    
+    // Event bound to emptyScene, helps trigger rendering to the texture
+    // this is needed to keep alive currentRenderState & grab last renderList 
+    onAfterRender = ()=>{
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Get the last render list done by the renderer
+        // Meshes are split into 3 different lists, for now just 
+        // render opaque list since the picking objects will likely be solid
+        const rl = this.targetRenderer.renderLists.get( this.targetScene, 0 ); // scene, renderCallDepth 
+        // console.log( rl.opaque );
+        // console.log( rl.transmissive );
+        // console.log( rl.transparent );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Manually render each object
+        let intID;
+        for( const i of rl.opaque ){            
+            // Picking can store int32 in the R Channel, so lets truncate
+            // the UUID to an int to use it as an identifier.
+            // TODO: This part may need to change in later applications
+            // but this is good enough for this prototype
+            intID = uuidToInt( i.object.uuid );
+            // console.log( i.id, i.object.name || 'noname', i.object.uuid, intID, ( intID > 2_147_483_647 ) );
+
+            // Update picking material with object's ID
+            this.matHitID.intID = intID;
+
+            // NOTE: renderBufferDirect only works on a scene.onAfterRender else an error out
+            // because currentRenderState is null. To handle this issue, render an empty scene
+            // which will then do nothing but still have access to a set render state while still
+            // having access to the previous frame's renderLists
+            
+            // Method is not documented, Will need to dig into source to get an idea.
+            // https://github.com/mrdoob/three.js/blob/master/src/renderers/WebGLRenderer.js#L750
+            this.targetRenderer.renderBufferDirect( 
+                this.targetCamera, 
+                null, 
+                i.geometry, 
+                this.matHitID, 
+                i.object, 
+                null
+            );
+        }
+    }
+    // #endregion
+}
+// #endregion
+
+
+// #region PICKING SHADERS
+class PickingHitIDMaterial extends THREE.RawShaderMaterial{
+    set intID( v ){ 
+        this.uniforms.intID.value   = v; 
+        this.uniformsNeedUpdate     = true;
+    }
+
+    constructor(){
+        super({
+        name            : 'PickingHitIDMaterial',
+        glslVersion     : THREE.GLSL3,
+        depthTest       : true,
+        uniforms        : { intID : { type: 'int', value: 0 } },
+        vertexShader    : `
+        in vec3 position;
+
+        uniform mat4 modelMatrix;
+        uniform mat4 viewMatrix;
+        uniform mat4 projectionMatrix;
+        uniform mat4 modelViewMatrix;
+
+        out vec3 fragWPos;
+
+        void main(){
+            vec4 wPos     = modelMatrix * vec4( position, 1.0 );  // World Space
+            vec4 vPos     = viewMatrix * wPos;                    // View Space
+            gl_Position   = projectionMatrix * vPos;              // Projection Space
+            fragWPos      = wPos.xyz;                             // Worldspace Vertex Position
+        }`,
+
+        fragmentShader  : `
+        precision mediump float;
+
+        uniform int  intID;
+        in      vec3 fragWPos;
+        layout(location=0) out ivec4 outData;
+        
+        const float toInt = 10000.0; // Scale float values so they can sit inside an int32
+
+        void main(){ outData = ivec4( intID, ivec3( fragWPos * toInt ) ); }`
+        });
+    }
+}
+
+class PickingIDMaterial extends THREE.RawShaderMaterial{
+    set intID( v ){ 
+        this.uniforms.intID.value   = v; 
+        this.uniformsNeedUpdate     = true;
+    }
+
+    constructor(){
+        super({
+        name            : 'PickingIDMaterial',
+        glslVersion     : THREE.GLSL3,
+        depthTest       : true,
+        uniforms        : { intID : { type: 'int', value: 0 } },
+        vertexShader    : `
+        in vec3 position;
+
+        uniform mat4 modelMatrix;
+        uniform mat4 viewMatrix;
+        uniform mat4 projectionMatrix;
+        uniform mat4 modelViewMatrix;
+
+        void main(){
+            vec4 wPos   = modelMatrix * vec4( position, 1.0 );  // World Space
+            vec4 vPos   = viewMatrix * wPos;                    // View Space
+            gl_Position = projectionMatrix * vPos;              // Projection Space
+        }`,
+
+        fragmentShader  : `
+        precision mediump float;
+
+        uniform int intID;
+        layout(location=0) out int outID;
+
+        void main(){ outID = intID; }`
+        });
+    }
+}
+// #endregion
+
+
+// #region SCREEN RECT RENDER
+class ScreenRect extends THREE.Mesh{
+    constructor(){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Unit rectangle in normalized device coordinates)
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute( 'position', new THREE.BufferAttribute( new Float32Array([
+            -1.0, -1.0, 0,  // Bottom left
+             1.0, -1.0, 0,  // Bottom right
+            -1.0,  1.0, 0,  // Top left
+            // 1.0,  1.0, 0,   // Top right
+             1.0, -1.0, 0,  // Bottom right
+             1.0,  1.0, 0,  // Top right
+            -1.0,  1.0, 0,  // Top left
+        ]), 3));
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // super( geo, new THREE.MeshBasicMaterial() );
+        super( geo, new ScreenRectMaterial() );
+    }
+
+    set resolution( v ){ this.material.uniforms.res.value = v; }
+    set color( v ){ this.material.uniforms.color.value.set( v );}
+    set alpha( v ){ this.material.uniforms.alpha.value.set( v ); }
+
+    set minPos( v ){ this.material.uniforms.min.value = v; }
+    set maxPos( v ){ this.material.uniforms.max.value = v; }
+
+    get minPos(){ return this.material.uniforms.min.value; }
+    get maxPos(){ return this.material.uniforms.max.value; }
+}
+
+class ScreenRectMaterial extends THREE.RawShaderMaterial{
+    constructor(){
+        super({
+        // side            : THREE.DoubleSide,
+        glslVersion     : THREE.GLSL3,
+        depthTest       : true,
+        transparent 	: true, 
+
+        uniforms : {
+            min     : { value: [ 0, 0 ] },      // Min in pixel coordinates
+            max     : { value: [ 1, 1] },       // Max in pixel coordinates
+            res     : { value: [ 500, 500] },   // Screen resolution
+
+            color   : { value: new THREE.Color( 0xffff00 ) },
+            alpha   : { value: 0.1 },
+        },
+
+        vertexShader:`
+        in vec3 position;
+        uniform vec2 min;
+        uniform vec2 max;
+        uniform vec2 res;
+
+        const vec2 invY = vec2( 1.0, -1.0 );
+
+        void main() {
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Convert MinMax to sceen space [-1,1] plus invert Y because
+            // vertical coord are reversed between screenspace & canvas pixel space
+            vec2 smin = invY * (( min / res ) * 2.0 - 1.0); // Normalize min
+            vec2 smax = invY * (( max / res ) * 2.0 - 1.0); // Normalize max
+
+            // Interpolate between min / max using position
+            vec2 pos = mix( smin, smax, ( position.xy * invY ) * 0.5 + 0.5 );
+            
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            gl_Position = vec4( pos, 0.0, 1.0 );
+        }`,
+
+        fragmentShader:`
+        precision mediump float;
+        uniform vec3  color;
+        uniform float alpha;
+        out     vec4  outColor;
+        void main(){ outColor = vec4( color, alpha ); }`
+        });
+    }
+}
+// #endregion
+
+</script></body></html>
