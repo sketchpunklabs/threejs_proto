@@ -315,6 +315,8 @@ class ScreenPicker{
         // Read Pixel
         const pxBuf = new Int32Array( w * h );
         rend.readRenderTargetPixels( tex, 0, 0, w, h, pxBuf );
+        
+        tex.dispose(); // Clear memory used by this texture. Can reuse these custom rect textures.
         // console.log( pxBuf );
 
         // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
