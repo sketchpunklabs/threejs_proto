@@ -1,0 +1,429 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import facedCube from '@lib/meshes/FacedCube.js';
+
+// https://tweakpane.github.io/docs/
+// https://tweakpane.github.io/docs/plugins/#essentials
+import { Pane }                 from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+// import * as TweakpaneEssentials from '@tp/tweakpane/tweakpane-plugin-essentials-0.2.1.min.js';
+// #endregion
+
+// REFERENCES
+// Ten Minute Physics BVH + Morton Tutorial : https://youtu.be/LAxHQZ8RjQ4
+// AI Generated Example : https://github.com/matthias-research/pages/blob/master/tenMinutePhysics/24-morton.html
+// Primer on Morton Codes : https://www.youtube.com/watch?v=R-Suki2gD7s 
+// Wiki on Morton Codes : https://en.wikipedia.org/wiki/Z-order_curve
+// More on BVH + Morton : https://pbr-book.org/3ed-2018/Primitives_and_Intersection_Acceleration/Bounding_Volume_Hierarchies
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    // --------------------------
+    // App State
+    bvh     : null,
+    cube    : facedCube(),
+    grp     : new THREE.Group(),
+    minVol  : [-2, 0, -2 ],
+    maxVol  : [ 2, 2,  2 ],
+    minSize : [ 0.1, 0.1, 0.1 ],
+    maxSize : [ 0.7, 0.7, 0.7 ],
+    matHit  : new THREE.MeshPhongMaterial( { color:0x707070 } ),
+
+    // --------------------------
+    // Pane State
+    boxCnt      : 22,
+    seed        : 3,
+    vol         : 2,
+    mins        : 0.1,
+    maxs        : 0.7,
+    maxDepth    : '',
+    depth       : 0,
+};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 40, 30, 10 );
+    Debug = await useVisualDebug( App );
+
+    App.scene.add( Ref.grp );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+    buildUI().then( generate );
+});
+
+function onPreRender( dt, et ){}
+
+async function buildUI(){    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const p = new Pane(); 
+    // p.registerPlugin( TweakpaneEssentials );
+
+    p.on( 'change', e=>{
+        // console.log( e );
+        // console.log( e.target.label, e.value );
+        switch( e.target.key ){
+            case 'vol':
+                Ref.minVol = [-e.value, 0, -e.value ];
+                Ref.maxVol = [ e.value, e.value, e.value ];
+                break;
+            case 'mins'     : Ref.minSize = [ e.value, e.value, e.value ]; break;
+            case 'maxs'     : Ref.maxSize = [ e.value, e.value, e.value ]; break;
+            case 'depth'    : renderBounds(); break;
+        }
+    });
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const f = p.addFolder({ title: 'World', expanded: true });
+    f.addBinding( Ref, 'boxCnt', { min: 1, max: 100, step: 1, label: 'BoxCount' } );
+    f.addBinding( Ref, 'seed', { min: 1, max: 1000, step: 1, label: 'RndSeed' } );
+    f.addBinding( Ref, 'vol', { min: 1, max: 10, step: 1, label: 'Volume' } );
+    f.addBinding( Ref, 'mins', { min: 0.1, max: 4, step: 0.1, label: 'Box Min' } );
+    f.addBinding( Ref, 'maxs', { min: 0.1, max: 4, step: 0.1, label: 'Box Max' } );
+    f.addButton({ title: 'Generate Boxes' }).on( 'click', generate );
+    f.addButton({ title: 'Collision Pairs' }).on( 'click', renderCollisions );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const f2 = p.addFolder({ title: 'Bounding Areas', expanded: true });
+    f2.addBinding( Ref, 'maxDepth', { label:'MaxDepth' } );
+    Ref.depthSlider = f2.addBinding( Ref, 'depth', { min: 0, max: 0, step:1, label: 'View Depth' } );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.pane = p;
+}
+
+// Seeded Random Number Generator
+function randomLCG( seed = 1 ){
+    // https://stackoverflow.com/questions/521295/seeding-the-random-number-generator-in-javascript
+    // https://en.wikipedia.org/wiki/Lehmer_random_number_generator
+    const lcg = a => ( a * 48271 % 2147483647 );
+    seed      = lcg( seed );
+    return () => ( (seed = lcg( seed )) / 2147483648 );
+}
+
+// Generate cubes & BVH
+function generate(){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const rnd  = randomLCG( Ref.seed );
+    const list = [];
+
+    const rndLerp = ( min, max )=>{
+        const a = rnd();
+        const b = rnd();
+        const c = rnd();
+        return [
+            min[0] * (1-a) + max[0] * a,
+            min[1] * (1-b) + max[1] * b,
+            min[2] * (1-c) + max[2] * c,
+        ];
+    };
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    let t;
+    Ref.cube.geometry.computeBoundingBox();
+    Ref.grp.children.length = 0;
+
+    for( let i=0; i < Ref.boxCnt; i++ ){
+        const c = Ref.cube.clone();
+        c.scale.fromArray( rndLerp( Ref.minSize, Ref.maxSize ) );
+        c.position.fromArray( rndLerp( Ref.minVol, Ref.maxVol ) );
+
+        Ref.grp.add( c );
+        list.push( c );
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.bvh             = new Bvh().build( list );
+    Ref.maxDepth        = Ref.bvh.maxDepth;
+    Ref.depthSlider.max = Ref.bvh.maxDepth;
+    Ref.depth           = 0;
+
+
+    Ref.pane.refresh();
+    renderBounds();
+}
+
+// Render bounding boxes of bvh nodes
+function renderBounds(){
+    Debug.ln.reset();
+
+    // Debug.ln.box( Ref.bvh.root.min, Ref.bvh.root.max,  0x608888 );
+    Debug.ln.box( Ref.minVol, Ref.maxVol, 0x606060 );
+
+    // if( Ref.depth ){
+        const nodes = Ref.bvh.getDepthNodes( Ref.depth );
+        for( let n of nodes ){
+            Debug.ln.box( n.min, n.max, 0xffff00 );
+        }
+    // }
+}
+
+// Run collision pairs & update material
+function renderCollisions(){
+    const ary = Ref.bvh.getCollisionPairs();
+    for( let i of ary ) i.obj.material = Ref.matHit;
+}
+// #endregion
+
+// #region BVH
+
+/*
+If you have 3D coordinates:
+x=5 ( in binary: 101 )
+y=3 ( in binary: 011 )
+z=7 ( in binary: 111 )
+You interleave them like this:
+Morton code: x0 y0 z0 x1 y1 z1 x2 y2 z2
+Result: 1 0 1 0 1 1 1 1 1 (which is the Morton code of the point).
+In this case, the Morton code of (5, 3, 7) is 101011111 (binary), which you can convert to a scalar value.
+
+Morton Code can not handle negative coordinates, so cordinates will needs to be normalized in relation to the
+size of the 3D volume. From there is it then scaled by 1023 to create 10-Bit encoding of the MortonCode. 
+This helps keep the final morton code value within a 32 bit integer space.
+
+Morton Code - ZOrder, converts XYZ cordinates into bundles of 4 region in 2D or 8 regions in 3D
+Its resursive how the regions are created. So each region can be subdivided into 4 || 8 sub regions.
+*/
+class MortonCode{
+    static VOLUME_SIZE      = 100;
+    static VOLUME_HALF_SIZE = 50;
+    static setVolumeSize( v ){
+        this.VOLUME_SIZE       = v;
+        this.VOLUME_HALF_SIZE  = v / 2;
+    }
+    
+    // Morton code bit manipulation by inserting zeros between bits
+    static expandBits( v ){
+        v = ( v * 0x00010001 ) & 0xFF0000FF; // Create graps between every second bit, filling it with a zero
+        v = ( v * 0x00000101 ) & 0x0F00F00F; // Placing zeros between each adjacent pair of bits.
+        v = ( v * 0x00000011 ) & 0xC30C30C3; // Add more zeros between the bits, further spreading them out across the 32-bit number.
+        v = ( v * 0x00000005 ) & 0x49249249; // Spread points out further
+        return v;
+    }
+
+    // Normalize coordinates to [0,1] range based on world size
+    static normCoord( v ){
+        return ( v + this.VOLUME_HALF_SIZE ) / this.VOLUME_SIZE;
+    };
+
+    // Calculate 3D Morton code
+    static fromPoint( p ){
+        let x = this.normCoord( p[0] );
+        let y = this.normCoord( p[1] );
+        let z = this.normCoord( p[2] );
+        
+        // Clamp to ensure they're in [0,1]
+        x = Math.min( Math.max( x, 0 ), 1 );
+        y = Math.min( Math.max( y, 0 ), 1 );
+        z = Math.min( Math.max( z, 0 ), 1 );
+        
+        // Scale to range [0, 1023] for 10-bit encoding
+        x = Math.min( Math.floor( x * 1023), 1023 );
+        y = Math.min( Math.floor( y * 1023), 1023 );
+        z = Math.min( Math.floor( z * 1023), 1023 );
+        
+        // Insert zeros between bits (3D Morton code)
+        // So that the values can easily be interleaved correctly
+        const xx = this.expandBits( x );
+        const yy = this.expandBits( y );
+        const zz = this.expandBits( z );
+
+        // Interleave the bits
+        return xx | ( yy << 1 ) | ( zz << 2 );
+    }
+}
+
+const BOUND_SCL= 1.3; // Inflate the bounding area of each leaf node
+
+function aabbIntersect( a, b ){
+    return (
+        a.min[0] <= b.max[0] && a.max[0] >= b.min[0] &&
+        a.min[1] <= b.max[1] && a.max[1] >= b.min[1] &&
+        a.min[2] <= b.max[2] && a.max[2] >= b.min[2]
+    );
+}
+
+class Node{
+    code = -1;   // Morton Code
+    obj  = null; // 3D Object
+    l    = null; // Left
+    r    = null; // Right
+    min  = [  Infinity,  Infinity,  Infinity ]; // Bounds
+    max  = [ -Infinity, -Infinity, -Infinity ];
+    constructor(){}
+
+    // Create node from 3D Object
+    fromObject( o ){
+        const min = o.geometry.boundingBox.min.toArray();
+        const max = o.geometry.boundingBox.max.toArray();
+        const pos = o.position;
+        const scl = o.scale;
+
+        this.code   = MortonCode.fromPoint( pos.toArray() );
+        this.obj    = o;
+
+        // Pad bounding area, Scale to match transform & Move it to world space
+        this.min[0] = min[0] * scl.x * BOUND_SCL + pos.x;
+        this.min[1] = min[1] * scl.y * BOUND_SCL + pos.y;
+        this.min[2] = min[2] * scl.z * BOUND_SCL + pos.z;
+
+        this.max[0] = max[0] * scl.x * BOUND_SCL + pos.x;
+        this.max[1] = max[1] * scl.y * BOUND_SCL + pos.y;
+        this.max[2] = max[2] * scl.z * BOUND_SCL + pos.z;
+
+        return this;
+    }
+
+    // Merge the Left and Right Boxes to get complete 
+    // bounding area of this parent node
+    encompassBounds(){
+        if( !this.l || !this.r ) return;
+        
+        const l     = this.l;
+        const r     = this.r;
+
+        this.min[0] = Math.min( l.min[0], r.min[0] );
+        this.min[1] = Math.min( l.min[1], r.min[1] );
+        this.min[2] = Math.min( l.min[2], r.min[2] );
+
+        this.max[0] = Math.max( l.max[0], r.max[0] );
+        this.max[1] = Math.max( l.max[1], r.max[1] );
+        this.max[2] = Math.max( l.max[2], r.max[2] );
+    }
+}
+
+// TODO, Look into other binary tree implementation that uses a flat array
+// to store nodes. This example creates a node reference tree instead which is
+// quick and easy to do but may not be the best approach.
+class Bvh{
+    root        = null; // Root node
+    items       = [];   // List of all Leaf Nodes that represent scene aabbs
+    maxDepth    = 0;    // Depth of binary tree
+    constructor(){}
+
+    // #region BUILDING
+    // Pass in collection of 3d Object & build a bvh binary tree
+    build( boxes ){
+        this.items.length = 0;
+        this.maxDepth     = 0;
+
+        // Build a list of boxes with an assigned morton code
+        let itm;
+        for( let i=0; i < boxes.length; i++ ){
+            itm = boxes[ i ];
+            this.items.push( new Node().fromObject( itm ) );
+        }
+
+        // Sort by Morton code for spatial locality
+        // Meaning nearing 3D objects are grouped together in a 1D Way
+        this.items.sort( (a, b)=> a.code - b.code );
+
+        // Build Binary Node Reference Tree
+        this.root = this.recursiveBuild( 0, this.items.length-1, -1 );
+        return this;
+    }
+
+    recursiveBuild( aIdx, bIdx, lvl=0 ){
+        const dep     = lvl + 1;
+        this.maxDepth = Math.max( this.maxDepth, dep );
+
+        let node;
+        if( aIdx === bIdx ){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Leaf Node
+            node = this.items[ aIdx ];
+
+        }else{
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Parent Node
+            const mIdx = Math.floor( ( aIdx + bIdx ) / 2 );      // Mid point
+
+            node   = new Node();
+            node.l = this.recursiveBuild( aIdx, mIdx, dep );     // Create Left Nodes
+            node.r = this.recursiveBuild( mIdx + 1, bIdx, dep ); // Create Right nodes
+            node.encompassBounds();                              // Merge L+R bounding boxes
+        }
+
+        return node;
+    }
+    // #endregion
+
+    // #region QUERY
+
+    // Get all nodes of a specific depth
+    getDepthNodes( d ){
+        if( d <= 0 ) return [ this.root ];
+
+        const stack = [ { n: this.root, lvl:0 } ];
+        const rtn   = [];
+        let i;
+
+        while( stack.length > 0 ){
+            i = stack.pop();
+
+            if( i.lvl === d ){
+                rtn.push( i.n );
+            }else if( i.lvl < d ){
+                if( i.n.l ) stack.push( { n: i.n.l, lvl:i.lvl+1 } );
+                if( i.n.r ) stack.push( { n: i.n.r, lvl:i.lvl+1 } );
+            }
+        }
+
+        return rtn;
+    }
+
+    // Find all pair of nodes that intersect
+    getCollisionPairs(){
+        const results = {
+            keys : {},  // Track id keys to limit list to unqiue pairs
+            list : [],  // Flat array of pairs
+        };
+
+        for( let i=0; i < this.items.length; i++ ){
+            this.findCollision( this.items[i], results );
+        }
+
+        return results.list;
+    }
+
+    // Traverse Binary tree looking for all 
+    // leaf nodes that intersect passed node
+    findCollision( node, results ){
+        const stack = [ this.root.l, this.root.r ];
+
+        let n;
+        while( stack.length > 0 ){
+            n = stack.pop();
+            
+            // Not itself & nodes intersects
+            if( n !== node && aabbIntersect( node, n ) ){
+                if( n.code !== -1 ){
+                    // Leaf Node - Test for unique pairs
+                    const k = node.code < n.code
+                        ? `${node.code}_${n.code}`
+                        : `${n.code}_${node.code}`
+
+                    if( !results.keys[ k ] ){
+                        results.keys[ k ] = true;
+                        results.list.push( node, n );
+                    }
+                }else{
+                    // Check next depth level
+                    if( n.l ) stack.push( n.l );
+                    if( n.r ) stack.push( n.r );
+                }
+            }
+        }
+    }
+    
+    // #endregion
+}
+
+// #endregion
+
+</script></body></html>
