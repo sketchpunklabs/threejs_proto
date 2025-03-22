@@ -1,0 +1,73 @@
+class AABB {
+  constructor(min, max) {
+    this.min = min;  // min: {x, y, z}
+    this.max = max;  // max: {x, y, z}
+  }
+
+  // Check if two AABBs overlap
+  overlaps(other) {
+    return (
+      this.max.x >= other.min.x &&
+      this.min.x <= other.max.x &&
+      this.max.y >= other.min.y &&
+      this.min.y <= other.max.y &&
+      this.max.z >= other.min.z &&
+      this.min.z <= other.max.z
+    );
+  }
+}
+
+class Object3D {
+  constructor(id, boundingBox) {
+    this.id = id;
+    this.boundingBox = boundingBox;
+  }
+}
+
+// Function to sort objects by a specific axis
+function sortByAxis(objects, axis) {
+  return objects.sort((a, b) => a.boundingBox.min[axis] - b.boundingBox.min[axis]);
+}
+
+// Sweep and Prune collision detection in 3D
+function sweepAndPrune(objects) {
+  let collisions = [];
+  
+  // Sort objects by X, Y, Z axes
+  let sortedByX = sortByAxis([...objects], 'x');
+  let sortedByY = sortByAxis([...objects], 'y');
+  let sortedByZ = sortByAxis([...objects], 'z');
+  
+  // Function to check collisions using sorted objects by each axis
+  function checkCollisions(sortedObjects) {
+    for (let i = 0; i < sortedObjects.length - 1; i++) {
+      for (let j = i + 1; j < sortedObjects.length; j++) {
+        // If the bounding boxes overlap on all axes, then check for collision
+        if (sortedObjects[i].boundingBox.overlaps(sortedObjects[j].boundingBox)) {
+          collisions.push([sortedObjects[i].id, sortedObjects[j].id]);
+        }
+      }
+    }
+  }
+
+  // Check for collisions along the X, Y, and Z axes
+  checkCollisions(sortedByX);
+  checkCollisions(sortedByY);
+  checkCollisions(sortedByZ);
+
+  return collisions;
+}
+
+// Example usage
+
+// Create some 3D objects with AABBs
+let objects = [
+  new Object3D(1, new AABB({x: 1, y: 1, z: 1}, {x: 3, y: 3, z: 3})),
+  new Object3D(2, new AABB({x: 2, y: 2, z: 2}, {x: 4, y: 4, z: 4})),
+  new Object3D(3, new AABB({x: 5, y: 5, z: 5}, {x: 7, y: 7, z: 7})),
+  new Object3D(4, new AABB({x: 0, y: 0, z: 0}, {x: 2, y: 2, z: 2})),
+];
+
+let detectedCollisions = sweepAndPrune(objects);
+
+console.log("Detected collisions:", detectedCollisions);

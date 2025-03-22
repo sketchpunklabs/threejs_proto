@@ -1,0 +1,2021 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+
+import facedCube            from '@lib/meshes/FacedCube.js';
+import useTransformControl  from '@lib/useTransformControl.js';
+
+// https://tweakpane.github.io/docs/
+// https://tweakpane.github.io/docs/plugins/#essentials
+import { Pane }                 from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+// import * as TweakpaneEssentials from '@tp/tweakpane/tweakpane-plugin-essentials-0.2.1.min.js';
+// #endregion
+
+// #region REFS
+// https://allenchou.net/game-physics-series/
+// https://allenchou.net/2013/12/game-physics-motion-dynamics-fundamentals/
+// https://allenchou.net/2013/12/game-physics-motion-dynamics-implementations/
+
+// https://github.com/ariabonczek/DSAProject/tree/master/src/Physics
+// https://github.com/sebis/Motion/tree/master/engine/src/rigidbody
+// https://github.com/bulletphysics/bullet3
+
+// https://matthias-research.github.io/pages/tenMinutePhysics/index.html
+
+// basic rigid body simulator using position based dynamics
+// https://www.youtube.com/watch?v=euypZDssYxE
+// https://github.com/matthias-research/pages/blob/master/tenMinutePhysics/22-rigidBodies.html
+
+// Broad phase collision detection with Sweep and Prune
+// https://www.youtube.com/watch?v=MKeWXBgEGxQ
+// https://github.com/matthias-research/pages/blob/master/tenMinutePhysics/23-SAP.html
+
+// Fast Morton Bounding Volume Hierarchies for Broad phase
+// https://www.youtube.com/watch?v=LAxHQZ8RjQ4
+// https://github.com/matthias-research/pages/blob/master/tenMinutePhysics/24-morton.html
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    // --------------------------
+    gizmo   : useTransformControl( App ).useAxes(),
+    initPos : [ 0,1,0 ],
+
+    // --------------------------
+    // Pane State
+    attach      : true,
+    rayStrength : 30,
+};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 60, 20, 10 );
+    Debug = await useVisualDebug( App );
+    Ref.gizmo.setPos( Ref.initPos );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // SETUP
+    Ref.cube = facedCube();
+    App.scene.add( Ref.cube );
+    Ref.cube.position.set( -0.5, 0.5, -0.5 );
+
+    Ref.phy = new PhysicsEngine()
+        .setFramerate( 30 );
+
+    Ref.rb = new RigidBody( Ref.cube, CuboidCollider.asCube( 1 ) );
+    // Ref.rb.collider.debugPoints( true );
+
+    Ref.rb.useGravity = true;
+    Ref.rb.constraint = new AnchorConstraint( [0.5,0.5,0.5], Ref.initPos );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // TESTING
+    // Ref.rb.applyForce( [0,0,-30], [0,0.5,0] );
+
+    // Ref.rb.constraint.apply( Ref.rb );
+    // Ref.phy.update( 1/10, [ Ref.rb ] );
+    
+    // Ref.rb.updateWorldCollider();
+    // console.log( Ref.rb.collider );
+    // Ref.rb.collider.debugPoints( false );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.createRenderLoop( onPreRender ).start();
+    // App.renderLoop();
+
+    setTimeout( ()=>{ Ref.run=true }, 500 );
+    buildUI();
+    appendGithubLink( false );
+});
+
+function onPreRender( dt, et ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // PREPARE
+    // Debug.pnt.reset();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // MAIN
+    if( Ref.run ) Ref.phy.update( dt, [ Ref.rb ] );
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // DEBUGGING
+    Ref.rb.updateWorldCollider(); // Need this for raycasting to work, not just debugging points
+    // Ref.rb.collider.debugPoints( false );
+}
+
+Ref.gizmo.onMove = p=>{
+    Ref.rb.constraint.setAchorPoint( p );
+};
+
+window.addEventListener( 'pointerdown', e=>{
+    if( !e.shiftKey ) return;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Compute the Ray and visually draw a line
+    const ray = from3JSScreenProjection( new Ray(), e.layerX, e.layerY );
+    Debug.ln.reset().add( ray.posStart, ray.posEnd, 0x00ffff );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const obb     = Ref.rb.collider;
+    const results = new RayObbResult();
+    if( intersectObb( ray, obb.center, obb.xAxis, obb.yAxis, obb.zAxis, obb.halfLen, results ) ){
+        
+        Ref.rb.applyForce( ray.direction.scale( Ref.rayStrength ), results.posEntry );
+
+        // const tmp = new Vec3();
+        // Debug.pnt.add( results.posEntry, 0x00ff00, 3 );
+        // Debug.pnt.add( results.posExit,  0xff0000, 3 );
+
+        // console.log( "Results", results );
+        // console.log( "OBB", obb.center, obb.xAxis, obb.yAxis, obb.zAxis, obb.halfLen );
+    }
+} );
+
+function from3JSScreenProjection( ray, xMouse, yMouse ){
+    const size      = new THREE.Vector2();
+    const proj      = App.camera.projectionMatrix.toArray();    // Need Projection Matrix
+    const camWorld  = App.camera.matrixWorld.toArray();         // World Space Transform of Camera
+    App.renderer.getSize( size );                               // Need Size of Canvas
+
+    // Setup Ray
+    ray.fromScreenProjection( xMouse, yMouse, size.x, size.y, proj, camWorld );
+    return ray;
+}
+
+async function buildUI(){    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const p = new Pane(); 
+    p.on( 'change', e=>{
+        switch( e.target.key ){
+            case 'attach'   : Ref.rb.constraint.active = e.value; break;
+        }
+    });
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const f = p.addFolder({ title: 'Constraints', expanded: true });
+    f.addBinding( Ref, 'attach', { label: 'Anchor' } );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const f2 = p.addFolder({ title: 'Ray Caster ( Hold Shift )', expanded: true });
+    f2.addBinding( Ref, 'rayStrength', { min: 0, max: 100, step:5, label: 'Strength' } );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.pane = p;
+}
+
+// #endregion
+
+// #region ENGINE
+
+class PhysicsEngine{
+    timeStep    = 1 / 30;
+    timeAcrute  = 0;
+    gravity     = [ 0, -9.8, 0 ];
+    constructor(){}
+
+    setFramerate( f ){ this.timeStep = 1 / f; return this; }
+
+    update( dt, bodies=[] ){
+        // Run a step for every possible fixed time that has been accumulated
+        this.timeAcrute += dt;
+
+        while( this.timeAcrute >= this.timeStep ){
+            this.step( this.timeStep, bodies );
+            this.timeAcrute -= this.timeStep;
+        }
+    }
+
+    // https://github.com/sebis/Motion/blob/master/engine/src/rigidbody/Physics.cpp#L49
+    // 1. Loop all rigid bodies
+    // 1.1 Apply Gravity
+    // 1.2 Intergrate - https://github.com/sebis/Motion/blob/master/engine/src/rigidbody/RigidBody.cpp#L54
+    // 2. Detect Collisions
+    // 3. Resolve collisions
+    // 4. write velocity to rigid body
+
+    // 2. Update Forces
+    //  1. Just add up all the forces
+    //  2. Compute pos + vel of rigid body
+    // 3. Collision Detection ( Find Pairs )
+    // 4. Collision Response ( Compute response on positive pairs )
+    //  1. Update Pos + Vel based on collision
+    // 5. Integration ( Use Euler Method, Verlet, Krunge-Kutta )
+    //  1. This part is a bit confusing since RB might be good
+    //  2. can't really apply to 3D object yet cause of constraints + correction
+    // 6. Constraint Solving
+    // 7. Vel/Pos Clamping and Correction
+    // 8. Apply Damping
+
+    step( ts, bodies ){
+        for( const b of bodies ){
+            // 1. Apply Extra forces
+            if( b.useGravity ) b.applyForce( this.gravity );
+            
+            // 2. Apply forces to Rigid Body
+            b.integrate( ts );
+
+            // 3. Collision Detection
+            // 4. Collision Response
+            // 5. Constraint Solving
+            if( b.constraint && b.constraint.active ) b.constraint.apply( b, ts );
+
+            // 6. Damping 
+            b.applyDamping( ts );
+
+            // 7. Vel/Pos Clamping and Correction
+
+            // 8. Apply transform to 3D Object
+            b.updateObject();
+        }
+    }
+}
+
+// #endregion
+
+// #region RIGID BODY
+
+class CuboidCollider{
+    // #region MAIN
+    width       = 1;
+    height      = 1;
+    depth       = 1;
+    tensor      = new Mat3(); // Inertial Tensor
+    localPoints = [
+        new Vec3(), new Vec3(), new Vec3(), new Vec3(), // Bottom
+        new Vec3(), new Vec3(), new Vec3(), new Vec3(), // Top
+    ];
+
+    worldPoints = [
+        new Vec3(), new Vec3(), new Vec3(), new Vec3(), // Bottom
+        new Vec3(), new Vec3(), new Vec3(), new Vec3(), // Top
+    ];
+
+    // Obb Data
+    xAxis       = new Vec3();
+    yAxis       = new Vec3();
+    zAxis       = new Vec3();
+    halfLen     = new Vec3();
+    center      = new Vec3();
+
+    constructor( w=1, h=1, d=1 ){
+        this.width  = w;
+        this.height = h;
+        this.depth  = d;
+        this.updateLocalPoints();
+
+        this.halfLen[0] = w * 0.5;
+        this.halfLen[1] = h * 0.5;
+        this.halfLen[2] = d * 0.5;
+    }
+    // #endregion
+
+    // #region UPDATES
+    
+    // Compute the interial tensor
+    updateTensor( m ){
+        CuboidCollider.inertiaTensor( 
+            m,
+            this.width,
+            this.height,
+            this.depth,
+            this.tensor,
+        );
+        return this;
+    }
+
+    // Recompute Local Points for collider shape
+    updateLocalPoints(){
+        const p = this.localPoints;
+        const x = this.width  * 0.5;
+        const y = this.height * 0.5;
+        const z = this.depth  * 0.5;
+        // Bottom
+        p[0].xyz( -x, -y, -z );
+        p[1].xyz( -x, -y, z );
+        p[2].xyz( x, -y, z );
+        p[3].xyz( x, -y, -z );
+        // Top
+        p[4].xyz( -x, y, -z );
+        p[5].xyz( -x, y, z );
+        p[6].xyz( x, y, z );
+        p[7].xyz( x, y, -z );
+    }
+    
+    // Recompute world points for collider
+    updateToWorld( tran ){
+        for( let i=0; i < 8; i++ ){
+            tran.transformVec3(
+                this.localPoints[ i ],
+                this.worldPoints[ i ],
+            );
+        }
+
+        this.xAxis.fromQuat( tran.rot, [1,0,0] );
+        this.yAxis.fromQuat( tran.rot, [0,1,0] );
+        this.zAxis.fromQuat( tran.rot, [0,0,1] );
+        this.center.copy( tran.pos );
+
+        return this;
+    }
+    
+    // #endregion
+
+    // #region DEBUGGING
+    debugPoints( isLocal=true ){
+        const points = ( isLocal )? this.localPoints : this.worldPoints;
+        for( const p of points ) Debug.pnt.add( p, 0x00ff00, 2 );
+    }
+    // #endregion
+
+    // #region STATIC
+    static asCube( s ){ return new CuboidCollider( s, s, s ); }
+    static inertiaTensor( m=1, w=1, h=1, d=1, m3=null ){
+        const out = m3 || [0,0,0, 0,0,0, 0,0,0];
+        out[0] = ( 1 / 12 ) * m * ( h * h + d * d ); // x - width
+        out[1] = 0;
+        out[2] = 0;
+        out[3] = 0;
+        out[4] = ( 1 / 12 ) * m * ( w * w + d * d ); // y - height
+        out[5] = 0;
+        out[6] = 0;
+        out[7] = 0;
+        out[8] = ( 1 / 12 ) * m * ( w * w + h * h ); // z - depth
+        return out;
+    }
+    // #endregion
+}
+
+class RigidBody{
+    // #region MAIN
+    mass        = 1;
+    invMass     = 1;
+
+    vel         = new Vec3();       // Vel in WS
+    damp        = 0.95;             // Linear Damping on velocity
+    mrot        = new Mat3();       // Matrix Rotation ( From QRot, needed for Inertia Tensor )
+
+    angularVel  = new Vec3();       // Rotational axis and speed
+    angularDamp = 0.9;
+
+    forceSum    = new Vec3();       // Accumulate forces
+    torqueSum   = new Vec3();
+
+    collider    = null;             // Single Collider
+    constraint  = null;             // Single Constraint
+
+    obj         = null;             // 3D Object
+    tran        = new Transform();  // World Transform of 3D Object
+
+    useGravity  = true;             // Should the physics engine apply gravity
+
+    constructor( obj, collider=null ){
+        this.obj = obj;
+        if( collider ) this.setCollider( collider );
+
+        this.syncFromObject();
+    }
+    // #endregion
+
+    // #region SETTERS // GETTERS
+    setMass( v ){
+        this.mass       = v;
+        this.invMass    = 1 / v;
+        this.collider?.updateTensor( this.mass );
+        return this;
+    }
+
+    setCollider( c ){ this.collider = c.updateTensor( this.mass ); return this; }
+
+    // Copy Object's transform to Rigid Body's
+    syncFromObject(){
+        const t = this.tran;
+        const o = this.obj;
+        t.pos.copy( o.position.toArray() );
+        t.rot.copy( o.quaternion.toArray() );
+        t.scl.copy( o.scale.toArray() );
+        this.mrot.fromQuat( t.rot );
+        return this;
+    }
+
+    // Update object with rigid body transform
+    updateObject(){
+        const t = this.tran;
+        const o = this.obj;
+        o.position.fromArray( t.pos );
+        o.quaternion.fromArray( t.rot );
+        o.scale.fromArray( t.scl );
+        return this;
+    }
+    // #endregion
+
+    // #region FORCE METHODS
+
+    applyForce( force, hitPos=null ){
+        this.forceSum.add( force );
+
+        if( hitPos ){
+            // cross( hitPos - objectCenter, force ) - Right Handed
+            // cross( force, hitPos - objectCenter ) - Left Handed
+
+            const torque = new Vec3().fromSub( hitPos, this.tran.pos );
+            torque.fromCross( force, torque );
+
+            this.torqueSum.add( torque );
+        }
+
+        return this;
+    }
+ 
+    applyTorque( v ){ this.torqueSum.add( v ); return this; }
+
+    // Impulse is a sudden & instant increase of velocity
+    applyImpulse( force, hitPos ){
+        // velocity += force * ( 1 / mass )
+        this.vel.scaleThenAdd( this.invMass, force );
+
+        if( hitPos ){
+            // Compute Torque
+            // torque = cross( force, hitPos - objectCenter ) :: Left Handed Systems
+            const torque = new Vec3().fromSub( hitPos, this.tran.pos );
+            torque.fromCross( force, torque );
+
+            // Compute Angular Accel, then add to angular velocity
+            // tensor = rotation * inertiaTensor * transpose( rotation ) // move tensor to WS
+            // angularAccel  = inverse( tensor ) * torque
+            // angularAccel *= 1 / mass
+            // angularVel   += angularAccel
+            const tensor = new Mat3( this.mrot )
+                .transpose()
+                .pmul( this.collider.tensor )
+                .pmul( this.mrot )
+                .invert();
+
+            tensor.transformVec3( torque );     // Create Angular Accel
+            torque.scale( this.invMass );       // Scale accel by mass
+
+            this.angularVel.add( tensor );      // Add accel to velocity
+        }
+        return this;
+    }
+
+    // #endregion
+
+    // #region MATHS
+
+    applyDamping( dt ){
+        // Apply Exponential Decay Damping
+        this.vel.scale( this.damp**dt );
+        this.angularVel.scale( this.angularDamp**dt );
+        return this;
+    }
+
+    integrate( dt ){
+        const v = new Vec3();
+        // Linear Velocity
+        // accel        = ( 1 / mass) * forceAccumulator
+        // velocity    += accel * dt
+        // velocity    *= pow( damping, dt ) :: Exponential Decay Damping
+        // position    += velocity * dt
+
+        // Angular Velocity
+        // tensor       = rotation * inertiaTensor * transpose( rotation )
+        // angularAccel = inverse( tensor ) * torqueAccumulator
+        // angularVel  += angulerAcell * dt
+        // angularVel  *= pow( angularDamping, dt )  :: Exponential Decay Damping
+        // angle        = length( angularVel ) * dt
+        // if( angle != 0 ){
+        //     axis     = norm( angularVel )
+        //     rotation = rotation * axisAngleRotation( axis, angle )
+        // }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Acceleration
+        this.forceSum.scale( this.invMass );
+
+        // Move tensor to worldspace, First rotation moves it to ws but the transpose ensures
+        // that the tensor is properly aligned with world space. With how the tensor transforms
+        // vectors needs this extra mul with the transpose to make it correctly transform torque 
+        // vectors in that world space into angular acceleration
+        // tensor = rotation * inertiaTensor * transpose( rotation )
+        const tensor = new Mat3( this.mrot )
+            .transpose()
+            .pmul( this.collider.tensor )
+            .pmul( this.mrot )
+            .invert();
+        
+        tensor.transformVec3( this.torqueSum ); // calc torque into acceleration
+
+        this.torqueSum.scale( this.invMass ); // Scale it by mass
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Velocity
+        this.vel
+            .add( this.forceSum.scale( dt ) )   // Apply Accel
+            //.scale( this.damp**dt );            // Apply Exponential Decay Damping
+
+        this.angularVel
+            .add( this.torqueSum.scale( dt ) )  // Apply Accel
+            //.scale( this.angularDamp**dt );     // Apply Exponential Decay Damping
+
+        // TODO Apply Drag force k * vel^2
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Update Transform
+
+        // Move Object
+        this.tran.pos.scaleThenAdd( dt, this.vel );
+
+        // Rotate object
+        const rad = Vec3.len( this.angularVel ) * dt;
+        if( rad !== 0 ){
+            v.fromNorm( this.angularVel );
+
+            // Apply rotation to Angular Spin
+            this.mrot
+                .applyAxisAngle( v, rad, true );
+
+            // Convert it to Quaternion for rendering
+            this.tran.rot
+                .fromMat3( this.mrot )
+                .norm();
+
+            // Using fromQuat is the quickest way to do
+            // Orthonormalizing the 3x3 matrix
+            this.mrot.fromQuat( this.tran.rot );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Reset for next physics update
+        this.forceSum.zero(); 
+        this.torqueSum.zero();
+    }
+    
+    updateWorldCollider(){
+        this.collider.updateToWorld( this.tran );
+    }
+    
+    // #endregion
+}
+
+// #endregion
+
+// #region RIGID BODY CONSTRAINTS
+
+class AnchorConstraint{
+    localPoint = new Vec3(); // Local Pivot point before transformation
+    pivotPoint = new Vec3(); // In World Space
+    achorPoint = new Vec3(); // Constraint pivot to this anchor
+
+    speedFactor = 3.0;  // Scale rotational angle
+    blendFactor = 0.05; // How much to apply as impulse
+
+    active      = true; 
+
+    constructor( lp, ap ){
+        if( lp ) this.setLocalPoint( lp );
+        if( ap ) this.setAchorPoint( ap );
+    }
+
+    setLocalPoint( v ){ this.localPoint.copy( v ); return this; }
+    setAchorPoint( v ){ this.achorPoint.copy( v ); return this; };
+
+    apply( rb, dt ){
+        if( !this.active ) return;
+        const gravityDir    = [0,-1,0]; // Normalized Gravity Direction
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Clamp the pivot point to the anchor point in worldspace
+        const pivot = new Vec3( this.localPoint );
+        rb.tran.transformVec3( pivot );
+
+        // Debug.pnt.add( pivot, 0xffffff, 4 );
+        // Debug.pnt.add( this.achorPoint, 0xffff00, 4 );
+
+        const offset = new Vec3( pivot ).sub( this.achorPoint );
+        rb.tran.pos.sub( offset );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // extra impulse linear velocity
+        // anchor2Body = bodyPos - anchorPos
+        // dist  = anchor2Body.len;
+        // anchor2Body.scale( 1/dist ) // inverse scale to make it's length fractionally smaller
+        // snapVel = dot( body.vel, anchor2Body )
+        // body.vel -= anchor2Body * snapVel;
+
+        // If moving the anchor point, add some extra impulse angular velocity.
+        // Flipped cross to make the rotation axis that would rotate away from
+        // the moved direction.
+        if( offset.len > 0.00001 ){
+            // This is cheap way to add impulse. Should try doing something
+            // like how downard rotation is applied with computing an angle
+            // toward the down vector. Try cross( worldPos-anchorPos, offset  )
+            // then with applying the angle toward the offset vector
+            const torqueAxis = new Vec3().fromCross( offset, gravityDir );
+            rb.angularVel.add( torqueAxis );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // COMPUTE ANGULAR AXIS
+        // With the object being pinned to the anchor from its pivot point
+        // try to compute the rotation that allows the object's center of 
+        // gravity ( origin point ) to be right below the anchor point.
+
+        // toBody   = body.pos - pivotPos 
+        // rotAxis  = cross( gravityDir, toBody )
+        // angle    = acos( clamp( -1, 1, dot( toBody.norm, gravityDir ) ) )
+        // swingVel = ( rotAxis * angle * speedFactor ) - body.angularVel
+        // body.angularVel += swingVel * blendFactor
+        
+        // Delta between center of mess & pivot point in worldspace
+        const swingDir      = new Vec3( rb.tran.pos ).sub( pivot );
+
+        // Rotational Axis
+        const torqueAxis    = new Vec3().fromCross( gravityDir, swingDir );
+        const torqueLen     = torqueAxis.len;
+        
+        // If the swing dir is == to gravityDir, there should be no
+        // length to the rotational axis
+        if( torqueLen < 0.0001 ) return;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Normalize vectors to properly compute the angle between them
+        torqueAxis.norm();
+        swingDir.norm();
+
+        // Compute radian angle
+        const cosRad = Math.max( -1, Math.min( 1, Vec3.dot( swingDir, gravityDir ) ) );
+        const rad    = Math.acos( cosRad );
+
+        // Set overal angle / speed of rotation
+        torqueAxis.scale( rad * this.speedFactor );
+
+        // Compute swing velocity so that it goes back & forth
+        torqueAxis.sub( rb.angularVel ).scale( this.blendFactor );
+
+        // Add impulse angular velocity
+        rb.angularVel.add( torqueAxis );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Noticed that the pivot point kept moving but thats because 
+        // gravity was constantly being applied with no way to stop it.
+        // With the the object pinned, the easiest solution is to
+        // cancel out linear velocity all together since it can't move
+        rb.vel.zero();
+
+        return this;
+    }
+}
+
+// #endregion
+
+// #region MATHS
+
+class Mat3 extends Array{
+    constructor( v=null ){
+        super( 9 );
+        if( v?.length === 9 ) this.copy( v );
+        else                  this.identity();
+    }
+
+    // #region SETTERS
+    identity(){
+        this[0] = 1;
+        this[1] = 0;
+        this[2] = 0;
+        this[3] = 0;
+        this[4] = 1;
+        this[5] = 0;
+        this[6] = 0;
+        this[7] = 0;
+        this[8] = 1;
+        return this;
+    }
+
+    copy( v ){
+        this[0] = v[0];
+        this[1] = v[1];
+        this[2] = v[2];
+        this[3] = v[3];
+        this[4] = v[4];
+        this[5] = v[5];
+        this[6] = v[6];
+        this[7] = v[7];
+        this[8] = v[8];
+        return this;
+    }
+    // #endregion
+
+    // #region GETTERS
+    getAxes( o={ x:[0,0,0], y:[0,0,0], z:[0,0,0] } ){
+        o.x[ 0 ] = this[0];
+        o.x[ 1 ] = this[1];
+        o.x[ 2 ] = this[2];
+
+        o.y[ 0 ] = this[3];
+        o.y[ 1 ] = this[4];
+        o.y[ 2 ] = this[5];
+
+        o.z[ 0 ] = this[6];
+        o.z[ 1 ] = this[7];
+        o.z[ 2 ] = this[8];
+        return o;
+    }
+
+    determinant(){
+        const a00 = this[0];
+        const a01 = this[1];
+        const a02 = this[2];
+        const a10 = this[3];
+        const a11 = this[4];
+        const a12 = this[5];
+        const a20 = this[6];
+        const a21 = this[7];
+        const a22 = this[8];
+
+        return (
+            a00 * ( a22 * a11 - a12 * a21) +
+            a01 * (-a22 * a10 + a12 * a20) +
+            a02 * ( a21 * a10 - a11 * a20)
+        );
+    }
+    // #endregion
+
+    // #region OPERATORS
+    mul( b ){
+        const a00 = this[0];
+        const a01 = this[1];
+        const a02 = this[2];
+        const a10 = this[3];
+        const a11 = this[4];
+        const a12 = this[5];
+        const a20 = this[6];
+        const a21 = this[7];
+        const a22 = this[8];
+
+        let b0  = b[0];
+        let b1  = b[1];
+        let b2  = b[2];
+        this[0] = b0 * a00 + b1 * a10 + b2 * a20;
+        this[1] = b0 * a01 + b1 * a11 + b2 * a21;
+        this[2] = b0 * a02 + b1 * a12 + b2 * a22;
+
+        b0      = b[3];
+        b1      = b[4];
+        b2      = b[5];
+        this[3] = b0 * a00 + b1 * a10 + b2 * a20;
+        this[4] = b0 * a01 + b1 * a11 + b2 * a21;
+        this[5] = b0 * a02 + b1 * a12 + b2 * a22;
+
+        b0      = b[6];
+        b1      = b[7];
+        b2      = b[8];
+        this[6] = b0 * a00 + b1 * a10 + b2 * a20;
+        this[7] = b0 * a01 + b1 * a11 + b2 * a21;
+        this[8] = b0 * a02 + b1 * a12 + b2 * a22;
+        return this;
+  }
+
+    pmul( a ){
+        const a00 = a[0];
+        const a01 = a[1];
+        const a02 = a[2];
+        const a10 = a[3];
+        const a11 = a[4];
+        const a12 = a[5];
+        const a20 = a[6];
+        const a21 = a[7];
+        const a22 = a[8];
+
+        let b0  = this[0];
+        let b1  = this[1];
+        let b2  = this[2];
+        this[0] = b0 * a00 + b1 * a10 + b2 * a20;
+        this[1] = b0 * a01 + b1 * a11 + b2 * a21;
+        this[2] = b0 * a02 + b1 * a12 + b2 * a22;
+
+        b0      = this[3];
+        b1      = this[4];
+        b2      = this[5];
+        this[3] = b0 * a00 + b1 * a10 + b2 * a20;
+        this[4] = b0 * a01 + b1 * a11 + b2 * a21;
+        this[5] = b0 * a02 + b1 * a12 + b2 * a22;
+
+        b0      = this[6];
+        b1      = this[7];
+        b2      = this[8];
+        this[6] = b0 * a00 + b1 * a10 + b2 * a20;
+        this[7] = b0 * a01 + b1 * a11 + b2 * a21;
+        this[8] = b0 * a02 + b1 * a12 + b2 * a22;
+        return this;
+    }
+
+    translate( v ){
+        const a00 = this[0];
+        const a01 = this[1];
+        const a02 = this[2];
+        const a10 = this[3];
+        const a11 = this[4];
+        const a12 = this[5];
+        const a20 = this[6];
+        const a21 = this[7];
+        const a22 = this[8];
+        const x   = v[0];
+        const y   = v[1];
+
+        this[0] = a00;
+        this[1] = a01;
+        this[2] = a02;
+
+        this[3] = a10;
+        this[4] = a11;
+        this[5] = a12;
+
+        this[6] = x * a00 + y * a10 + a20;
+        this[7] = x * a01 + y * a11 + a21;
+        this[8] = x * a02 + y * a12 + a22;
+        return this;
+    }
+
+    scale( v ){
+        const x = v[0];
+        const y = v[1];
+
+        this[0] = x * a[0];
+        this[1] = x * a[1];
+        this[2] = x * a[2];
+
+        this[3] = y * a[3];
+        this[4] = y * a[4];
+        this[5] = y * a[5];
+
+        this[6] = a[6];
+        this[7] = a[7];
+        this[8] = a[8];
+        return this;
+    }
+    
+    invert(){
+        const a00 = this[0];
+        const a01 = this[1];
+        const a02 = this[2];
+        const a10 = this[3];
+        const a11 = this[4];
+        const a12 = this[5];
+        const a20 = this[6];
+        const a21 = this[7];
+        const a22 = this[8];
+
+        const b01 = a22 * a11 - a12 * a21;
+        const b11 = -a22 * a10 + a12 * a20;
+        const b21 = a21 * a10 - a11 * a20;
+
+        // Calculate the determinant
+        let det = a00 * b01 + a01 * b11 + a02 * b21;
+        if( !det ){ console.log( 'Mat3 can not invert because of determinate' ); return this; }
+
+        det     = 1.0 / det;
+        this[0] = b01 * det;
+        this[1] = (-a22 * a01 + a02 * a21) * det;
+        this[2] = (a12 * a01 - a02 * a11) * det;
+        this[3] = b11 * det;
+        this[4] = (a22 * a00 - a02 * a20) * det;
+        this[5] = (-a12 * a00 + a02 * a10) * det;
+        this[6] = b21 * det;
+        this[7] = (-a21 * a00 + a01 * a20) * det;
+        this[8] = (a11 * a00 - a01 * a10) * det;
+        return this;
+    }
+
+    transpose(){
+        const a01 = this[1];
+        const a02 = this[2];
+        const a12 = this[5];
+        this[1]   = this[3];
+        this[2]   = this[6];
+        this[3]   = a01;
+        this[5]   = this[7];
+        this[6]   = a02;
+        this[7]   = a12;
+        return this;
+    }
+
+    transformVec3( a, o=null ){
+        const x     = a[0];
+        const y     = a[1];
+        const z     = a[2];
+
+        const out   = o || a;
+        out[0]      = x * this[0] + y * this[3] + z * this[6];
+        out[1]      = x * this[1] + y * this[4] + z * this[7];
+        out[2]      = x * this[2] + y * this[5] + z * this[8];
+        return out;
+    }
+    
+    // pmul's axis angle rotation onto matrix
+    applyAxisAngle( axis, rad, doPMUL=true ){
+        // Compute sine and cosine of the angle
+        const s = Math.sin( rad );
+        const c = Math.cos( rad) ;
+        const t = 1 - c;
+
+        // Construct the rotation matrix using Rodrigues' formula
+        const x = axis[0];
+        const y = axis[1];
+        const z = axis[2];
+        const r = [
+            t * x * x + c,      t * x * y - s * z,  t * x * z + s * y,  // First row
+            t * x * y + s * z,  t * y * y + c,      t * y * z - s * x,  // Second row
+            t * x * z - s * y,  t * y * z + s * x,  t * z * z + c       // Third row
+        ];
+
+        ( doPMUL )
+            ? this.fromMul( r, this ) 
+            : this.fromMul( this, r ); 
+
+        return this;
+    }
+    
+    orthoNorm(){
+        // Not using Gram-Schmidt process to orthonormalize the matrix 
+        // as it does not treat all axes equally, so quaternions it is.
+        this.fromQuat( new Quat().fromMat3( this ).norm() );
+    }
+    // #endregion
+
+    // #region FROM 
+    fromMul( a, b ){
+        const a00 = a[0];
+        const a01 = a[1];
+        const a02 = a[2];
+        const a10 = a[3];
+        const a11 = a[4];
+        const a12 = a[5];
+        const a20 = a[6];
+        const a21 = a[7];
+        const a22 = a[8];
+
+        let b0 = b[0];
+        let b1 = b[1];
+        let b2 = b[2];
+        this[0] = b0 * a00 + b1 * a10 + b2 * a20;
+        this[1] = b0 * a01 + b1 * a11 + b2 * a21;
+        this[2] = b0 * a02 + b1 * a12 + b2 * a22;
+
+        b0 = b[3];
+        b1 = b[4];
+        b2 = b[5];
+        this[3] = b0 * a00 + b1 * a10 + b2 * a20;
+        this[4] = b0 * a01 + b1 * a11 + b2 * a21;
+        this[5] = b0 * a02 + b1 * a12 + b2 * a22;
+
+        b0 = b[6];
+        b1 = b[7];
+        b2 = b[8];
+        this[6] = b0 * a00 + b1 * a10 + b2 * a20;
+        this[7] = b0 * a01 + b1 * a11 + b2 * a21;
+        this[8] = b0 * a02 + b1 * a12 + b2 * a22;
+        return this;
+  }
+
+    fromAdjoint( a ){
+        const a00 = a[0];
+        const a01 = a[1];
+        const a02 = a[2];
+        const a10 = a[3];
+        const a11 = a[4];
+        const a12 = a[5];
+        const a20 = a[6];
+        const a21 = a[7];
+        const a22 = a[8];
+
+        this[0] = a11 * a22 - a12 * a21;
+        this[1] = a02 * a21 - a01 * a22;
+        this[2] = a01 * a12 - a02 * a11;
+        this[3] = a12 * a20 - a10 * a22;
+        this[4] = a00 * a22 - a02 * a20;
+        this[5] = a02 * a10 - a00 * a12;
+        this[6] = a10 * a21 - a11 * a20;
+        this[7] = a01 * a20 - a00 * a21;
+        this[8] = a00 * a11 - a01 * a10;
+        return this;
+    }
+
+    fromInvert( a ){
+        const a00 = a[0],
+              a01 = a[1],
+              a02 = a[2];
+        const a10 = a[3],
+              a11 = a[4],
+              a12 = a[5];
+        const a20 = a[6],
+              a21 = a[7],
+              a22 = a[8];
+
+        const b01 = a22 * a11 - a12 * a21;
+        const b11 = -a22 * a10 + a12 * a20;
+        const b21 = a21 * a10 - a11 * a20;
+
+        // Calculate the determinant
+        let det = a00 * b01 + a01 * b11 + a02 * b21;
+        if( !det ){ console.log( 'Mat3 can not invert because of determinate' ); return this; }
+
+        det     = 1.0 / det;
+        this[0] = b01 * det;
+        this[1] = (-a22 * a01 + a02 * a21) * det;
+        this[2] = (a12 * a01 - a02 * a11) * det;
+        this[3] = b11 * det;
+        this[4] = (a22 * a00 - a02 * a20) * det;
+        this[5] = (-a12 * a00 + a02 * a10) * det;
+        this[6] = b21 * det;
+        this[7] = (-a21 * a00 + a01 * a20) * det;
+        this[8] = (a11 * a00 - a01 * a10) * det;
+        return this;
+    }
+
+    fromTranspose( a ){
+        // If we are transposing ourselves we can skip a few steps but have to cache some values
+        if( this === a ){
+            const a01 = a[1],
+                  a02 = a[2],
+                  a12 = a[5];
+            
+            out[1] = a[3];
+            out[2] = a[6];
+            out[3] = a01;
+            out[5] = a[7];
+            out[6] = a02;
+            out[7] = a12;
+        }else{
+            out[0] = a[0];
+            out[1] = a[3];
+            out[2] = a[6];
+            out[3] = a[1];
+            out[4] = a[4];
+            out[5] = a[7];
+            out[6] = a[2];
+            out[7] = a[5];
+            out[8] = a[8];
+        }
+        return this;
+    }
+
+    fromAxisAngle( axis, rad ){
+        // Normalize the axis vector
+        const len = Math.sqrt( axis[0]**2 + axis[1]**2 + axis[2]**2 );
+        const x   = axis[0] / len;
+        const y   = axis[1] / len;
+        const z   = axis[2] / len;
+
+        // Compute sine and cosine of the angle
+        const s = Math.sin( rad );
+        const c = Math.cos( rad );
+        const t = 1 - c;
+
+        // Construct the rotation matrix using Rodrigues' formula
+        this[0] = t * x * x + c;      // m00
+        this[1] = t * x * y - s * z;  // m01
+        this[2] = t * x * z + s * y;  // m02
+
+        this[3] = t * x * y + s * z;  // m10
+        this[4] = t * y * y + c;      // m11
+        this[5] = t * y * z - s * x;  // m12
+
+        this[6] = t * x * z - s * y;  // m20
+        this[7] = t * y * z + s * x;  // m21
+        this[8] = t * z * z + c;      // m22
+
+        return this;
+    }
+
+    fromLook( fwd, up=[0,1,0] ){
+        // Compute the right vector (X-axis) as the cross product of up and forward
+        // And normalize it
+        const rit = [
+            up[1] * fwd[2] - up[2] * fwd[1],
+            up[2] * fwd[0] - up[0] * fwd[2],
+            up[0] * fwd[1] - up[1] * fwd[0] 
+        ];
+
+        let len = Math.sqrt( rit[0]**2 + rit[1]**2 + rit[2]**2 );
+        rit[0] /= len;
+        rit[1] /= len;
+        rit[2] /= len;
+        
+        // Recompute the up unit vector (Y-axis) to ensure all vectors are orthogonal
+        this[3]  = fwd[1] * rit[2] - fwd[2] * rit[1]; // m10
+        this[4]  = fwd[2] * rit[0] - fwd[0] * rit[2]; // m11
+        this[5]  = fwd[0] * rit[1] - fwd[1] * rit[0]; // m12
+
+        len      = Math.sqrt( this[3]**2 + this[4]**2 + this[5]**2 );
+        this[3] /= len;
+        this[4] /= len;
+        this[5] /= len;
+
+        // Fill the mat3 with the orthogonal vectors
+        this[0] = rit[0];  // m00
+        this[1] = rit[1];  // m01
+        this[2] = rit[2];  // m02
+
+        this[6] = fwd[0];  // m20
+        this[7] = fwd[1];  // m21
+        this[8] = fwd[2];  // m22
+
+        return this;
+    }
+    // #endregion
+
+    // #region FROM CONVERT
+    fromOuterProduct( a, b ){
+        this[0] = a[0] * b[0];  // m00
+        this[1] = a[0] * b[1];  // m01
+        this[2] = a[0] * b[2];  // m02
+
+        this[3] = a[1] * b[0];  // m10
+        this[4] = a[1] * b[1];  // m11
+        this[5] = a[1] * b[2];  // m12
+
+        this[6] = a[2] * b[0];  // m20
+        this[7] = a[2] * b[1];  // m21
+        this[8] = a[2] * b[2];  // m22
+
+        return out;
+    }
+
+    fromQuat( q ){
+        const x  = q[0];
+        const y  = q[1];
+        const z  = q[2];
+        const w  = q[3];
+        const x2 = x + x;
+        const y2 = y + y;
+        const z2 = z + z;
+
+        const xx = x * x2;
+        const yx = y * x2;
+        const yy = y * y2;
+        const zx = z * x2;
+        const zy = z * y2;
+        const zz = z * z2;
+        const wx = w * x2;
+        const wy = w * y2;
+        const wz = w * z2;
+
+        this[0] = 1 - yy - zz;
+        this[3] = yx - wz;
+        this[6] = zx + wy;
+
+        this[1] = yx + wz;
+        this[4] = 1 - xx - zz;
+        this[7] = zy - wx;
+
+        this[2] = zx - wy;
+        this[5] = zy + wx;
+        this[8] = 1 - xx - yy;
+
+        return this;
+    }
+
+    fromMat4( a ){
+        this[0] = a[0];
+        this[1] = a[1];
+        this[2] = a[2];
+        this[3] = a[4];
+        this[4] = a[5];
+        this[5] = a[6];
+        this[6] = a[8];
+        this[7] = a[9];
+        this[8] = a[10];
+        return this;
+    }
+    
+    // Calculates a mat3 normal matrix (adjoint) from the upper 3x3 of a Mat4
+    // https://www.shadertoy.com/view/3s33zj for details.
+    normalFromMat4( a ){
+        // Only difference from adjoint() is these indices.
+        const a00 = a[0];
+        const a01 = a[1];
+        const a02 = a[2];
+
+        const a10 = a[4];
+        const a11 = a[5];
+        const a12 = a[6];
+
+        const a20 = a[8];
+        const a21 = a[9];
+        const a22 = a[10];
+
+        this[0] = a11 * a22 - a12 * a21;
+        this[1] = a02 * a21 - a01 * a22;
+        this[2] = a01 * a12 - a02 * a11;
+
+        this[3] = a12 * a20 - a10 * a22;
+        this[4] = a00 * a22 - a02 * a20;
+        this[5] = a02 * a10 - a00 * a12;
+
+        this[6] = a10 * a21 - a11 * a20;
+        this[7] = a01 * a20 - a00 * a21;
+        this[8] = a00 * a11 - a01 * a10;
+        return this;
+    }
+    // #endregion
+}
+
+class Vec3 extends Array{
+    constructor( v=null ){
+        super( 3 );
+        if( v?.length === 3 ) this.copy( v );
+        else                  this.zero();
+    }
+
+    // #region SETTERS
+    zero(){
+        this[0] = 0;
+        this[1] = 0;
+        this[2] = 0;
+        return this;
+    }
+
+    copy( v ){
+        this[0] = v[0];
+        this[1] = v[1];
+        this[2] = v[2];
+        return this;
+    }
+
+    xyz( x, y, z ){
+        this[0] = x;
+        this[1] = y;
+        this[2] = z;
+        return this;
+    }
+    // #endregion
+
+    // #region GETTERS
+    get len(){ return Math.sqrt( this[ 0 ]**2 + this[ 1 ]**2 + this[ 2 ]**2 ); }
+    get lenSqr(){ return  this[ 0 ]**2 + this[ 1 ]**2 + this[ 2 ]**2; }
+
+    clone(){ return new Vec3( this ); }
+    // #endregion
+
+    // #region FROM OPS
+    fromSub( a, b ){
+        this[ 0 ] = a[ 0 ] - b[ 0 ];
+        this[ 1 ] = a[ 1 ] - b[ 1 ];
+        this[ 2 ] = a[ 2 ] - b[ 2 ];
+        return this;
+    }
+    // fromScale( v, s ){
+    //     this[ 0 ] = v[0] * s;
+    //     this[ 1 ] = v[1] * s;
+    //     this[ 2 ] = v[2] * s;
+    //     return this;
+    // }
+
+    fromNorm( v ){
+        let mag = Math.sqrt( v[ 0 ]**2 + v[ 1 ]**2 + v[ 2 ]**2 );
+        if( mag == 0 ) return this;
+
+        mag       = 1 / mag;
+        this[ 0 ] = v[ 0 ] * mag;
+        this[ 1 ] = v[ 1 ] * mag;
+        this[ 2 ] = v[ 2 ] * mag;
+        return this;
+    }
+
+    fromCross( a, b ){
+        const ax = a[0], ay = a[1], az = a[2],
+              bx = b[0], by = b[1], bz = b[2];
+
+        this[ 0 ] = ay * bz - az * by;
+        this[ 1 ] = az * bx - ax * bz;
+        this[ 2 ] = ax * by - ay * bx;
+        return this;
+    }
+
+    fromQuat( q, v ){
+        const qx = q[0], qy = q[1], qz = q[2], qw = q[3],
+              vx = v[0], vy = v[1], vz = v[2],
+              x1 = qy * vz - qz * vy,
+              y1 = qz * vx - qx * vz,
+              z1 = qx * vy - qy * vx,
+              x2 = qw * x1 + qy * z1 - qz * y1,
+              y2 = qw * y1 + qz * x1 - qx * z1,
+              z2 = qw * z1 + qx * y1 - qy * x1;
+        this[ 0 ] = vx + 2 * x2;
+        this[ 1 ] = vy + 2 * y2;
+        this[ 2 ] = vz + 2 * z2;
+        return this;
+    }
+    // #endregion
+
+    // #region OPERATORS
+    add( a ){
+        this[ 0 ] += a[ 0 ];
+        this[ 1 ] += a[ 1 ];
+        this[ 2 ] += a[ 2 ];
+        return this;
+    }
+
+    sub( v ){
+        this[ 0 ] -= v[ 0 ];
+        this[ 1 ] -= v[ 1 ];
+        this[ 2 ] -= v[ 2 ];
+        return this;
+    }
+
+    scale( v ){
+        this[ 0 ] *= v;
+        this[ 1 ] *= v;
+        this[ 2 ] *= v;
+        return this;
+    }
+
+    invScale( v ){
+        this[ 0 ] /= v;
+        this[ 1 ] /= v;
+        this[ 2 ] /= v;
+        return this;
+    }
+
+    scaleThenAdd( s, v ){
+        this[ 0 ] += v[0] * s;
+        this[ 1 ] += v[1] * s;
+        this[ 2 ] += v[2] * s;
+        return this;
+    }
+
+    cross( b ){
+        const ax = this[0], ay = this[1], az = this[2],
+              bx = b[0],    by = b[1],    bz = b[2];
+
+        this[ 0 ] = ay * bz - az * by;
+        this[ 1 ] = az * bx - ax * bz;
+        this[ 2 ] = ax * by - ay * bx;
+        return this;
+    }
+    
+    norm(){
+        let mag = Math.sqrt( this[0]**2 + this[1]**2 + this[2]**2 );
+        if( mag != 0 ){
+            mag        = 1 / mag;
+            this[ 0 ] *= mag;
+            this[ 1 ] *= mag;
+            this[ 2 ] *= mag;
+        }
+        return this;
+    }
+
+    negate(){
+        this[ 0 ] = -this[ 0 ];
+        this[ 1 ] = -this[ 1 ];
+        this[ 2 ] = -this[ 2 ];
+        return this;
+    }
+    // #endregion
+
+    // #region STATIC OPS
+    static len( a ){ return Math.sqrt( a[ 0 ]**2 + a[ 1 ]**2 + a[ 2 ]** 2 ); }
+    static lenSqr( a ){ return a[ 0 ]**2 + a[ 1 ]**2 + a[ 2 ]** 2; }
+
+    static dist( a, b ){ return Math.sqrt( (a[ 0 ]-b[ 0 ]) ** 2 + (a[ 1 ]-b[ 1 ]) ** 2 + (a[ 2 ]-b[ 2 ]) ** 2 ); }
+    static distSqr( a, b ){ return (a[ 0 ]-b[ 0 ]) ** 2 + (a[ 1 ]-b[ 1 ]) ** 2 + (a[ 2 ]-b[ 2 ]) ** 2; }
+
+    static dot( a, b ) { return a[ 0 ] * b[ 0 ] + a[ 1 ] * b[ 1 ] + a[ 2 ] * b[ 2 ]; }
+    static cross( a, b, out=new Vec3() ){
+        const ax = a[0], ay = a[1], az = a[2],
+              bx = b[0], by = b[1], bz = b[2];
+
+        out[ 0 ] = ay * bz - az * by;
+        out[ 1 ] = az * bx - ax * bz;
+        out[ 2 ] = ax * by - ay * bx;
+        return out;
+    }
+    // #endregion
+}
+
+class Quat extends Array{
+    constructor( v=null ){
+        super( 4 );
+        if( v?.length === 4 ) this.copy( v );
+        else                  this.identity();
+    }
+
+    // #region SETTERS
+    identity(){
+        this[0] = 0;
+        this[1] = 0;
+        this[2] = 0;
+        this[3] = 1;
+        return this;
+    }
+
+    copy( v ){
+        this[0] = v[0];
+        this[1] = v[1];
+        this[2] = v[2];
+        this[3] = v[3];
+        return this;
+    }
+    // #endregion
+
+    // #region OPERATIONS
+    /** Multiple Quaternion onto this Quaternion */
+    mul( q ){
+        const ax = this[0], ay = this[1], az = this[2], aw = this[3],
+              bx = q[0],    by = q[1],    bz = q[2],    bw = q[3];
+        this[ 0 ] = ax * bw + aw * bx + ay * bz - az * by;
+        this[ 1 ] = ay * bw + aw * by + az * bx - ax * bz;
+        this[ 2 ] = az * bw + aw * bz + ax * by - ay * bx;
+        this[ 3 ] = aw * bw - ax * bx - ay * by - az * bz;
+        return this;
+    }
+
+    /** PreMultiple Quaternions onto this Quaternion */
+    pmul( q ){
+        const ax = q[0],    ay  = q[1],     az = q[2],    aw = q[3],
+              bx = this[0], by  = this[1],  bz = this[2], bw = this[3];
+        this[ 0 ] = ax * bw + aw * bx + ay * bz - az * by;
+        this[ 1 ] = ay * bw + aw * by + az * bx - ax * bz;
+        this[ 2 ] = az * bw + aw * bz + ax * by - ay * bx;
+        this[ 3 ] = aw * bw - ax * bx - ay * by - az * bz;
+        return this;
+    }
+
+    norm(){
+        let len =  this[0]**2 + this[1]**2 + this[2]**2 + this[3]**2;
+        if( len > 0 ){
+            len = 1 / Math.sqrt( len );
+            this[ 0 ] *= len;
+            this[ 1 ] *= len;
+            this[ 2 ] *= len;
+            this[ 3 ] *= len;
+        }
+        return this;
+    }
+
+    invert(){
+        const a0  = this[ 0 ],
+              a1  = this[ 1 ],
+              a2  = this[ 2 ],
+              a3  = this[ 3 ],
+              dot = a0*a0 + a1*a1 + a2*a2 + a3*a3;
+        
+        if(dot == 0){ this[0] = this[1] = this[2] = this[3] = 0; return this }
+
+        const invDot = 1.0 / dot; // let invDot = dot ? 1.0/dot : 0;
+        this[ 0 ]    = -a0 * invDot;
+        this[ 1 ]    = -a1 * invDot;
+        this[ 2 ]    = -a2 * invDot;
+        this[ 3 ]    =  a3 * invDot;
+        return this;
+    }
+    // #endregion
+
+    // #region CONVERT
+    fromMat3( m ){
+        // https://github.com/toji/gl-matrix/blob/master/src/gl-matrix/quat.js#L305
+        // Algorithm in Ken Shoemake's article in 1987 SIGGRAPH course notes
+        // article "Quat Calculus and Fast Animation".
+        let fRoot;
+        const fTrace = m[0] + m[4] + m[8];
+
+        if( fTrace > 0.0 ){
+            // |w| > 1/2, may as well choose w > 1/2
+            fRoot	= Math.sqrt( fTrace + 1.0 );  // 2w
+            this[3]	= 0.5 * fRoot;
+            
+            fRoot	= 0.5 / fRoot;  // 1/(4w)
+            this[0]	= (m[5]-m[7])*fRoot;
+            this[1]	= (m[6]-m[2])*fRoot;
+            this[2]	= (m[1]-m[3])*fRoot;
+        }else{
+            // |w| <= 1/2
+            let i = 0;
+
+            if ( m[4] > m[0] )		i = 1;
+            if ( m[8] > m[i*3+i] )	i = 2;
+            
+            const j = (i+1) % 3;
+            const k = (i+2) % 3;
+
+            fRoot	= Math.sqrt( m[i*3+i] - m[j*3+j] - m[k*3+k] + 1.0);
+            this[ i ]	= 0.5 * fRoot;
+
+            fRoot	= 0.5 / fRoot;
+            this[ 3 ]	= ( m[j*3+k] - m[k*3+j] ) * fRoot;
+            this[ j ]	= ( m[j*3+i] + m[i*3+j] ) * fRoot;
+            this[ k ]	= ( m[k*3+i] + m[i*3+k] ) * fRoot;
+        }
+        return this;
+    }
+    // #endregion
+}
+
+class Transform{
+    // #region MAIN
+    rot	= new Quat();
+    pos	= new Vec3(  );
+    scl = new Vec3( [1,1,1] );
+    constructor(){}
+    // #endregion
+
+    // #region SETTERS / GETTERS
+    reset(){
+        this.rot[0] = 0;
+        this.rot[1] = 0;
+        this.rot[2] = 0;
+        this.rot[3] = 1;
+        this.pos[0] = 0;
+        this.pos[1] = 0;
+        this.pos[2] = 0;
+        this.scl[0] = 1;
+        this.scl[1] = 1;
+        this.scl[2] = 1;
+        return this;
+    }
+
+    copy( t ){
+        this.rot[0] = t.rot[0];
+        this.rot[1] = t.rot[1];
+        this.rot[2] = t.rot[2];
+        this.rot[3] = t.rot[3];
+        this.pos[0] = t.pos[0];
+        this.pos[1] = t.pos[1];
+        this.pos[2] = t.pos[2];
+        this.scl[0] = t.scl[0];
+        this.scl[1] = t.scl[1];
+        this.scl[2] = t.scl[2];
+        return this;
+    }
+
+    set( r, p, s ){
+        if( r ){
+            this.rot[0] = r[0];
+            this.rot[1] = r[1];
+            this.rot[2] = r[2];
+            this.rot[3] = r[3];
+        }
+        if( p ){
+            this.pos[0] = p[0];
+            this.pos[1] = p[1];
+            this.pos[2] = p[2];
+        }
+        if( s ){
+            this.scl[0] = s[0];
+            this.scl[1] = s[1];
+            this.scl[2] = s[2];
+        }
+        return this;
+    }
+    
+    from3DObject( o ){
+        this.rot.copy( o.quaternion.toArray() );
+        this.scl.copy( o.scale.toArray() );
+        this.pos.copy( o.postion.toArray() );
+        return this;
+    }
+    // #endregion
+
+    // #region OPERATORS
+
+    // Computing Transforms, Parent -> Child
+    mul( tran ){
+        const cp = tran.pos;
+        const cs = tran.scl;
+        const cr = tran.rot;
+
+        // // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // // POSITION - parent.position + ( parent.rotation * ( parent.scale * child.position ) )
+        // // this.pos.add( new Vec3( this.scl ).mul( cp ).transformQuat( this.rot ) );
+        // const p = [
+        //     cp[0] * this.scl[0],        // Scale
+        //     cp[1] * this.scl[1],
+        //     cp[2] * this.scl[2],
+        // ];
+
+        // transformQuat( p, this.rot );   // Rotation
+        // this.pos[0] += p[0];            // Translation
+        // this.pos[1] += p[1];
+        // this.pos[2] += p[2];
+    
+        // // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // // SCALE - parent.scale * child.scale
+        // // if( cs ) this.scl.mul( cs );
+        // if( cs ){
+        //     this.scl[0] *= cs[0];
+        //     this.scl[1] *= cs[1];
+        //     this.scl[2] *= cs[2];
+        // }
+
+        // // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // // ROTATION - parent.rotation * child.rotation
+        // // this.rot.mul( cr );
+        // quatMul( this.rot, cr, this.rot );
+
+        return this;
+    }
+    
+    invert(){
+        // Invert Rotation
+        quatInvert( t.rot, this.rot ); // this.rot.fromInvert( t.rot );
+
+        // Invert Scale
+        this.scl[ 0 ] = 1 / t.scl[0];
+        this.scl[ 1 ] = 1 / t.scl[1];
+        this.scl[ 2 ] = 1 / t.scl[2];
+
+        // Invert Position
+        this.pos[0] = -t.pos[0];
+        this.pos[1] = -t.pos[1];
+        this.pos[2] = -t.pos[2];
+
+        return this;
+    }
+    
+    // #endregion
+
+    // #region TRANSFORMATION
+
+    // Regular Applying transform, Does not work well for inversed transforms
+    // when dealing with World to Local Transformation
+    transformVec3( v, out=null ){
+        // GLSL - vecQuatRotation(model.rotation, a_position.xyz * model.scale) + model.position;
+        // return (out || v).fromMul( v, this.scl ).transformQuat( this.rot ).add( this.pos );
+
+        // Vector * Scale
+        const vx = v[0] * this.scl[0];
+        const vy = v[1] * this.scl[1];
+        const vz = v[2] * this.scl[2];
+
+        // ( Rotation * Vector3 ) + Translation
+        const qx = this.rot[0];
+        const qy = this.rot[1];
+        const qz = this.rot[2];
+        const qw = this.rot[3];
+        const x1 = qy * vz - qz * vy;
+        const y1 = qz * vx - qx * vz;
+        const z1 = qx * vy - qy * vx;
+        const x2 = qw * x1 + qy * z1 - qz * y1;
+        const y2 = qw * y1 + qz * x1 - qx * z1;
+        const z2 = qw * z1 + qx * y1 - qy * x1;
+
+        const rtn = out || v;
+        rtn[ 0 ]  = ( vx + 2 * x2 ) + this.pos[0];
+        rtn[ 1 ]  = ( vy + 2 * y2 ) + this.pos[1];
+        rtn[ 2 ]  = ( vz + 2 * z2 ) + this.pos[2];
+
+        return rtn;
+    }
+
+    // When using an inversed transform, use this to transform
+    // WorldSpace vectors to local space
+    transformVec3Rev( v, out=[0,0,0] ){
+        // Translation
+        const vx = v[0] + this.pos[0];
+        const vy = v[1] + this.pos[1];
+        const vz = v[2] + this.pos[2];
+
+        // ( Rotation * Vector3 ) * scale
+        const qx = this.rot[0];
+        const qy = this.rot[1];
+        const qz = this.rot[2];
+        const qw = this.rot[3];
+        const x1 = qy * vz - qz * vy;
+        const y1 = qz * vx - qx * vz;
+        const z1 = qx * vy - qy * vx;
+        const x2 = qw * x1 + qy * z1 - qz * y1;
+        const y2 = qw * y1 + qz * x1 - qx * z1;
+        const z2 = qw * z1 + qx * y1 - qy * x1;
+
+        const rtn = out || v;
+        rtn[0]    = ( vx + 2 * x2 ) * this.scl[0];
+        rtn[1]    = ( vy + 2 * y2 ) * this.scl[1];
+        rtn[2]    = ( vz + 2 * z2 ) * this.scl[2];
+        return rtn;
+    }
+    
+    // #endregion
+}
+
+class Mat4 extends Array{
+    // #region CONSTRUCTOR
+    constructor(){ 
+        super(16);
+        this[0]  = 1;
+        this[1]  = 0;
+        this[2]  = 0;
+        this[3]  = 0;
+
+        this[4]  = 0;
+        this[5]  = 1;
+        this[6]  = 0;
+        this[7]  = 0;
+
+        this[8]  = 0;
+        this[9]  = 0;
+        this[10] = 1;
+        this[11] = 0;
+
+        this[12] = 0;
+        this[13] = 0;
+        this[14] = 0;
+        this[15] = 1;
+    }
+    // #endregion
+
+    // #region FROM OPS
+    fromInvert( mat ){
+        const a00 = mat[0],  a01 = mat[1],  a02 = mat[2],  a03 = mat[3],
+              a10 = mat[4],  a11 = mat[5],  a12 = mat[6],  a13 = mat[7],
+              a20 = mat[8],  a21 = mat[9],  a22 = mat[10], a23 = mat[11],
+              a30 = mat[12], a31 = mat[13], a32 = mat[14], a33 = mat[15],
+
+              b00 = a00 * a11 - a01 * a10,
+              b01 = a00 * a12 - a02 * a10,
+              b02 = a00 * a13 - a03 * a10,
+              b03 = a01 * a12 - a02 * a11,
+              b04 = a01 * a13 - a03 * a11,
+              b05 = a02 * a13 - a03 * a12,
+              b06 = a20 * a31 - a21 * a30,
+              b07 = a20 * a32 - a22 * a30,
+              b08 = a20 * a33 - a23 * a30,
+              b09 = a21 * a32 - a22 * a31,
+              b10 = a21 * a33 - a23 * a31,
+              b11 = a22 * a33 - a23 * a32;
+
+        let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06; // Calculate the determinant
+
+        if( !det ) return this;
+        det = 1.0 / det;
+
+        this[0]  = (a11 * b11 - a12 * b10 + a13 * b09) * det;
+        this[1]  = (a02 * b10 - a01 * b11 - a03 * b09) * det;
+        this[2]  = (a31 * b05 - a32 * b04 + a33 * b03) * det;
+        this[3]  = (a22 * b04 - a21 * b05 - a23 * b03) * det;
+        this[4]  = (a12 * b08 - a10 * b11 - a13 * b07) * det;
+        this[5]  = (a00 * b11 - a02 * b08 + a03 * b07) * det;
+        this[6]  = (a32 * b02 - a30 * b05 - a33 * b01) * det;
+        this[7]  = (a20 * b05 - a22 * b02 + a23 * b01) * det;
+        this[8]  = (a10 * b10 - a11 * b08 + a13 * b06) * det;
+        this[9]  = (a01 * b08 - a00 * b10 - a03 * b06) * det;
+        this[10] = (a30 * b04 - a31 * b02 + a33 * b00) * det;
+        this[11] = (a21 * b02 - a20 * b04 - a23 * b00) * det;
+        this[12] = (a11 * b07 - a10 * b09 - a12 * b06) * det;
+        this[13] = (a00 * b09 - a01 * b07 + a02 * b06) * det;
+        this[14] = (a31 * b01 - a30 * b03 - a32 * b00) * det;
+        this[15] = (a20 * b03 - a21 * b01 + a22 * b00) * det;
+
+        return this;
+    }
+    // #endregion
+
+    // #region OPERATIONS
+    mul( b ){ 
+        const   a00 = this[0],	a01 = this[1],	a02 = this[2],	a03 = this[3],
+                a10 = this[4],	a11 = this[5],	a12 = this[6],	a13 = this[7],
+                a20 = this[8],	a21 = this[9],	a22 = this[10],	a23 = this[11],
+                a30 = this[12],	a31 = this[13],	a32 = this[14],	a33 = this[15];
+
+        // Cache only the current line of the second matrix
+        let b0  = b[0], b1 = b[1], b2 = b[2], b3 = b[3];
+        this[0] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        this[1] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        this[2] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        this[3] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+
+        b0 = b[4]; b1 = b[5]; b2 = b[6]; b3 = b[7];
+        this[4] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        this[5] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        this[6] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        this[7] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+
+        b0 = b[8]; b1 = b[9]; b2 = b[10]; b3 = b[11];
+        this[8] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        this[9] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        this[10] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        this[11] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+
+        b0 = b[12]; b1 = b[13]; b2 = b[14]; b3 = b[15];
+        this[12] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        this[13] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        this[14] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        this[15] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+        return this;	
+    }
+
+    pmul( b ){ 
+        const   a00 = b[0],	 a01 = b[1],  a02 = b[2],  a03 = b[3],
+                a10 = b[4],  a11 = b[5],  a12 = b[6],  a13 = b[7],
+                a20 = b[8],  a21 = b[9],  a22 = b[10], a23 = b[11],
+                a30 = b[12], a31 = b[13], a32 = b[14], a33 = b[15];
+
+        // Cache only the current line of the second matrix
+        let b0  = this[0], b1 = this[1], b2 = this[2], b3 = this[3];
+        this[0] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        this[1] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        this[2] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        this[3] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+
+        b0 = this[4]; b1 = this[5]; b2 = this[6]; b3 = this[7];
+        this[4] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        this[5] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        this[6] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        this[7] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+
+        b0 = this[8]; b1 = this[9]; b2 = this[10]; b3 = this[11];
+        this[8]  = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        this[9]  = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        this[10] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        this[11] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+
+        b0 = this[12]; b1 = this[13]; b2 = this[14]; b3 = this[15];
+        this[12] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        this[13] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        this[14] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        this[15] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+        return this;	
+    }
+    // #endregion
+
+    // #region TRANSFORMS
+    transformVec3( v, out ){
+        const x = v[0], y = v[1], z = v[2];
+        out    = out || v;
+        out[0] = this[0] * x + this[4] * y + this[8]  * z + this[12];
+        out[1] = this[1] * x + this[5] * y + this[9]  * z + this[13];
+        out[2] = this[2] * x + this[6] * y + this[10] * z + this[14];
+        return out;
+    }
+        
+    transformVec4( v, out ){
+        const x = v[0], y = v[1], z = v[2], w = v[3];
+        out    = out || v;
+        out[0] = this[0] * x + this[4] * y + this[8]  * z + this[12] * w;
+        out[1] = this[1] * x + this[5] * y + this[9]  * z + this[13] * w;
+        out[2] = this[2] * x + this[6] * y + this[10] * z + this[14] * w;
+        out[3] = this[3] * x + this[7] * y + this[11] * z + this[15] * w;
+        return out;
+    }
+    // #endregion
+}
+
+// #endregion
+
+// #region RAY CASTING
+class Ray{
+    // #region MAIN
+    posStart    = new Vec3();   // Origin
+    posEnd      = new Vec3();   // 
+    direction   = new Vec3();   // Direction from Start to End
+    vecLength   = new Vec3();   // Vector Length between start to end
+    // #endregion
+
+    // #region SETUP
+    fromEndPoints( a, b ){
+        this.posStart.copy( a );                    // Starting Point of the Ray
+        this.posEnd.copy( b );                      // The absolute end of the ray
+        this.vecLength.fromSub( b, a );             // Vector Length
+        this.direction.fromNorm( this.vecLength );  // Normalized Vector Length 
+        return this;
+    }
+
+    fromScreenProjection( x, y, w, h, projMatrix, camMatrix ){
+        // http://antongerdelan.net/opengl/raycasting.html
+        // Normalize Device Coordinate
+        const nx  = x / w * 2 - 1;
+        const ny  = 1 - y / h * 2;
+
+        // inverseWorldMatrix = invert( ProjectionMatrix * ViewMatrix ) OR
+        // inverseWorldMatrix = localMatrix * invert( ProjectionMatrix ) 
+        // const invMatrix = mat4.invert( projMatrix )
+        // mat4.mul( camMatrix, invMatrix, invMatrix );
+        const invMatrix = new Mat4().fromInvert( projMatrix ).pmul( camMatrix );
+        
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // https://stackoverflow.com/questions/20140711/picking-in-3d-with-ray-tracing-using-ninevehgl-or-opengl-i-phone/20143963#20143963
+        // Clip Cords would be [nx,ny,-1,1];
+        const clipNear   = [ nx, ny, -1, 1 ];
+        const clipFar    = [ nx, ny, 1, 1 ];
+
+        // using 4d Homogeneous Clip Coordinates
+        invMatrix.transformVec4( clipNear );
+        invMatrix.transformVec4( clipFar );
+
+        // Normalize by using W component
+        for( let i=0; i < 3; i++){
+            clipNear[ i ] /= clipNear[ 3 ];
+            clipFar [ i ] /= clipFar [ 3 ];
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Final Compute
+        this.posStart.copy( clipNear );                         // Starting Point of the Ray
+        this.posEnd.copy( clipFar );                            // The absolute end of the ray
+        this.vecLength.fromSub( this.posEnd, this.posStart );   // Vector Length
+        this.direction.fromNorm( this.vecLength );              // Normalized Vector Length
+        return this;
+    }
+    // #endregion
+
+    // #region GETTERS / SETTERS
+    /** Get position of the ray from T Scale of VecLen */
+    posAt( t, out = [0,0,0] ){
+        // RayVecLen * t + RayOrigin
+        // also works lerp( RayOrigin, RayEnd, t )
+        out[ 0 ] = this.vecLength[ 0 ] * t + this.posStart[ 0 ];
+        out[ 1 ] = this.vecLength[ 1 ] * t + this.posStart[ 1 ];
+        out[ 2 ] = this.vecLength[ 2 ] * t + this.posStart[ 2 ];
+        return out;
+    }
+
+    /** Get position of the ray from distance from origin */
+    directionAt( len, out = [0,0,0] ){
+        out[ 0 ] = this.direction[ 0 ] * len + this.posStart[ 0 ];
+        out[ 1 ] = this.direction[ 1 ] * len + this.posStart[ 1 ];
+        out[ 2 ] = this.direction[ 2 ] * len + this.posStart[ 2 ];        
+        return out;
+    }
+    // #endregion
+
+    // #region OPS
+    transformMat4( m ){
+        this.fromEndPoints( 
+            m.transformVec3( this.posStart, [0,0,0] ), 
+            m.transformVec3( this.posEnd,   [0,0,0] ),
+        );
+        return this;
+    }
+    // #endregion
+}
+
+class RayObbResult{
+    posEntry    = new Vec3();
+    posExit     = new Vec3();
+    tMin        = 0;            // 0 > 1
+    tMax        = 0;            // 0 > 1
+    // entryAxis   = 0;            // 0 : X, 1 : Y, 2 : Z
+    normEntry   = new Vec3();   // -1 or 1 , Positive or Negative Axis
+    // exitAxis    = 0;            // 0 : X, 1 : Y, 2 : Z
+    normExit    = new Vec3();   // -1 or 1 , Positive or Negative Axis
+}
+
+function intersectObb( ray, center, xDir, yDir, zDir, halfLen, result=null ){
+    const rayDelta  = new Vec3( center ).sub( ray.posStart ); // Distance between Ray start and Box Position
+    let tMin        = 0;
+    let tMax        = 1000000;
+    let minAxis     = 0;    // Which axis hit, X:0, Y:1, Z:2
+    let maxAxis     = 0;
+    let axis        ;
+    let nomLen      ;
+    let denomLen    ;
+    let tmp         ; 
+    let min         ;
+    let max         ;
+    const list      = [ xDir, yDir, zDir ];
+
+    for( let i=0; i < 3; i++){
+        axis        = list[ i ];
+        nomLen      = Vec3.dot( axis, rayDelta ); 	    // Get the length of Axis and distance to ray position
+        denomLen    = Vec3.dot( ray.vecLength, axis );  // Get Length of ray and axis
+
+        if( Math.abs( denomLen ) > 0.00001 ){ // Can't divide by Zero
+            min = ( nomLen - halfLen[i] ) / denomLen;
+            max = ( nomLen + halfLen[i] ) / denomLen;
+
+            if( min > max ){  tmp = min; min = max; max = tmp; }    // Swap
+            if( min > tMin ){ tMin = min; minAxis = i; }            // Biggest Min
+            if( max < tMax ){ tMax = max; maxAxis = i; }            // Smallest Max
+
+            if( tMax < tMin ) return false;
+        }else if(
+            -nomLen - halfLen[i] > 0 || 
+            -nomLen + halfLen[i] < 0 ) return false;  // Are almost parallel check
+    }
+
+    if( result ){
+        result.tMin = tMin;
+        result.tMax = tMax;
+
+        ray.posAt( tMin, result.posEntry );
+        ray.posAt( tMax, result.posExit );
+
+        const tmp = new Vec3();
+
+        result.normEntry.copy( list[ minAxis ] );
+        tmp.fromSub( ray.posStart, result.posEntry );
+        if( Vec3.dot( tmp, result.normEntry ) < 0 ) result.normEntry.negate();
+
+        result.normExit.copy( list[ maxAxis ] );
+        tmp.fromSub( ray.posStart, result.posExit );
+        if( Vec3.dot( tmp, result.normExit ) > 0 ) result.normExit.negate();
+    }
+
+    return true;
+}
+// #endregion
+
+</script></body></html>

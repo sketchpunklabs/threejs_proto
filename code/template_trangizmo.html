@@ -1,0 +1,38 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import useTransformControl from '@lib/useTransformControl.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    gizmo   : useTransformControl( App ).useAxes(),
+    pos     : [0,0.7,2],
+};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 20, 6 );
+    // Debug = await useVisualDebug( App );
+    Ref.gizmo.setPos( Ref.pos );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+});
+
+function onPreRender( dt, et ){}
+
+Ref.gizmo.onStart = ()=>{ console.log( 'GIZMO START' ) };
+Ref.gizmo.onStop = ()=>{ console.log( 'GIZMO STOP' ) };
+
+Ref.gizmo.onMove = p=>{
+    console.log( p );
+};
+
+// #endregion
+</script></body></html>
