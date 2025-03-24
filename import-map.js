@@ -34,8 +34,7 @@ function appendGithubLink( goRight=true ){
     }
 
     const url = 'https://github.com/sketchpunklabs' 
-        + ( prepend != '' ? '' : '/threejs_proto' ) // If not localhost
-        + '/blob/main'
+        + '/threejs_proto/blob/main'
         + document.location.pathname.replace( gitPage, '' );
 
     document.body.insertAdjacentHTML( 'afterend',`
