@@ -55,6 +55,7 @@ window.addEventListener( 'load', async ()=>{
     // App.createRenderLoop( onPreRender ).start();
     App.renderLoop();
     buildUI().then( generate );
+    appendGithubLink( false );
 });
 
 function onPreRender( dt, et ){}
