@@ -1,5 +1,6 @@
 
-const prepend = ( document.location.hostname.indexOf( 'localhost' ) === -1 )? '/threejs_proto' : '';
+const gitPage = '/threejs_proto';
+const prepend = ( document.location.hostname.indexOf( 'localhost' ) === -1 )? gitPage : '';
 
 document.body.appendChild(Object.assign(document.createElement('script'), {
 type		: 'importmap',
@@ -33,9 +34,9 @@ function appendGithubLink( goRight=true ){
     }
 
     const url = 'https://github.com/sketchpunklabs' 
-        + ( prepend != '' ? '' : '/threejs_proto' )
-        + '/tree/main'
-        + document.location.pathname;
+        + ( prepend != '' ? '' : '/threejs_proto' ) // If not localhost
+        + '/blob/main'
+        + document.location.pathname.replace( gitPage, '' );
 
     document.body.insertAdjacentHTML( 'afterend',`
         <a href="${url}" target="_blank" class="github-corner" aria-label="View source on Github">
