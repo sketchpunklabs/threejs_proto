@@ -1,0 +1,319 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    tasks   : [],       // Execute tasks during render loop
+    xColor  : 0xaa0000, // Default Color
+    sColor  : 0xFFA500, // Selection Color
+    sel     : null,     // Selected Object
+};
+
+// Really great idea of using internal WebGLRenderer functionality & data to
+// perform the same kind of side scene picking without an extra scene.
+// The magic bits are .renderLists.get(scene, 0) & .renderBufferDirect( camera, null, geo, pickMat, renderObject.object, null )
+// but to make it work you need to render an emptyScene that setup with a post render callback for it to work without error
+// Ex: https://github.com/bzztbomb/three_js_gpu_picking/blob/main/src/gpupicker.js
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 20, 6 );
+    Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const cube = createCube( [-1.5,0.5,0], 0.5 );
+    const pyrm = createPyramid( [1.5,0.7,-0.6] );
+    const sph  = createSphere( [0, 0.9, 0.7] );
+
+    App.scene.add( cube, pyrm, sph );
+
+    Ref.picker = new PickerRenderList( App );
+    Ref.picker.onPickCB = onPick;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.createRenderLoop( onPreRender ).start();
+    // App.renderLoop();
+});
+
+function onPreRender( dt, et ){
+    if( Ref.tasks.length > 0 ) Ref.tasks.pop()();
+}
+
+function onPick( id, pos ){
+    // console.log( id, pos );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Deselect anything current
+    if( Ref.sel ){
+        Ref.sel.material.color.setHex( Ref.xColor );
+        Ref.sel = null;
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Select the mesh if it was found
+    if( id !== -1 ){  
+
+        let o = null;   
+        for( const m of App.scene.children ){
+            if( m.userData.oID === id ){ o = m; break; }   
+        }
+
+        if( o ){
+            o.material.color.setHex( Ref.sColor );
+            Ref.sel = o;
+            Debug.pnt.reset().add( pos, 0x00ff00, 1 );
+        }else{
+            console.log( 'Object not found by oID', id );
+        }
+    }
+}
+// #endregion
+
+
+// #region HELPERS
+
+function randomID(){ return Math.ceil( 1 + Math.random() * 100_000_000 ) }
+
+function createCube( pos=[0,0,0], s=0.4 ){
+    const geo   = new THREE.BoxGeometry( 1, 1, 1 ); 
+    const mat   = new THREE.MeshPhongMaterial( {color: Ref.xColor } ); 
+    const mesh  = new THREE.Mesh( geo, mat );
+
+    mesh.scale.setScalar( 0.4 );
+    mesh.position.fromArray( pos );
+    mesh.userData.oID = randomID();
+
+    return mesh;
+}
+
+function createPyramid( pos=[0,0,0], r=0.4, h=0.6 ){
+    const geo   = new THREE.CylinderGeometry( 0, r, h, 4 ); 
+    const mat   = new THREE.MeshPhongMaterial( {color: Ref.xColor } ); 
+    const mesh  = new THREE.Mesh( geo, mat );
+
+    mesh.position.fromArray( pos );
+    mesh.userData.oID = randomID();
+
+    return mesh;
+}
+
+function createSphere( pos=[0,0,0], r=0.4, ws=8, hs=8 ){
+    const geo   = new THREE.SphereGeometry( r, ws, hs ); 
+    const mat   = new THREE.MeshPhongMaterial( {color: Ref.xColor } ); 
+    const mesh  = new THREE.Mesh( geo, mat );
+
+    mesh.position.fromArray( pos );
+    mesh.userData.oID = randomID();
+
+    return mesh;
+}
+
+// #endregion
+
+class PickerRenderList{
+    // #region MAIN
+    constructor( App ){
+        // this.items      = {};
+        this.camera     = App.camera;
+        this.renderer   = App.renderer;
+        this.scene      = App.scene;
+        this.cursor     = new THREE.Vector2();  // Hold current mouse click cordinate 
+        
+        this.pickMat    = IdentifyMaterial( -1 );
+        this.onPickCB   = null;
+
+        this.emptyScene = new THREE.Scene();
+        this.emptyScene.onAfterRender = this.onPostRender;
+
+        // Original example used 4 channels
+        this.tex        = new THREE.WebGLRenderTarget( 1, 1, {
+            minFilter       : THREE.NearestFilter,
+            magFilter       : THREE.NearestFilter,
+            type            : THREE.IntType,
+            format          : THREE.RGBAIntegerFormat,
+            internalFormat  : 'RGBA32I',
+        } );
+
+        // // TODO: Reduce it to a single channel, works but not sure if this will be a problem on macs
+        // this.tex        = new THREE.WebGLRenderTarget( 1, 1, {
+        //     minFilter       : THREE.NearestFilter,
+        //     magFilter       : THREE.NearestFilter,
+        //     type            : THREE.IntType,
+        //     format          : THREE.RedIntegerFormat,
+        //     internalFormat  : 'R32I',
+        // } );
+
+        // Backup renderer's clear color
+        this.bakClearColor = App.renderer.getClearColor( new THREE.Color() );
+        
+        // Set clear color used by picking rendering
+        this.nulClearColor = new THREE.Color().setRGB( -1, -1, -1 );
+
+        // Bind Events
+        App.renderer.domElement.addEventListener( 'pointerdown', this.onPointerDown );
+    }
+    // #endregion
+
+    // #region EVENTS
+    onPointerDown = e=>{
+        this.cursor.x = e.clientX;
+        this.cursor.y = e.clientY;
+        
+        Ref.tasks.push(()=>{
+            const [ id, pos ] = this.renderPicker();
+            // console.log( id, pos );
+
+            if( this.onPickCB ) this.onPickCB( id, pos );
+        })
+    };
+    // #endregion
+
+    // #region RENDERING
+    renderPicker(){
+        const rend  = this.renderer;
+        const cam   = this.camera;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Set the view offset to represent just a single pixel under the mouse
+        // https://threejs.org/docs/index.html#api/en/cameras/PerspectiveCamera.setViewOffset
+        // fullWidth, fullHeight, x, y, width, height
+
+        const dpr = window.devicePixelRatio;
+        cam.setViewOffset(
+            rend.domElement.width,
+            rend.domElement.height,
+            Math.floor( this.cursor.x * dpr ), 
+            Math.floor( this.cursor.y * dpr ),
+            1, 1
+        );
+
+        rend.setRenderTarget( this.tex );
+        rend.setClearColor( this.nulClearColor );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Need to render an empty scene with a post render callback setup
+        // to properly have access to internal bits that allows us to
+        // render objects manually along with getting a list of objects
+        // that was used to render the last frame. This list is how we can
+        // use the main scene to render without needing to keep track
+        // of a picking specific scene with cloned meshes.
+        rend.render( this.emptyScene, cam );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Cleanup		
+        cam.clearViewOffset();
+        rend.setRenderTarget( null );
+        rend.setClearColor( this.bakClearColor );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Read Pixel
+        const pxBuf = new Int32Array( 4 ); // TODO, Dont need 4 ints when using a single channel texture
+        rend.readRenderTargetPixels( this.tex, 0, 0, 1, 1, pxBuf ); // readRenderTargetPixelsAsync, newer version of 3JS has new
+        // console.log( pxBuf );
+
+        return [
+            pxBuf[ 0 ],
+            [
+                pxBuf[1] / 10000,
+                pxBuf[2] / 10000,
+                pxBuf[3] / 10000,
+            ]
+        ];
+    }
+
+    onPostRender = ()=>{
+        const rl = this.renderer.renderLists.get( this.scene, 0 ); // scene, renderCallDepth 
+        // console.log( rl.opaque );
+        // console.log( rl.transmissive );
+        // console.log( rl.transparent );
+
+        for( const i of rl.opaque ){
+            // Skip any mesh that does not have a custom Int ID.
+            if( !i.object.userData.oID ) continue;
+
+            // Update picking material with object's ID
+            this.pickMat.objID = i.object.userData.oID;
+
+            // NOTE: renderBufferDirect only works on a scene.onAfterRender else an error out
+            // because currentRenderState is null. To handle this issue, render an empty scene
+            // which will then do nothing but still have access to a set render state while still
+            // having access to the previous frame's renderLists
+            this.renderer.renderBufferDirect( this.camera, null, i.geometry, this.pickMat, i.object, null );
+        }
+    }
+    // #endregion
+}
+
+// Material that just renders an INT value to the R Channel of an Int32 Texture
+function IdentifyMaterial( id ){
+    const mat = new THREE.RawShaderMaterial({
+        name            : 'IdentifyMaterial',
+        // side            : THREE.DoubleSide,
+        depthTest       : true,
+        // transparent 	: true,
+        // alphaToCoverage : true,
+        glslVersion     : THREE.GLSL3,
+        extensions      : { derivatives : true },
+
+        uniforms        : {
+            objID : { type: 'int', value: id },
+        },
+
+        vertexShader    : `
+        in vec3 position;
+
+        uniform mat4 modelMatrix;
+        uniform mat4 viewMatrix;
+        uniform mat4 projectionMatrix;
+        uniform mat4 modelViewMatrix;
+
+        out vec3 fragWPos;
+
+        // ############################################################
+
+        void main(){
+            vec4 wPos     = modelMatrix * vec4( position, 1.0 );  // World Space
+            vec4 vPos     = viewMatrix * wPos;                    // View Space
+            gl_Position   = projectionMatrix * vPos;
+            
+            fragWPos      = wPos.xyz;
+
+            // gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+        }`,
+
+        fragmentShader  : `
+        precision mediump float;
+
+        uniform int objID;
+
+        in vec3 fragWPos;
+
+        // layout(location=0) out int outID;
+        layout(location=0) out ivec4 outData;
+
+        // #####################################################################
+
+        const float toInt = 10000.0;
+        void main(){                          
+            // outID = objID;
+            outData = ivec4( objID, ivec3( fragWPos * toInt ) );
+        }`
+    });
+
+    Object.defineProperty( mat, 'objID', {
+        set( c ){ 
+            mat.uniforms.objID.value    = c; 
+            mat.uniformsNeedUpdate      = true;
+        },
+    });
+
+    return mat;
+}
+
+</script></body></html>

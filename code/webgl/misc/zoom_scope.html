@@ -1,0 +1,240 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import facedCube           	from '@lib/meshes/FacedCube.js';
+// import { Pane }                 from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+// import * as TweakpaneEssentials from '@tp/tweakpane/tweakpane-plugin-essentials-0.2.1.min.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {};
+
+// select square to zoom : https://codepen.io/forerunrun/pen/XWoZgjM
+// ViewPort : https://threejs.org/docs/?q=veca#api/en/cameras/PerspectiveCamera.setViewOffset
+// Crosshair Shader : https://codepen.io/driezis/pen/jOPzjLG
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 45, 20, 10 );
+    Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const cube = facedCube();
+    cube.position.set( 0, 0.5, 0 );
+    App.scene.add( cube );
+
+    Ref.scope = new ZoomScopeView( App.renderer, App.camera )
+        .setSize( 100, 60 )
+        //.screenCenterPlacement()
+        .cornerPlacement()
+    ;
+
+    console.log( Ref.scope );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.createRenderLoop( null, onPostRender ).start();
+    // App.renderLoop();
+
+    // const canvas = App.renderer.domElement;
+    // canvas.addEventListener( 'pointerdown', onPointerDown );
+});
+
+function onPreRender( dt, et ){}
+function onPostRender( dt, et ){
+    Ref.scope.render( App.scene, App.camera );
+}
+
+function onPointerDown( e ){
+ }
+
+function onPointerMove( e ){
+}
+
+function onPointerUp( e ){}
+
+async function buildUI(){    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const p = new Pane(); 
+    // p.registerPlugin( TweakpaneEssentials );
+
+    // p.on( 'change', e=>{
+    //     // console.log( e );
+    //     // console.log( e.target.label, e.value );
+    //     switch( e.target.key ){
+    //         case 'vol':
+    //             Ref.minVol = [-e.value, 0, -e.value ];
+    //             Ref.maxVol = [ e.value, e.value, e.value ];
+    //             break;
+    //         case 'mins'     : Ref.minSize = [ e.value, e.value, e.value ]; break;
+    //         case 'maxs'     : Ref.maxSize = [ e.value, e.value, e.value ]; break;
+    //         case 'depth'    : renderBounds(); break;
+    //     }
+    // });
+    
+    // // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // const f = p.addFolder({ title: 'World', expanded: true });
+    // f.addBinding( Ref, 'boxCnt', { min: 1, max: 100, step: 1, label: 'BoxCount' } );
+    // f.addBinding( Ref, 'seed', { min: 1, max: 1000, step: 1, label: 'RndSeed' } );
+    // f.addBinding( Ref, 'vol', { min: 1, max: 10, step: 1, label: 'Volume' } );
+    // f.addBinding( Ref, 'mins', { min: 0.1, max: 4, step: 0.1, label: 'Box Min' } );
+    // f.addBinding( Ref, 'maxs', { min: 0.1, max: 4, step: 0.1, label: 'Box Max' } );
+    // f.addButton({ title: 'Generate Boxes' }).on( 'click', generate );
+    // f.addButton({ title: 'Collision Pairs' }).on( 'click', renderCollisions );
+
+    // // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // const f2 = p.addFolder({ title: 'Bounding Areas', expanded: true });
+    // f2.addBinding( Ref, 'maxDepth', { label:'MaxDepth' } );
+    // Ref.depthSlider = f2.addBinding( Ref, 'depth', { min: 0, max: 0, step:1, label: 'View Depth' } );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.pane = p;
+}
+// #endregion
+
+class ZoomScopeView{ // extends THREE.Mesh
+    // #region MAIN
+    width       = 100;
+    height      = 50;
+    left        = 10;
+    top         = 10;
+    // zoomDist    = 0;
+
+    mainFOV     = 45;
+    camera      = null;
+    renderer    = null;
+
+    constructor( renderer, camera ){
+        this.renderer = renderer;
+        this.mainFOV  = camera.fov;
+        this.camera   = new THREE.PerspectiveCamera( camera.fov, 1.0, 0.01, 1000 );
+    }
+    // #endregion
+
+    // #region SETTERS
+    setSize( w, h ){
+        this.width  = w;
+        this.height = h;
+
+        const screen       = this.renderer.getDrawingBufferSize( new THREE.Vector2() );
+        this.camera.fov    = this.mainFOV * ( this.height / screen.y  );
+        this.camera.aspect = this.width / this.height; 
+        this.camera.updateProjectionMatrix();
+
+        return this;
+    }
+    
+    screenCenterPlacement(){
+        const screen = this.renderer.getDrawingBufferSize( new THREE.Vector2() );
+        // console.log( screen );
+        this.setMidPoint( screen.x * 0.5, screen.y * 0.5 );
+        return this;
+    }
+
+    cornerPlacement( corner=2, pad=10 ){
+        const screen = this.renderer.getDrawingBufferSize( new THREE.Vector2() );
+
+        switch( corner ){
+            case 0: // TOP - LEFT
+                this.left = pad;
+                this.top  = screen.y - this.height - pad;
+                break;
+
+            case 1:  // TOP - RIGHT
+                this.left = screen.x - this.width - pad;
+                this.top  = screen.y - this.height - pad;
+                break;
+
+            case 2:  // BOTTOM - RIGHT
+                this.left = screen.x - this.width - pad;
+                this.top  = pad;
+                break;
+            
+            case 3: // BOTTOM - LEFT
+                this.left = pad;
+                this.top  = pad;
+                break;
+        }
+
+        return this;
+    }
+
+    setMidPoint( x, y ){
+        const dpr    = window.devicePixelRatio;
+        const screen = this.renderer.getDrawingBufferSize( new THREE.Vector2() );
+
+        this.left    = Math.floor( x - this.width * 0.5 ) * dpr;
+        this.top     = Math.floor( y - this.height * 0.5 ) * dpr;
+        return this;
+    }
+    // #endregion
+    
+    render( scene, camera ){
+        const screen = this.renderer.getDrawingBufferSize( new THREE.Vector2() );
+        const cam    = this.camera;
+        const rend   = this.renderer;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Set camera
+        cam.position.copy( camera.position );
+        cam.quaternion.copy( camera.quaternion );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Set Renderer
+        // Use scissor mask to limit clearDepth + clearColor to the view port area
+        // as an alt solution to doing a screen space mesh to clear the area.
+        // with scissor on & set, we dont need to manually control clearing 
+        // the framebuffer in this manner
+        rend.setScissorTest( true );
+        rend.setScissor(  this.left, this.top, this.width, this.height );
+        rend.setViewport( this.left, this.top, this.width, this.height );
+        // rend.autoClear = false;
+        // rend.clearDepth();
+        // rend.clearColor();
+
+        rend.render( scene, cam );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Cleanup
+        // rend.autoClear = true;
+        rend.setScissorTest( false );
+        rend.setViewport( 0, 0, screen.x, screen.y );
+    }
+
+    // #region OLD BUT SAVE
+    // NOTE: Works but the view area will be draw as if it was transparent, plus can't clear
+    // color buffer without clearing it whole. Only possible solution is to add a screen space
+    // quad as the first renderable to clear out the pixels in the view rect.
+    renderOLD( scene, camera ){
+        const screen = this.renderer.getDrawingBufferSize( new THREE.Vector2() );
+        const cam    = this.camera;
+        const rend   = this.renderer;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Set camera
+        cam.position.copy( camera.position );
+        cam.quaternion.copy( camera.quaternion );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        rend.autoClear = false;
+        rend.setViewport( this.left, this.top, this.width, this.height );
+        rend.clearDepth();
+
+        rend.render( scene, cam );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Cleanup
+        rend.autoClear = true;
+        rend.setViewport( 0, 0, screen.x, screen.y );
+    }
+    // #endregion
+}
+
+// const clearMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, opacity: 1, transparent: true });
+// const clearGeometry = new THREE.PlaneGeometry(2, 2);  // Fullscreen quad
+// const clearMesh     = new THREE.Mesh(clearGeometry, clearMaterial);
+
+</script></body></html>
