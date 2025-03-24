@@ -13,7 +13,7 @@ import facedCube        from '@lib/meshes/FacedCube.js';
 // https://github.com/tweakpane/plugin-essentials - Radio Grid
 // https://github.com/tweakpane/plugin-camerakit
 import { Pane }                 from '@tp/tweakpane/tweakpane-4.0.4.min.js';
-import * as TweakpaneEssentials from '@tp/tweakpane/tweakpane-plugin-essentials-0.2.1.min.js';
+// import * as TweakpaneEssentials from '@tp/tweakpane/tweakpane-plugin-essentials-0.2.1.min.js';
 // #endregion
 
 // #region MAIN
@@ -25,7 +25,7 @@ let Ref   = {
 
     // -----------------------------------
     // Pane State
-    action : 'lineRay',
+    action : 'lineMove',
 };
 
 window.addEventListener( 'load', async ()=>{
@@ -40,12 +40,12 @@ window.addEventListener( 'load', async ()=>{
     App.scene.add( Ref.cube );
 
     Ref.act = new ActionManager( App.scene, App.camera, App.renderer, App.camCtrl )
-        .addAction( 'lineRay', new LineRayAction() );
+        .addAction( 'lineMove', new LineMoveAction() )
+        .addAction( 'planeMove', new PlaneMoveAction() )
+    ;
 
-        console.log( App.camCtrl );
-
-    
-    startLineRay();
+    startLineMove();
+    // startPlaneMove();
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // App.createRenderLoop( onPreRender ).start();
@@ -55,74 +55,43 @@ window.addEventListener( 'load', async ()=>{
 
 function onPreRender( dt, et ){}
 
-window.addEventListener( 'pointerdown', e=>{
-    // if( !e.shiftKey ) return;
-
-    // // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    // // Compute the Ray and visually draw a line
-    // const ray = from3JSScreenProjection( new Ray(), e.layerX, e.layerY );
-    // Debug.ln.reset().add( ray.posStart, ray.posEnd, 0x00ffff );
-
-    // // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    // const obb     = Ref.rb.collider;
-    // const results = new RayObbResult();
-    // if( intersectObb( ray, obb.center, obb.xAxis, obb.yAxis, obb.zAxis, obb.halfLen, results ) ){
-        
-    //     Ref.rb.applyForce( ray.direction.scale( Ref.rayStrength ), results.posEntry );
-
-    //     // const tmp = new Vec3();
-    //     // Debug.pnt.add( results.posEntry, 0x00ff00, 3 );
-    //     // Debug.pnt.add( results.posExit,  0xff0000, 3 );
-
-    //     // console.log( "Results", results );
-    //     // console.log( "OBB", obb.center, obb.xAxis, obb.yAxis, obb.zAxis, obb.halfLen );
-    // }
-} );
-
 async function buildUI(){
     appendGithubLink( false );
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     const p = new Pane();
-    p.registerPlugin( TweakpaneEssentials );
-    // p.on( 'change', e=>{
-    //     switch( e.target.key ){
-    //         case 'attach'   : Ref.rb.constraint.active = e.value; break;
-    //     }
-    // });
+    // p.registerPlugin( TweakpaneEssentials );
+    // p.on( 'change', e=>{});
     
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    const f = p.addFolder({ title: 'Main', expanded: true });
-    // f.addBinding( Ref, 'attach', { label: 'Anchor' } );
+    const f = p.addFolder({ title: 'Actions', expanded: true });
+    f.addButton({ title: 'Line Move' }).on( 'click', startLineMove );
+    f.addButton({ title: 'Plane Move' }).on( 'click', startPlaneMove );
 
-    const actions = [ {t:'LineRay', v:'lineRay'}, {t:'misc', v:'misc'}, ];
-    f.addBinding( Ref, 'action', {
-            view        : 'radiogrid',
-            groupName   : 'actionName',
-            label       : 'Actions',
-            size        : [ 1, actions.length ],
-            cells       : ( x, y ) =>{ 
-                return {
-                    title: actions[y * 1 + x].t,
-                    value: actions[y * 1 + x].v,
-                }
-            },
-        })
-        .on( 'change', e => {
-            console.log(e);
-            switch( e.value ){
-                case 'lineRay': startLineRay(); return;
-            }
-        });
-
-    // // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    // const f2 = p.addFolder({ title: 'Ray Caster ( Hold Shift )', expanded: true });
-    // f2.addBinding( Ref, 'rayStrength', { min: 0, max: 100, step:5, label: 'Strength' } );
+    // const actions = [ {t:'LineRay', v:'lineRay'}, {t:'misc', v:'misc'}, ];
+    // f.addBinding( Ref, 'action', {
+    //         view        : 'radiogrid',
+    //         groupName   : 'actionName',
+    //         label       : 'Actions',
+    //         size        : [ 1, actions.length ],
+    //         cells       : ( x, y ) =>{ 
+    //             return {
+    //                 title: actions[y * 1 + x].t,
+    //                 value: actions[y * 1 + x].v,
+    //             }
+    //         },
+    //     })
+    //     .on( 'change', e => {
+    //         console.log(e);
+    //         switch( e.value ){
+    //             case 'lineRay': startLineRay(); return;
+    //         }
+    //     });
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     Ref.pane = p;
 }
 
-function startLineRay(){
+function startLineMove(){
     const DIST  = 5;    // Distance from point to move fwd & back
     
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -151,32 +120,66 @@ function startLineRay(){
         endPos      : ePos,
     };
 
-    Ref.act.useAction( 'lineRay', new LineRayPreview(), Ref.cube, props );
+    Ref.act.useAction( 'lineMove', new LineMovePreview(), Ref.cube, props );
+}
+
+function startPlaneMove(){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Random rotation
+    const q = new Quat().fromPolar(
+        180 * ( Math.random() * 2 - 1 ),
+        90 * ( Math.random() * 2 - 1 ),
+    );
+
+    // // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // // Compute start and end pos of a segment
+    const pos   = new Vec3( Ref.cube.position.toArray() );
+    const fwd   = new Vec3().fromQuat( q ).norm();
+    const rit   = new Vec3().fromCross( [0,1,0], fwd ); //.norm();
+    const up    = new Vec3().fromCross( fwd, rit ).norm();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // DEBUG
+    // Debug.ln.add( pos, pos.clone().scaleThenAdd( 2, fwd ), 0xff0000 );
+    // Debug.ln.add( pos, pos.clone().scaleThenAdd( 2, rit.norm() ), 0x00ff00 );
+    // Debug.ln.add( pos, pos.clone().scaleThenAdd( 2, up ), 0x0000ff );
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const props = {
+        origin   : pos,
+        fwdDir   : fwd,
+        upDir    : up,
+    };
+
+    Ref.act.useAction( 'planeMove', new PlaneMovePreview(), Ref.cube, props );
 }
 
 // #endregion
 
-// #region ACTION MANAGER
+// #region MANAGER
 
+// A simple "state machine" to manage pointer events with various actions
+// React people, this has nothing to do with "useState", its a gamedev
+// design pattern for controlling routing input, active scenes, modes, etc.
 class ActionManager{
     // #region MAIN
-    renderer    = null;
-    scene       = null;
-    camera      = null;
-    camCtrl     = null;
+    renderer    = null; // 3JS Renderer
+    scene       = null; // 3JS Scene
+    camera      = null; // 3JS Camera
+    camCtrl     = null; // 3JS Camera controller ( disable when dragging )
     
-    active      = true;
-    dragging    = false;
+    active      = true; // If manager is enabled
+    dragging    = false;// Indicate that draggin in progress
 
-    object      = null;
-    action      = null;
-    preview     = null;
+    object      = null; // Object to apply transform
+    action      = null; // Transform Action
+    preview     = null; // Renderer for Action
 
-    actions     = {};
+    actions     = {};   // Actions registered for use
 
-    dynLines    = new DynLinesMesh();       // Reusable way to generate lines
-    dynPoints   = new ShapePointsMesh();
-    ray         = new Ray();   
+    dynLines    = new DynLinesMesh();     // Reusable way to generate lines
+    dynPoints   = new ShapePointsMesh();  // Reusable way to generate points
+    ray         = new Ray();              // Reusable ray for intersection testing
 
     constructor( scene, camera, renderer, camCtrl ){
         this.renderer   = renderer ;
@@ -191,8 +194,10 @@ class ActionManager{
     }
     // #endregion
 
+    // #region SETERS / GETTERS
     getObjectPos(){ return this.object ? this.object.position.toArray() : [0,0,0]; }
     setObjectPos( v ){ if( this.object ) this.object.position.fromArray( v ); }
+    // #endregion
 
     // #region EVENT HANDLERS & METHODS
     startEvents(){
@@ -214,7 +219,6 @@ class ActionManager{
     }
 
     onPointerDown = e=>{
-        // this.canvas.setPointerCapture( e.pointerId );
         if( !this.active || !this.action ) return;
 
         // Check if dragging action will started
@@ -224,29 +228,21 @@ class ActionManager{
             this.renderer.domElement.setPointerCapture( e.pointerId );
             this.preview.render( this );
         }
-
-        console.log( "PntDown" );
-        // from3JSScreenProjection( ray, xMouse, yMouse )
     }
 
     onPointerMove = e=>{
-
         if( this.dragging && this.action.onMove( this, e ) ){
             this.preview.render( this );
         }
-
     }
 
     onPointerUp = e=>{
-        // this.canvas.releasePointerCapture( e.pointerId );
-        console.log( "PntUp" );
-
         if( this.dragging ){
-            if( this.action?.onUp( this, e ) ) this.preview.render( this );
-
             this.dragging           = false;
             this.camCtrl.enabled    = true;
             this.renderer.domElement.releasePointerCapture( e.pointerId );
+
+            if( this.action?.onUp( this, e ) ) this.preview.render( this );
         }
     }
 
@@ -268,13 +264,19 @@ class ActionManager{
     }
 
     useAction( name, prev, obj, props={} ){
-        if( this.action ){}
-        if( this.preview ){}
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Clean up previous action or previews
+        if( this.action )  this.action.unload( this );
+        if( this.preview ) this.preview.dispose( this );
 
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Set Data
         this.action     = this.actions[ name ];
         this.preview    = prev;
         this.object     = obj;
 
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Initial Objects
         this.action.init( props );
         this.preview
             .init( this, this.action )
@@ -292,6 +294,7 @@ class ActionManager{
     // #endregion
 
     // #region RAY CASTING
+    // Compute worldspace ray for actions to use
     getRayFromEvent( e ){
         const size      = new THREE.Vector2();
         const proj      = this.camera.projectionMatrix.toArray();    // Need Projection Matrix
@@ -307,17 +310,6 @@ class ActionManager{
 // #endregion
 
 // #region RAY CASTING
-
-// function from3JSScreenProjection( ray, xMouse, yMouse ){
-//     const size      = new THREE.Vector2();
-//     const proj      = App.camera.projectionMatrix.toArray();    // Need Projection Matrix
-//     const camWorld  = App.camera.matrixWorld.toArray();         // World Space Transform of Camera
-//     App.renderer.getSize( size );                               // Need Size of Canvas
-
-//     // Setup Ray
-//     ray.fromScreenProjection( xMouse, yMouse, size.x, size.y, proj, camWorld );
-//     return ray;
-// }
 
 class Ray{
     // #region MAIN
@@ -405,6 +397,7 @@ class Ray{
     // #endregion
 }
 
+
 class NearSegmentResult{
     segPosition = [0,0,0];
     rayPosition = [0,0,0];
@@ -459,20 +452,41 @@ function nearSegment( ray, p0, p1, results=null){
     return [ tU, tV ]; // The Lerp T values for Segment & Ray
 }
 
+
+function intersectPlane( ray, planePos, planeNorm, hitPos=null ){
+    // ((planePos - rayOrigin) dot planeNorm) / ( rayVecLen dot planeNorm )
+    // pos = t * rayVecLen + rayOrigin;
+    const denom = Vec3.dot( ray.vecLength, planeNorm );         // Dot product of ray Length and plane normal
+    if( denom <= 0.000001 && denom >= -0.000001 ) return null;  // abs(denom) < epsilon, using && instead to not perform absolute.
+
+    const v = [
+        planePos[0] - ray.posStart[0],
+        planePos[1] - ray.posStart[1],
+        planePos[2] - ray.posStart[2],
+    ];
+
+    const t = Vec3.dot( v, planeNorm ) / denom;
+
+    if( hitPos && t >= 0 ) ray.posAt( t, hitPos );
+
+    return ( t >= 0 )? t : null;
+}
+
 // #endregion
 
 // #region ACTIONS
 
-class LineRayAction{ 
-    hitRange = 0.3;
+// Object along a line segment
+class LineMoveAction{ 
+    hitRange = 0.3;         // Distance from segment to start dragging
 
-    startPos = new Vec3();
-    endPos   = new Vec3();
-    initPos  = new Vec3();
-    offset   = new Vec3();
-    pos      = new Vec3();
+    startPos = new Vec3();  // Segment start postion
+    endPos   = new Vec3();  // Segment end position
+    initPos  = new Vec3();  // Initial position on mouse down
+    offset   = new Vec3();  // Offset between init pos * obj pos
+    pos      = new Vec3();  // current pos
 
-    results  = new NearSegmentResult();
+    results  = new NearSegmentResult(); 
 
     constructor(){}
 
@@ -481,6 +495,8 @@ class LineRayAction{
         this.endPos.copy( props.endPos );
         return this;
     }
+
+    unload( mgt ){}
 
     onDown( mgt, e ){
         const ray = mgt.getRayFromEvent( e );
@@ -504,12 +520,12 @@ class LineRayAction{
 
             this.pos.fromAdd( this.results.segPosition, this.offset );
 
-            Debug.pnt.reset();
-            Debug.pnt.add( this.results.segPosition, 0xff00ff, 5 );
-            Debug.pnt.add( this.pos, 0xffffff, 5 );
+            // Debug.pnt.reset();
+            // Debug.pnt.add( this.results.segPosition, 0xff00ff, 5 );
+            // Debug.pnt.add( this.pos, 0xffffff, 5 );
 
-            const v = new Vec3().fromAdd( this.offset, this.initPos );
-            Debug.pnt.add( v, 0x0000ff, 5 );
+            // const v = new Vec3().fromAdd( this.offset, this.initPos );
+            // Debug.pnt.add( v, 0x0000ff, 5 );
 
             mgt.setObjectPos( this.pos );
             return true;
@@ -521,28 +537,80 @@ class LineRayAction{
     onUp( mgt, e ){ return true; }
 }
 
-// https://github.com/sketchpunklabs/gizmos/blob/main/src/util/MouseHandlers.ts
-// https://github.com/sketchpunklabs/gizmos/blob/main/src/actions/LineMovement.ts
+// Move object along a plane
+class PlaneMoveAction{
+    hitRange    = 3;
+    pos         = new Vec3();
+    fwdDir      = new Vec3( 0, 0, 1 );
+    upDir       = new Vec3( 0, 1, 0 );
+    origin      = new Vec3( 0, 0, 0 );
+    constructor(){}
+
+    init( props ){
+        this.fwdDir.copy( props.fwdDir );
+        this.upDir.copy( props.upDir );
+        this.origin.copy( props.origin );
+        return this;
+    }
+
+    unload( mgt ){}
+
+    onDown( mgt, e ){
+        const ray = mgt.getRayFromEvent( e );
+        const v   = new Vec3();
+        
+        if( intersectPlane( ray, this.origin, this.fwdDir, v ) ){
+            // Debug.pnt.reset();
+            // Debug.ln.reset();
+            
+            // Debug.pnt.add( v, 0x00ff00, 4  );
+            // Debug.ln.add( this.origin, this.origin.clone().scaleThenAdd( 4, this.fwdDir ), 0x00ff00 );
+            // console.log( Vec3.dist( v, this.origin ) )
+
+            if( Vec3.dist( v, this.origin ) <= this.hitRange ){
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    onMove( mgt, e ){
+        const ray = mgt.getRayFromEvent( e );
+        if( intersectPlane( ray, this.origin, this.fwdDir, this.pos ) ){
+            mgt.setObjectPos( this.pos );
+            return true;
+        }
+        return false;
+    }
+
+    onUp( mgt, e ){ 
+        this.origin.copy( this.pos );
+        return true;
+    }
+}
+
 // https://github.com/sketchpunklabs/gizmos/blob/main/src/actions/PlaneMovement.ts
 // https://github.com/sketchpunklabs/gizmos/blob/main/src/gizmos/RotationGizmoV2.ts
-// https://github.com/sketchpunklabs/gizmos/blob/main/src/gizmos/TranslateGizmo.ts
 
 // #endregion 
 
-// #region PREVIEWS
+// #region PREVIEWS / RENDERERS
 
-// https://github.com/sketchpunklabs/gizmos/blob/main/src/actions/LineMovementRender.ts
-// https://github.com/sketchpunklabs/gizmos/blob/main/src/actions/AngleMovementRender.ts
-// https://github.com/sketchpunklabs/gizmos/blob/main/src/render/AngleViewMaterial.ts
-// https://github.com/sketchpunk/tmp_proto/blob/main/poly3deditor/index.html#L1107
-
-class LineRayPreview{
+// Visualize Line Move Action
+class LineMovePreview{
     action = null;
     constructor(){}
 
     init( mgt, action ){
         this.action = action;
         return this;
+    }
+
+    dispose( mgt ){
+        mgt.dynPoints.reset();
+        mgt.dynLines.reset();
+        return true;
     }
 
     render( mgt ){
@@ -555,6 +623,217 @@ class LineRayPreview{
         if( mgt.dragging ) pnt.add( act.initPos, 0x00ffff );
 
         ln.add( act.startPos, act.endPos, 0x00ff00, 0xff0000 );
+    }
+}
+
+// Visualize Plane Move Action
+class PlaneMovePreview{
+    mesh    = null;
+    action  = null;
+    constructor(){}
+
+    init( mgt, action ){
+        this.action = action;
+
+        // Add mesh to the scene if not available
+        if( !this.mesh ){
+            this.mesh = CircleGridMaterial.createMesh();
+            mgt.scene.add( this.mesh );
+        }
+
+        // Circle Grid mesh is on the XZ Plane
+        // To properly use the Fwd and Up Direction from
+        // action will need to fix the initial orientation
+        // by applying a fix of 90 deg rotation on the X-Axis
+        const fix = new Quat().fromAxisAngle( [1,0,0], Math.PI * 0.5 );
+        const q   = new Quat()
+            .fromLook( action.fwdDir, action.upDir )
+            .mul( fix )
+            .norm();
+
+        this.mesh.quaternion.fromArray( q );
+        this.mesh.position.fromArray( action.origin );
+        this.mesh.visible = true;
+
+        // Debug.ln.add( action.origin, action.origin.clone().scaleThenAdd( 4, action.fwdDir ), 0x00ff00 );
+
+        return this;
+    }
+
+    dispose( mgt ){
+        // TODO - Adding and removing the preview mesh
+        // when switching actions might not be the best
+        // way to handle it. Depending on the App, cacheing
+        // the object is a good idea.
+        if( this.mesh ){
+            mgt.scene.remove( this.mesh );
+            this.mesh.geometry.dispose();
+            this.mesh = null;
+        }
+        return true;
+    }
+
+    render( mgt ){
+        const act = this.action;
+        const ln  = mgt.dynLines.reset();
+
+        if( mgt.dragging ){
+            ln.add( act.origin, act.pos, 0x000000 );
+        }else{
+            this.mesh.position.fromArray( act.origin );
+        }   
+    }
+}
+
+// Render a special grid onto a quad
+class CircleGridMaterial extends THREE.RawShaderMaterial{
+    constructor(){
+        super();
+
+        this.glslVersion        = THREE.GLSL3;
+        this.side               = THREE.DoubleSide;
+        this.depthTest          = true;
+        this.transparent 	    = true;
+        this.alphaToCoverage    = true;
+
+        this.uniforms           = {
+            oRadius     : { value: 0.49 },
+            iRadius     : { value: 0.47 },
+            gridSize    : { value: 0.1 },
+            lineSize    : { value: 0.1 },
+            color       : { value: new THREE.Color( '#202020' ) },
+        };
+
+        this.vertexShader = `
+        in	vec3    position;
+        in  vec3    normal;
+        in	vec2    uv;
+        
+        // uniform highp vec3 cameraPosition;
+
+        uniform mat4  modelMatrix;
+        uniform mat4  viewMatrix;
+        uniform mat4  projectionMatrix;
+
+        out vec3 fragLPos;
+        out vec3 fragSPos;
+
+        // ############################################################
+
+        vec3 decomposeScaleFromMat4( mat4 m ){
+            return vec3(
+                length( vec3( m[0][0], m[0][1], m[0][2] ) ),
+                length( vec3( m[1][0], m[1][1], m[1][2] ) ),
+                length( vec3( m[2][0], m[2][1], m[2][2] ) )
+            );
+        }
+
+        // ############################################################
+
+        void main(){
+            vec4 wPos       = modelMatrix * vec4( position, 1.0 );
+            
+            fragLPos        = position.xyz;
+            fragSPos        = position.xyz * decomposeScaleFromMat4( modelMatrix );
+
+            gl_Position     = projectionMatrix * viewMatrix * wPos;
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        in vec3 fragLPos;
+        in vec3 fragSPos;
+        out vec4 outColor;
+
+        uniform float oRadius;
+        uniform float iRadius;
+        uniform float gridSize;
+        uniform float lineSize;
+        uniform vec3  color;
+
+        // #####################################################################
+
+        float circle( float radius, float len, float dxdy ){
+            // float dxdy = fwidth( len );
+            return 1.0 - smoothstep( radius-dxdy, radius+dxdy, len );
+        }
+
+        float ring( float oRadius, float iRadius, float len, float dxdy ){
+            // float dxdy   = fwidth( len );
+            float omask  = smoothstep( oRadius-dxdy, oRadius+dxdy, len );
+            float imask  = smoothstep( iRadius-dxdy, iRadius+dxdy, len );
+            return imask - omask;
+        }
+
+        // https://bgolus.medium.com/the-best-darn-grid-shader-yet-727f9278b9d8
+        // https://www.shadertoy.com/view/mdVfWw
+        float pristineGrid( vec2 uv, vec2 lineWidth ){
+            vec2 ddx         = dFdx( uv );
+            vec2 ddy         = dFdy( uv );
+            vec2 uvDeriv     = vec2(
+                length( vec2( ddx.x, ddy.x ) ), 
+                length( vec2( ddx.y, ddy.y ) )
+            );
+            
+            bvec2 invertLine = bvec2( lineWidth.x > 0.5, lineWidth.y > 0.5 );
+            
+            vec2 targetWidth = vec2(
+                invertLine.x ? 1.0 - lineWidth.x : lineWidth.x,
+                invertLine.y ? 1.0 - lineWidth.y : lineWidth.y
+            );
+
+            vec2 drawWidth = clamp( targetWidth, uvDeriv, vec2(0.5) );
+            vec2 lineAA    = uvDeriv * 1.5;
+            vec2 gridUV    = abs(fract(uv) * 2.0 - 1.0);
+            gridUV.x       = invertLine.x ? gridUV.x : 1.0 - gridUV.x;
+            gridUV.y       = invertLine.y ? gridUV.y : 1.0 - gridUV.y;
+            
+            vec2 grid2 = smoothstep(drawWidth + lineAA, drawWidth - lineAA, gridUV );
+            grid2     *= clamp( targetWidth / drawWidth, 0.0, 1.0 );
+            grid2      = mix(grid2, targetWidth, clamp( uvDeriv * 2.0 - 1.0, 0.0, 1.0 ) );
+            grid2.x    = invertLine.x ? 1.0 - grid2.x : grid2.x;
+            grid2.y    = invertLine.y ? 1.0 - grid2.y : grid2.y;
+            
+            return mix( grid2.x, 1.0, grid2.y );
+        }
+
+        // #####################################################################
+
+        void main(){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            float len  = length( fragLPos.xz );
+            float dxdy = fwidth( len );
+
+            float maskCircle = circle( 0.01, len, dxdy );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Grid Mask
+            float maskGrid  = pristineGrid( fragSPos.xz / gridSize, vec2( lineSize ) );
+            // outColor.rgb    = vec3( maskGrid );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Mask to cut the grid
+            float mRadius  = iRadius * 0.5 + oRadius * 0.5;
+            float maskCut  = 1.0 - step( mRadius, len );
+            // outColor.rgb   = vec3( maskCut );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Ring Mask
+            float maskRing = ring( oRadius, iRadius, len, dxdy );
+            // outColor.rgba  = vec4( maskRing );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            outColor.rgba  = vec4( max( maskCircle, max( maskRing, maskGrid * maskCut )) );
+            outColor.rgb  *= color;
+        }`;
+    }
+
+    static createMesh(){
+        const geo = new THREE.PlaneGeometry( 1, 1 );
+        geo.rotateX( -Math.PI * 0.5 );  // Plane normal points up
+        
+        const mesh = new THREE.Mesh( geo, new CircleGridMaterial() );
+        mesh.scale.setScalar( 6 );
+        return mesh;
     }
 }
 
@@ -886,6 +1165,17 @@ class Quat extends Array{
         this[ 1 ] = y;
         this[ 2 ] = z;
         this[ 3 ] = w;
+        return this;
+    }
+
+    /** Axis must be normlized, Angle in Radians  */
+    fromAxisAngle( axis, rad ){ 
+        const half = rad * 0.5;
+        const s    = Math.sin( half );
+        this[ 0 ]  = axis[ 0 ] * s;
+        this[ 1 ]  = axis[ 1 ] * s;
+        this[ 2 ]  = axis[ 2 ] * s;
+        this[ 3 ]  = Math.cos( half );
         return this;
     }
     // #endregion
