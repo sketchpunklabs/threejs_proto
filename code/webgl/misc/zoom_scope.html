@@ -3,92 +3,202 @@
 <body><script src="../../../import-map.js"></script><script type="module">
 // #region IMPORTS
 import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
-import facedCube           	from '@lib/meshes/FacedCube.js';
-// import { Pane }                 from '@tp/tweakpane/tweakpane-4.0.4.min.js';
-// import * as TweakpaneEssentials from '@tp/tweakpane/tweakpane-plugin-essentials-0.2.1.min.js';
+import facedCube           	    from '@lib/meshes/FacedCube.js';
+import screenQuad               from '@lib/meshes/ScreenQuad.js';
+import { Pane }                 from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+import * as TweakpaneEssentials from '@tp/tweakpane/tweakpane-plugin-essentials-0.2.1.min.js';
 // #endregion
+
+// TODO : Origin is at BOT-LEFT corner because of how the scissor, viewport & shaders work
+// This can get a lil error prone when you deal in mostly html pixel coordinates ( origin TOP-LEFT ). 
+// Work out conversion math that'll work in JS & GLSL.
 
 // #region MAIN
 let App   = useDarkScene( useThreeWebGL2() );
 let Debug = {};
-let Ref   = {};
+let Ref   = {
+    GlobalUbo      : null,
 
-// select square to zoom : https://codepen.io/forerunrun/pen/XWoZgjM
-// ViewPort : https://threejs.org/docs/?q=veca#api/en/cameras/PerspectiveCamera.setViewOffset
-// Crosshair Shader : https://codepen.io/driezis/pen/jOPzjLG
+    // ---------------------------------
+    // Pane State
+    fovScale    : 1,
+    zoom        : 1,
+    useRay      : false,
+    width       : 100,
+    height      : 60,
+
+    retMin      : 0.3,
+    retMax      : 0.8,
+    retThick    : 0.1,
+};
 
 window.addEventListener( 'load', async ()=>{
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	App.sphericalLook( 45, 20, 10 );
     Debug = await useVisualDebug( App );
 
+    Ref.GlobalUbo = new THREE.UniformsGroup();
+    Ref.GlobalUbo.setName( 'GlobalUbo' );
+    Ref.GlobalUbo.add( new THREE.Uniform( new THREE.Vector2( 0, 0 ) ) );    // Resolution
+    Ref.GlobalUbo.add( new THREE.Uniform( 0 ) );                            // EllapseTime
+
+    // NOTE: Save for later as a reference since 3JS hasn't updated docs about UniformsGroup
+    // Ref.GlobalUbo.add( new THREE.Uniform( new THREE.Color( 0x7c7c7c ) ) );  // Color
+    // Ref.GlobalUbo.add( new THREE.Uniform( camera.matrixWorldInverse ) );    // view matrix
+    // layout(std140) uniform GlobalUbo {
+    //     highp vec2 resolution;
+    //     highp float time;
+    //     // vec3 color;
+    //     // mat4 viewMatrix;
+    // } Global;
+    
+    // NOTE: Setting here is pointless when it needs render in the sub view & not the main one
+    // ZoomScopeView will update this UBO to match its view size in a hacky global way
+    Ref.GlobalUbo.uniforms[0].value.x = window.innerWidth;
+    Ref.GlobalUbo.uniforms[0].value.y = window.innerHeight
+
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Something to zoom in on
     const cube = facedCube();
     cube.position.set( 0, 0.5, 0 );
     App.scene.add( cube );
 
+    // Render a target of some kind
+    Ref.reticle = screenQuad( new ReticleMaterial() );
+    Ref.reticle.visible = false;
+    App.scene.add( Ref.reticle );
+
+    // Render a target of some kind
+    Ref.viewBorder = screenQuad( new PixelCoordMaterial(), 100, 1 );
+    Ref.viewBorder.material.uniforms.screenw.value = window.innerWidth;
+    Ref.viewBorder.material.uniforms.screenh.value = window.innerHeight;
+    // Ref.viewBorder.position.x = 100;
+    // Ref.viewBorder.position.y = 100;
+    App.scene.add( Ref.viewBorder );
+
+    // Main Object for rendering a small view over the main view
     Ref.scope = new ZoomScopeView( App.renderer, App.camera )
         .setSize( 100, 60 )
-        //.screenCenterPlacement()
-        .cornerPlacement()
+        .cornerPlacement() //.screenCenterPlacement()
     ;
-
-    console.log( Ref.scope );
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     App.createRenderLoop( null, onPostRender ).start();
     // App.renderLoop();
 
-    // const canvas = App.renderer.domElement;
-    // canvas.addEventListener( 'pointerdown', onPointerDown );
+    const c = App.renderer.domElement;
+    // c.addEventListener( 'pointerdown', onPointerDown );
+    c.addEventListener( 'pointermove', onPointerMove );
+
+    buildUI();
 });
 
+// NOTE : Subview needs to render AFTER the main render
 function onPreRender( dt, et ){}
 function onPostRender( dt, et ){
     Ref.scope.render( App.scene, App.camera );
 }
 
-function onPointerDown( e ){
- }
+// function onPointerDown( e ){
+//     const caster = getRaycasterFromEvent( e );
+    
+//     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//     // Debug
+//     // if( e.shiftKey ){
+//     //     const far      = App.camera.far;
+//     //     const startPos = caster.ray.origin.toArray();
+//     //     const endPos   = [
+//     //         startPos[0] + caster.ray.direction.x * far,
+//     //         startPos[1] + caster.ray.direction.y * far,
+//     //         startPos[2] + caster.ray.direction.z * far,
+//     //     ];
+
+//     //     Debug.ln.add( startPos, endPos, 0x00ffff );
+//     // }
+
+//     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//     Ref.scope.lookDir = caster.ray.direction;
+// }
 
 function onPointerMove( e ){
+    if( Ref.scope.useLook ){
+        const caster = getRaycasterFromEvent( e );
+        Ref.scope.lookDir = caster.ray.direction;
+    }
 }
 
-function onPointerUp( e ){}
-
-async function buildUI(){    
+async function buildUI(){
+    appendGithubLink( false );
+    
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     const p = new Pane(); 
-    // p.registerPlugin( TweakpaneEssentials );
+    p.registerPlugin( TweakpaneEssentials );
 
-    // p.on( 'change', e=>{
-    //     // console.log( e );
-    //     // console.log( e.target.label, e.value );
-    //     switch( e.target.key ){
-    //         case 'vol':
-    //             Ref.minVol = [-e.value, 0, -e.value ];
-    //             Ref.maxVol = [ e.value, e.value, e.value ];
-    //             break;
-    //         case 'mins'     : Ref.minSize = [ e.value, e.value, e.value ]; break;
-    //         case 'maxs'     : Ref.maxSize = [ e.value, e.value, e.value ]; break;
-    //         case 'depth'    : renderBounds(); break;
-    //     }
-    // });
+    p.on( 'change', e=>{
+        // console.log( e.target.label, e.value );
+        switch( e.target.key ){
+            case 'fovScale' : Ref.scope.scaleFov( e.value ); break;
+            case 'zoom' : Ref.scope.setZoom( e.value ); break;
+        }
+    });
     
-    // // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    // const f = p.addFolder({ title: 'World', expanded: true });
-    // f.addBinding( Ref, 'boxCnt', { min: 1, max: 100, step: 1, label: 'BoxCount' } );
-    // f.addBinding( Ref, 'seed', { min: 1, max: 1000, step: 1, label: 'RndSeed' } );
-    // f.addBinding( Ref, 'vol', { min: 1, max: 10, step: 1, label: 'Volume' } );
-    // f.addBinding( Ref, 'mins', { min: 0.1, max: 4, step: 0.1, label: 'Box Min' } );
-    // f.addBinding( Ref, 'maxs', { min: 0.1, max: 4, step: 0.1, label: 'Box Max' } );
-    // f.addButton({ title: 'Generate Boxes' }).on( 'click', generate );
-    // f.addButton({ title: 'Collision Pairs' }).on( 'click', renderCollisions );
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const f = p.addFolder({ title: 'Ways 2 Zoom', expanded: true });
+    f.addBinding( Ref, 'fovScale', { min: 0.01, max: 2, step: 0.01, label: 'FOV Scale' } );
+    f.addBinding( Ref, 'zoom', { min: 0.01, max: 2, step: 0.01, label: 'Zoom Prop' } );
 
-    // // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    // const f2 = p.addFolder({ title: 'Bounding Areas', expanded: true });
-    // f2.addBinding( Ref, 'maxDepth', { label:'MaxDepth' } );
-    // Ref.depthSlider = f2.addBinding( Ref, 'depth', { min: 0, max: 0, step:1, label: 'View Depth' } );
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const f2 = p.addFolder({ title: 'Mini Viewport', expanded: true });
+
+    f2.addBinding( Ref, 'width', { min: 60, max: 300, step: 5, label: 'Width' } ).on('change',e=>{
+        Ref.scope.setSize( Ref.width, Ref.height ).cornerPlacement();
+    });
+
+    f2.addBinding( Ref, 'height', { min: 60, max: 300, step: 5, label: 'Height' } ).on('change',e=>{
+        Ref.scope.setSize( Ref.width, Ref.height ).cornerPlacement();
+    });
+
+    f2.addBinding( Ref, 'useRay', {
+        view        : 'radiogrid',
+        groupName   : 'mode',
+        label       : 'Follow Mouse',
+        size        : [ 2, 1 ],
+        cells       : ( x, y ) =>({ title: ( x === 0 )? 'No':'Yes', value: ( x === 0 )? false:true }),
+    }).on( 'change', e => { Ref.scope.useLook = e.value; console.log( e.value ) });
+
+    f2.addBlade({
+        view  : 'buttongrid', size: [ 3, 3 ], label: 'Placement',
+        cells : ( x, y )=>({
+            title: [
+            ['NW', '', 'NE'],
+            ['',  '*', ''],
+            ['SW', '', 'SE'],
+            ][y][x],
+        })
+    }).on('click', e=>{
+        const x = e.index[1] * 3 + e.index[0]; // console.log(ev, x );
+        switch( x ){
+            case 0: return Ref.scope.cornerPlacement( 0 );
+            case 2: return Ref.scope.cornerPlacement( 1 );
+            case 8: return Ref.scope.cornerPlacement( 2 );
+            case 6: return Ref.scope.cornerPlacement( 3 );
+            case 4: return Ref.scope.screenCenterPlacement();
+        }
+    });
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const f3 = p.addFolder({ title: 'Reticle', expanded: true });
+    f3.addBinding( Ref, 'retMin', { min: 0, max: 1, step: 0.01, label: 'Min' } ).on('change',e=>{
+        Ref.reticle.material.uniforms.lnMin.value = e.value;
+    });
+
+    f3.addBinding( Ref, 'retMax', { min: 0, max: 1, step: 0.01, label: 'Max' } ).on('change',e=>{
+        Ref.reticle.material.uniforms.lnMax.value = e.value;
+    });
+
+    f3.addBinding( Ref, 'retThick', { min: 0, max: 1, step: 0.01, label: 'Thickness' } ).on('change',e=>{
+        Ref.reticle.material.uniforms.thick.value = e.value;
+    });
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     Ref.pane = p;
@@ -101,11 +211,14 @@ class ZoomScopeView{ // extends THREE.Mesh
     height      = 50;
     left        = 10;
     top         = 10;
-    // zoomDist    = 0;
 
     mainFOV     = 45;
+    innerFOV    = 0;
     camera      = null;
     renderer    = null;
+    
+    lookDir     = null;
+    useLook     = false;
 
     constructor( renderer, camera ){
         this.renderer = renderer;
@@ -115,14 +228,34 @@ class ZoomScopeView{ // extends THREE.Mesh
     // #endregion
 
     // #region SETTERS
+    scaleFov( v ){
+        this.camera.fov = this.innerFOV * v;
+        this.camera.updateProjectionMatrix();
+        return this;
+    }
+
+    setZoom( v ){
+        this.camera.zoom = v;
+        this.camera.updateProjectionMatrix();
+        return this;
+    }
+
     setSize( w, h ){
         this.width  = w;
         this.height = h;
 
         const screen       = this.renderer.getDrawingBufferSize( new THREE.Vector2() );
-        this.camera.fov    = this.mainFOV * ( this.height / screen.y  );
+        this.innerFOV      = this.mainFOV * ( this.height / screen.y  );
+        this.camera.fov    = this.innerFOV;
         this.camera.aspect = this.width / this.height; 
         this.camera.updateProjectionMatrix();
+
+        // TODO - HACKY !!!
+        Ref.GlobalUbo.uniforms[0].value.x = w;
+        Ref.GlobalUbo.uniforms[0].value.y = h;
+
+        Ref.viewBorder.material.uniforms.quadw.value = w + 6;
+        Ref.viewBorder.material.uniforms.quadh.value = h + 6;
 
         return this;
     }
@@ -139,23 +272,19 @@ class ZoomScopeView{ // extends THREE.Mesh
 
         switch( corner ){
             case 0: // TOP - LEFT
-                this.left = pad;
-                this.top  = screen.y - this.height - pad;
+                this.setPos( pad, screen.y - this.height - pad );
                 break;
 
             case 1:  // TOP - RIGHT
-                this.left = screen.x - this.width - pad;
-                this.top  = screen.y - this.height - pad;
+                this.setPos( screen.x - this.width - pad, screen.y - this.height - pad );
                 break;
 
             case 2:  // BOTTOM - RIGHT
-                this.left = screen.x - this.width - pad;
-                this.top  = pad;
+                this.setPos( screen.x - this.width - pad, pad );
                 break;
             
             case 3: // BOTTOM - LEFT
-                this.left = pad;
-                this.top  = pad;
+                this.setPos( pad, pad );
                 break;
         }
 
@@ -166,9 +295,22 @@ class ZoomScopeView{ // extends THREE.Mesh
         const dpr    = window.devicePixelRatio;
         const screen = this.renderer.getDrawingBufferSize( new THREE.Vector2() );
 
-        this.left    = Math.floor( x - this.width * 0.5 ) * dpr;
-        this.top     = Math.floor( y - this.height * 0.5 ) * dpr;
+        this.setPos(
+            Math.floor( x - this.width * 0.5 ) * dpr,
+            Math.floor( y - this.height * 0.5 ) * dpr,
+        );
+
         return this;
+    }
+
+    setPos( x, y ){
+        this.left = x;
+        this.top  = y;
+
+        // TODO - HACKY !!!
+        Ref.viewBorder.position.x = x - 3;
+        Ref.viewBorder.position.y = y - 3;
+        return;
     }
     // #endregion
     
@@ -177,10 +319,20 @@ class ZoomScopeView{ // extends THREE.Mesh
         const cam    = this.camera;
         const rend   = this.renderer;
 
+        Ref.reticle.visible = true;  // TODO - HACKY !!!
+        Ref.viewBorder.visible = false;
+
         // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         // Set camera
         cam.position.copy( camera.position );
-        cam.quaternion.copy( camera.quaternion );
+        
+        if( this.useLook && this.lookDir ){
+            const dir     = this.lookDir.clone().normalize();
+            const pntLook = camera.position.clone().add( dir );
+            cam.lookAt( pntLook );
+        }else{
+            cam.quaternion.copy( camera.quaternion );
+        }
 
         // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         // Set Renderer
@@ -202,6 +354,9 @@ class ZoomScopeView{ // extends THREE.Mesh
         // rend.autoClear = true;
         rend.setScissorTest( false );
         rend.setViewport( 0, 0, screen.x, screen.y );
+
+        Ref.reticle.visible = false; // TODO - HACKY !!!
+        Ref.viewBorder.visible = true;
     }
 
     // #region OLD BUT SAVE
@@ -233,8 +388,174 @@ class ZoomScopeView{ // extends THREE.Mesh
     // #endregion
 }
 
-// const clearMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, opacity: 1, transparent: true });
-// const clearGeometry = new THREE.PlaneGeometry(2, 2);  // Fullscreen quad
-// const clearMesh     = new THREE.Mesh(clearGeometry, clearMaterial);
+
+function getRaycasterFromEvent( e ){
+    // Get canvas size
+    const size = App.renderer.getSize( new THREE.Vector2() );
+
+    // Caster needs normalized device coordinates ( -1 to 1 )
+    const ndc = new THREE.Vector2(
+         ( e.layerX / size.x ) * 2 - 1,
+        -( e.layerY / size.y ) * 2 + 1,
+    );
+
+    // Create & Set Caster to project 2D Coord to 3D pos + direction
+    const caster = new THREE.Raycaster();
+    caster.setFromCamera( ndc, App.camera );
+    return caster;
+}
+
+
+// #region CUSTOM MATERIALS
+class ReticleMaterial extends THREE.RawShaderMaterial{
+    constructor(){
+        super();
+
+        this.name               = 'ReticleMaterial';
+        this.glslVersion        = THREE.GLSL3;
+        // this.side               = THREE.DoubleSide;
+        this.depthTest          = true;
+        this.transparent        = true;
+        // this.alphaToCoverage    = true;
+
+        this.uniformsGroups     = [ Ref.GlobalUbo ];
+        this.uniforms           = {
+            thick   : { value: 0.1 },
+            lnMin   : { value: 0.3 },
+            lnMax   : { value: 0.8 },
+        };
+
+        this.vertexShader = `
+        in	vec3    position;
+        in  vec3    normal;
+        in	vec2    uv;
+        
+        layout(std140) uniform GlobalUbo {
+            highp vec2  resolution;
+            highp float time;
+        } Global;
+
+        // uniform highp vec3 cameraPosition;
+        uniform mat4  modelMatrix;
+        uniform mat4  viewMatrix;
+        uniform mat4  projectionMatrix;
+
+        out vec3 fragLPos;
+        out vec2 fragUV;
+
+        // #####################################################################
+
+        void main(){
+            // vec4 sPos   = vec4( position.xy, 0.0, 1.0 );
+            // fragLPos    = sPos.xyz;
+            fragUV      = uv;
+            gl_Position = vec4( position.xy, 0.0, 1.0 );;
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        in vec2  fragUV;
+        out vec4 outColor;
+
+        layout(std140) uniform GlobalUbo {
+            highp vec2  resolution;
+            highp float time;
+        } Global;
+
+        uniform float oRadius;
+        uniform vec3  color;
+
+        uniform float thickness;
+        uniform float height;
+        uniform float offset;
+        uniform float border;
+
+        uniform float thick;
+        uniform float lnMin;
+        uniform float lnMax;
+
+        // #####################################################################
+
+        void main(){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            vec2 uv  = ( fragUV - vec2( 0.5 ) ) * 2.0;             // Center UV & Remap back to -1:1
+            uv.x    *= Global.resolution.x / Global.resolution.y;  // Apply screen ratio to x
+            vec2 fw  = fwidth( uv ); // Pixel derivitive
+            vec2 aUV = abs( uv );    // Do +- sides at the same time
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Anti-Alias Lines 
+            vec2 umask = smoothstep( thick+fw, thick-fw, aUV ); // Flipped Min-Max to Max-Min to avoid 1.0 - smoothstep
+            
+            // Flipped uv.xy because X effects Y and Y Effects X when it comes to this clipping
+            umask     *= step( lnMin, aUV.yx );          // Clip Bottom
+            umask     *= step( aUV.yx, vec2( lnMax ) );  // Clip Top
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Render Mask
+            float mask = max( umask.x, umask.y );
+            outColor   = vec4( mask );
+        }`;
+    }
+}
+
+
+class PixelCoordMaterial extends THREE.RawShaderMaterial{
+    constructor(){
+        super();
+
+        this.name               = 'PixelCoordMaterial';
+        this.glslVersion        = THREE.GLSL3;
+        // this.side               = THREE.DoubleSide;
+        this.depthTest          = true;
+        this.transparent        = true;
+        // this.alphaToCoverage    = true;
+
+        this.uniforms           = {
+            screenw   : { value: 0.1 },
+            screenh   : { value: 0.3 },
+            quadw     : { value: 200, },
+            quadh     : { value: 200, },
+            // useCenter : { value: 0, },
+            color     : { value: new THREE.Color( 0xffffff ) },
+        };
+
+        this.vertexShader = `
+        in vec3 position;
+
+        uniform mat4  modelMatrix;
+        uniform float screenw;
+        uniform float screenh;
+        uniform float quadw;
+        uniform float quadh;
+        // uniform int   useCenter;
+
+        // #####################################################################
+
+        void main(){
+            vec2 pos = position.xy + vec2(0.5, 0.5);
+
+            // Resize quad then position it to top-left corner of screen in pixel space
+            pos.x  = ( pos.x * quadw );
+            pos.y  = ( pos.y * quadh );
+            // pos.y += screenh - quadh;
+
+            // Use the models translation as the pixel coordinate to move it
+            pos.x += modelMatrix[3].x;
+            pos.y += modelMatrix[3].y;
+
+            // Convert to NDC Space, 0:1 to -1:1
+            pos.x = ( pos.x / screenw ) * 2.0 - 1.0;
+            pos.y = ( pos.y / screenh ) * 2.0 - 1.0;
+        
+            gl_Position = vec4( pos, 0.0, 1.0 );;
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        out     vec4 outColor;
+        uniform vec3 color;
+        void main(){ outColor = vec4( color, 1.0 ); }`;
+    }
+}
+// #endregion
 
 </script></body></html>
