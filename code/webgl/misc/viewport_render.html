@@ -1,0 +1,863 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; background-color:rgb(39, 0, 0); }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import facedCube      from '@lib/meshes/FacedCube.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 20, 6 );
+    Debug = await useVisualDebug( App );
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const csize = App.getSize();
+    Ref.view = new ViewportRenderer({
+        width     : 150,
+        height    : 100,
+        placement : ViewPlacement.TopRight,
+        padding   : 10,
+    });
+
+    Ref.view.setCanvasSize( csize );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const vsize = Ref.view.getSize();
+    
+    // testStencilMask()
+
+    const cube = facedCube();
+    cube.name = 'cube';
+    cube.position.set( 0, 0.5, 0 );
+    App.scene.add( cube );
+
+    Ref.reticle = screenQuad( new ReticleMaterial({
+        hMin    : 0,
+        hMax    : 1,
+        vMin    : 0,
+        vMax    : 1,
+        useBox  : 0,
+        vPad    : 0.02,
+        hPad    : 0.02,
+
+        rColor  : new THREE.Color( '#c0c0c0' ),
+
+        padding : 3,
+        radius  : 7,
+    }) );
+
+    Ref.reticle.material.setScreenSize( vsize );
+    Ref.reticle.visible = false;
+    App.scene.add( Ref.reticle );
+
+    Ref.stencil = screenStencilQuad( new RoundedSceneStencilMaterial( {padding:0, radius:10}) );
+    Ref.stencil.material.setScreenSize( vsize );
+    Ref.stencil.name = 'Stencil';
+    App.scene.add( Ref.stencil );
+
+    Ref.view.setZoom( 7 );
+
+    // const test = screenQuad( new ScreenInnerRoundedBorderMaterial() );
+    // test.material.setScreenSize( size );
+    // App.scene.add( test );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.createRenderLoop( onPreRender, onPostRender ).start();
+    // App.renderLoop();
+});
+
+function onPreRender( dt, et ){
+    // Ref.view.render( App.scene, App.camera, App.renderer );
+    // App.renderer.clear();
+    // App.renderer.clearStencil();
+}
+
+function onPostRender( dt, et ){
+    Ref.reticle.visible = true;
+    
+    Ref.view.render( App.scene, App.camera, App.renderer );
+    
+    Ref.reticle.visible = false;
+
+    // App.renderer.clear();
+    // App.renderer.clearStencil();
+}
+
+function testStencilMask(){
+    const size = App.getSize();
+
+    App.renderer.setClearColor( 0x000000, 0 ); // Transparent
+
+    const quad = screenStencilQuad( new RoundedSceneStencilMaterial( {padding:20, radius:10}) );
+    quad.material.setScreenSize( size );
+    quad.name = 'Stencil';
+    App.scene.add( quad );
+
+    const bgQuad = screenQuad( new ScreenClearMaterial() );
+    bgQuad.renderOrder = -1; 
+    App.scene.add( bgQuad );
+}
+
+App.renderer.domElement.addEventListener( 'pointermove', e=>{
+    const rect = App.renderer.domElement.getBoundingClientRect();
+    const pos  = [ e.clientX - rect.left, e.clientY - rect.top ];
+
+    Ref.view.setPointer( pos );
+});
+
+// #endregion
+
+// #region RENDERER
+
+const ViewPlacement = {
+    None        : 0,    // Disable Auto Placement, manually set top & left coordinate
+    Center      : 1,
+    TopLeft     : 2,
+    TopRight    : 3,
+    BottomRight : 4,
+    BottomLeft  : 5,
+};
+
+class ViewportRenderer{
+    // #region MAIN
+    #width          = 200;          // Size of the viewport
+    #height         = 200;
+    #left           = 0;            // Top-Left cordinate for the view port
+    #top            = 0;
+    #canvasWidth    = 0;            // Store canvas size to avoid keeping reference to renderer
+    #canvasHeight   = 0;
+    #padding        = 0;            // How much padded space to add to placement
+    #placement      = ViewPlacement.TopLeft;
+    #zoomScale      = 1;            // Scale the zoom value
+    #initZoom       = 1;            // Starting zoom value from main camera
+    #camera         = undefined;    // Internal camer for viewport rendering
+    #ndcPointer     = undefined;    // Used to position camera when following with orthographic camera
+    
+    constructor( props ){
+        if( props?.width && props?.height ){
+            this.#width  = props.width;
+            this.#height = props.height;
+        }
+
+        if( props?.padding ) this.#padding   = props.padding;
+        if( props?.zoom )    this.#zoomScale = props.zoom;
+        if( props?.placement !== undefined ) this.#placement = props.placement;
+
+        this.#updateCameraMatrix();
+        this.#updatePlacement();
+    }
+    // #endregion
+
+    // #region SETTERS
+    setZoom( v ){
+        this.#zoomScale = v;
+        this.#updateCameraMatrix();
+        return this;
+    }
+
+    // set the width & height of the viewport
+    setSize( w, h ){
+        this.#width  = w;
+        this.#height = h;
+        this.#updateCameraMatrix();
+        this.#updatePlacement();
+        return this;
+    }
+
+    setCanvasSize( v ){
+        console.log( 'setCanvas', v );
+        this.#canvasWidth  = Math.round( v[0] );
+        this.#canvasHeight = Math.round( v[1] );
+        this.#updatePlacement();
+        return this;
+    }
+
+    setPlacement( v ){
+        this.#placement = v;
+        this.#updatePlacement();
+        return this;
+    }
+
+    // Top-Left pixe; cordinate for viewport
+    setPosition( x, y ){
+        this.#top  = y;
+        this.#left = x;
+        return this;
+    }
+
+    // Pixel padding away from canvas edges when using placement
+    setPadding( v ){
+        this.#padding = v;
+        this.#updatePlacement();
+        return this;
+    }
+
+    // Normalized Device Coordinate space of the mouse position
+    setNdcPointer( v ){
+        this.#ndcPointer = v;
+        return this;        
+    }
+
+    // Use mouse position to set NDC Pointer
+    setPointer( v ){
+        // Convert mouse position to normalized device coordinates ( -1 to 1 )
+        this.#ndcPointer = ( v )? new THREE.Vector2(
+            ( v[0] / this.#canvasWidth )  * 2 - 1,
+           -( v[1] / this.#canvasHeight ) * 2 + 1,
+        ) : undefined;
+
+        return this;
+    }
+    // #endregion
+
+    // #region GETTERS
+
+    getSize(){ return [ this.#width, this.#height ]; }
+
+    getPosition(){ return [ this.#left, this.#top ]; }
+
+    // #endregion
+
+    // #region MANAGE INTERNAL CAMERA
+
+    // Clone & prepare internal camera
+    #initCamera( cam ){
+        switch( cam.type ){
+            case 'PerspectiveCamera'    : this.#camera = new THREE.PerspectiveCamera();  break;
+            case 'OrthographicCamera'   : this.#camera = new THREE.OrthographicCamera(); break;
+        }
+
+        this.#initZoom = cam.zoom;
+        this.#updateCameraMatrix();
+    }
+
+    // Update camera with sizes & regen its projection matrix
+    #updateCameraMatrix(){
+        if( this.#camera instanceof THREE.PerspectiveCamera ){
+            this.#camera.aspect = this.#width / this.#height;
+            this.#camera.zoom   = this.#initZoom * this.#zoomScale;
+
+        }else if( this.#camera instanceof THREE.OrthographicCamera ){
+            this.#camera.left   = this.#width  / -0.6; 
+            this.#camera.right  = this.#width  /  0.6;
+            this.#camera.top    = this.#height /  0.6; 
+            this.#camera.bottom = this.#height / -0.6;
+            this.#camera.zoom   = this.#initZoom * this.#zoomScale;
+        }
+
+        this.#camera?.updateProjectionMatrix();
+    }
+
+    // If not none, update the left & top coordinates of the view
+    #updatePlacement(){
+        const pad = this.#padding;
+        
+        switch( this.#placement ){
+            case ViewPlacement.TopLeft      : return this.setPosition( pad, pad );
+            case ViewPlacement.TopRight     : return this.setPosition( this.#canvasWidth - this.#width - pad, pad );
+            case ViewPlacement.BottomRight  : 
+                return this.setPosition( 
+                    this.#canvasWidth  - this.#width  - pad, 
+                    this.#canvasHeight - this.#height - pad,
+                );
+            case ViewPlacement.BottomLeft   : return this.setPosition( pad, this.#canvasHeight - this.#height - pad );
+            case ViewPlacement.Center       :
+                return this.setPosition( 
+                    Math.round( this.#canvasWidth  * 0.5 - this.#width  * 0.5 ),
+                    Math.round( this.#canvasHeight * 0.5 - this.#height * 0.5 ),
+                );
+        }
+
+        return this;
+    }
+
+    // Compute the 3D position of the 2D mouse in the camera's near plane
+    #getNearPlanePosition( ndc, cam ){
+        // Z = -1 to project onto near plane, use 1 for far plane
+        const pos = new THREE.Vector3( ndc.x, ndc.y, -1 );
+        pos.unproject( cam );
+        return pos;
+    }
+
+    // Compute the 3D position of the 2D mouse in the camera's near plane
+    #getFarPlanePosition( ndc, cam ){
+        // Z = -1 to project onto near plane, use 1 for far plane
+        const pos = new THREE.Vector3( ndc.x, ndc.y, 1 );
+        pos.unproject( cam );
+        return pos;
+    }
+    // #endregion
+
+    // #region RENDERING
+    render( scene, mainCamera, renderer ){
+        // const screen = renderer.getDrawingBufferSize( new Vector2() );
+        const screen = renderer.getSize( new THREE.Vector2() );
+
+        // Convert between TOP-LEFT origin to BOTTOM-LEFT origin
+        const invTop = screen.y - this.#top - this.#height;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // PREPARE CAMERA
+
+        // NOTES: Reason for late initializing of inner camera
+        // Fiber/React have delays in execution. During initialization of react com
+        // the camera can be undefined at times. Then there is the usecase of
+        // switching the default to orthographic which results in having perspective
+        // in the initialization then ortho during render.
+        if( !this.#camera || this.#camera.type !== mainCamera.type ){
+            this.#initCamera( mainCamera );
+        }
+
+        // To follow under the mouse with orthographic, need mouse NDC 
+        // to reposition the camera at that relative & coplanar to the main camera
+        if( this.#camera.type === 'OrthographicCamera' && this.#ndcPointer  ){
+            this.#camera.position.copy( 
+                this.#getNearPlanePosition( this.#ndcPointer, mainCamera )
+            );
+        }else{
+            this.#camera.position.copy( mainCamera.position );
+        }
+
+        if(  this.#camera.type === 'PerspectiveCamera' && this.#ndcPointer ){
+            // Reorient the camera to point toward the raycaster direction
+            // target_point = camera.pos + norm( ray.dir ) 
+            const dirLook  = this.#getFarPlanePosition( this.#ndcPointer, mainCamera )
+                .sub( mainCamera.position )
+                .normalize();
+
+            const pntLook = mainCamera.position.clone().add( dirLook );
+            this.#camera.lookAt( pntLook );
+        }else{
+            this.#camera.quaternion.copy( mainCamera.quaternion );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Set Renderer
+        renderer.setScissorTest( true );
+        renderer.setScissor(  this.#left, invTop, this.#width, this.#height );
+        renderer.setViewport( this.#left, invTop, this.#width, this.#height );
+        renderer.render( scene, this.#camera );
+        // renderer.render( scene, mainCamera );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Cleanup
+        renderer.setScissorTest( false );
+        renderer.setViewport( 0, 0, screen.x, screen.y );
+    }
+    // #endregion
+}
+
+// #endregion
+
+// #region SHAPES
+
+function screenQuad( mat, order=100, size=2 ){
+    const mesh          = new THREE.Mesh( new THREE.PlaneGeometry(size, size, 1), mat );
+    mesh.renderOrder    = order;  // Usually set it last for rendering
+    mesh.frustumCulled  = false;  // Easily gets culled from frustum tests, disable it
+    return mesh;
+}
+
+function screenStencilQuad( mat, order=-100 ){
+    const mesh          = new THREE.Mesh( new THREE.PlaneGeometry( 2, 2, 1 ), mat );
+    mesh.renderOrder    = order;  // Usually set it last for rendering
+    mesh.frustumCulled  = false;  // Easily gets culled from frustum tests, disable it
+
+    mesh.onBeforeRender = ( renderer, scene, camera, geometry, material, group )=>{
+        const ctx = renderer.getContext();
+        
+        // Clear stencil buffer
+        ctx.clear(ctx.STENCIL_BUFFER_BIT); // ctx.clearStencil(0);
+
+        // Enable stencil test
+        ctx.enable( ctx.STENCIL_TEST );
+
+        // Always write 1 to the stencil buffer for this pass
+        ctx.stencilFunc( ctx.ALWAYS, 1, 0xff );  // Always pass and write 1 into the stencil buffer
+        ctx.stencilOp( ctx.REPLACE, ctx.REPLACE, ctx.REPLACE );  // Replace stencil value with 1
+
+        // Disable color and depth writing, we only care about the stencil buffer here
+        ctx.colorMask( false, false, false, false );
+        ctx.depthMask( false );  // Disable depth writing
+        ctx.stencilMask( 0xff );  // Affect all stencil bits
+    };
+
+    mesh.onAfterRender = ( renderer, scene, camera, geometry, material, group )=>{
+        const ctx = renderer.getContext();
+
+        // Restore color and depth writing
+        ctx.colorMask( true, true, true, true );  
+        ctx.depthMask( true );  // Re-enable depth writing
+
+        // Set the stencil function to only render where the stencil value is 1
+        ctx.stencilFunc( ctx.EQUAL, 1, 0xff );          // Only render where stencil value is 1
+        ctx.stencilOp( ctx.KEEP, ctx.KEEP, ctx.KEEP );  // Keep stencil values
+
+        // Optional: mask stencil buffer to stop affecting certain bits
+        // ctx.stencilMask(0xff);  // All stencil bits are active again
+    };
+
+    return mesh;
+}
+
+// #endregion
+
+// #region MATERIALS
+
+class ReticleMaterial extends THREE.RawShaderMaterial{
+    constructor( props={} ){
+        super();
+
+        // Merge custom props with default options
+        const opts = Object.assign({
+            // Reticle
+            useBox  : 1.0,
+            hMin    : 0.3,
+            hMax    : 0.9,
+            hPad    : 0.1,
+            vMin    : 0.3,
+            vMax    : 0.9,
+            vPad    : 0.1,
+            rColor  : new THREE.Color( '#ffffff' ),
+            // Border
+            padding : 10,
+            radius  : 30,
+            bColor  : new THREE.Color( '#c0c0c0' ),
+
+            depth   : false,
+        }, props)
+
+        this.name               = 'ReticleMaterial';
+        this.glslVersion        = THREE.GLSL3;
+        this.depthTest          = opts.depth;
+        this.transparent        = true;
+        
+        this.uniforms           = {
+            screenWidth  : { value: 0 },
+            screenHeight : { value: 0 },
+
+            // Reticle
+            useBox       : { value: opts.useBox },
+            hMin         : { value: opts.hMin },
+            hMax         : { value: opts.hMax },
+            hPad         : { value: opts.hPad },
+            vMin         : { value: opts.vMin },
+            vMax         : { value: opts.vMax },
+            vPad         : { value: opts.vPad },
+            rColor       : { value: opts.rColor },
+
+            // Border
+            padding      : { value: opts.padding },
+            radius       : { value: opts.radius },
+            bColor       : { value: opts.bColor },
+        };
+
+        this.vertexShader = `
+        in	vec3    position;
+        in  vec3    normal;
+        in	vec2    uv;
+
+        uniform mat4  modelMatrix;
+        uniform mat4  viewMatrix;
+        uniform mat4  projectionMatrix;
+
+        out vec3 fragLPos;
+        out vec2 fragUV;
+
+        // #####################################################################
+
+        void main(){
+            fragUV      = uv;
+            gl_Position = vec4( position.xy, 0.0, 1.0 );
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        in vec2  fragUV;
+        out vec4 outColor;
+
+        uniform float screenWidth;
+        uniform float screenHeight;
+
+        uniform float useBox;
+        uniform float hMin;
+        uniform float hMax;
+        uniform float hPad;
+        uniform float vMin;
+        uniform float vMax;
+        uniform float vPad;
+        uniform vec3 rColor;
+
+        uniform float padding;
+        uniform float radius;
+        uniform vec3 bColor;
+
+        // #####################################################################
+
+        float screenReticle( vec2 res ){
+            // Compute various spaces of UV
+            vec2 cuv  = ( fragUV - vec2( 0.5 ) ) * 2.0;   // Center UV & Remap back to -1:1
+            vec2 acuv = abs( cuv );
+            vec2 suv  = cuv * vec2( res.x / res.y, 1.0 ); // Apply screen ratio
+            vec2 asuv = abs( suv );
+
+            vec2 fw   = fwidth( asuv ); // Anti-aliasing
+
+            // Full Bar Masks using screen fixed UV
+            float hMask = 1.0 - smoothstep( hPad-fw.x, hPad+fw.x, asuv.y );
+            float vMask = 1.0 - smoothstep( vPad-fw.y, vPad+fw.y, asuv.x );
+
+            // Clip Bars with min & max length limits
+            float ux     = useBox > 0.5? asuv.x : acuv.x;       // Use fixed or unfixed UV for clip control
+            float hClip  = step( hMin, ux ) * step( ux, hMax );            
+            float vClip  = step( vMin, acuv.y ) * step( acuv.y, vMax );
+
+            // Final Mask
+            return max( vMask * vClip, hMask * hClip );
+        }
+
+        float innerRounding( vec2 px, vec2 res, float borderWidth, float radius ){
+            // Calculate position relative to rectangle edges
+            vec2 halfRes        = res * 0.5;
+            vec2 distFromCenter = abs( px - halfRes );
+            
+            // Calculate inner rounded rectangle
+            vec2 innerCorner    = halfRes - vec2( radius + borderWidth );
+            vec2 innerDist      = max( distFromCenter - innerCorner, 0.0 );
+            float mask          = max( 0.0, min( 1.0, length( innerDist ) - radius )); // Clamp
+
+            return mask;
+        }
+
+        void main(){
+            // Setup Data
+            vec2 res    = vec2( screenWidth, screenHeight );
+            vec2 px     = res * fragUV; // gl_FragCoord.xy; can't use gl_FragCoord in mini view, using actual canvas pixel coord
+
+            // Calc Masks
+            float rMask = screenReticle( res );
+            float bMask = innerRounding( px, res, padding, radius );
+
+            // Colorize + Mix Masks
+            vec3 color = mix( rMask * rColor, bMask * bColor, bMask );            
+            outColor   = vec4( color, max( bMask, rMask ) );
+        }`;
+    }
+
+    setScreenSize( v ){
+        this.uniforms.screenWidth.value  = v[0];
+        this.uniforms.screenHeight.value = v[1];
+        return this;
+    }
+}
+
+
+class ScreenInnerRoundedBorderMaterial extends THREE.RawShaderMaterial{
+    constructor( props={} ){
+        super();
+
+        // Merge custom props with default options
+        const opts = Object.assign({
+            padding : 10,
+            radius  : 30,
+            color   : new THREE.Color( '#505050' ),
+            depth   : false,
+        }, props)
+
+        this.name               = 'ScreenInnerRoundedBorderMaterial';
+        this.glslVersion        = THREE.GLSL3;
+        this.depthTest          = opts.depth;
+        this.transparent        = true;
+        
+        this.uniforms           = {
+            padding      : { value: opts.padding },
+            radius       : { value: opts.radius },
+            color        : { value: opts.color },
+            screenWidth  : { value: 0 },
+            screenHeight : { value: 0 },
+        };
+
+        this.vertexShader = `
+        in	vec3    position;
+        in  vec3    normal;
+        in	vec2    uv;
+
+        uniform mat4  modelMatrix;
+        uniform mat4  viewMatrix;
+        uniform mat4  projectionMatrix;
+
+        out vec3 fragLPos;
+        out vec2 fragUV;
+
+        // #####################################################################
+
+        void main(){
+            fragUV      = uv;
+            gl_Position = vec4( position.xy, 0.0, 1.0 );
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        in vec2  fragUV;
+        out vec4 outColor;
+
+        uniform float screenWidth;
+        uniform float screenHeight;
+
+        uniform float padding;
+        uniform float radius;
+        uniform vec3 color;
+
+        // #####################################################################
+
+        float innerRounding(vec2 px, vec2 res, float borderWidth, float radius) {
+            // Calculate position relative to rectangle edges
+            vec2 halfRes        = res * 0.5;
+            vec2 distFromCenter = abs( px - halfRes );
+            
+            // Calculate inner rounded rectangle
+            vec2 innerCorner    = halfRes - vec2( radius + borderWidth );
+            vec2 innerDist      = max( distFromCenter - innerCorner, 0.0 );
+            float mask          = max( 0.0, min( 1.0, length( innerDist ) - radius )); // Clamp
+
+            return mask;
+        }
+
+        float roundedOutline(vec2 px, vec2 res, float borderWidth, float radius) {
+            // Calculate position relative to rectangle edges
+            vec2 halfRes = res * 0.5;
+            vec2 distFromCenter = abs(px - halfRes);
+            
+            // Calculate outer rounded rectangle
+            vec2 outerCorner = halfRes - vec2(radius);
+            vec2 outerDist = max(distFromCenter - outerCorner, 0.0);
+            float outerValue = length(outerDist) - radius;
+            
+            // Calculate inner rounded rectangle
+            vec2 innerCorner = halfRes - vec2(radius + borderWidth);
+            vec2 innerDist = max(distFromCenter - innerCorner, 0.0);
+            float innerValue = length(innerDist) - radius;
+            
+            // If:
+            // - outerValue < 0 AND innerValue > 0: we're in the border (return 1)
+            // - otherwise: not in border (return 0)
+            return (outerValue < 0.0 && innerValue > 0.0) ? 1.0 : 0.0;
+        }
+
+        void main(){
+            vec2 res      = vec2( screenWidth, screenHeight );
+            vec2 px       = gl_FragCoord.xy;
+            float mask    = innerRounding( px, res, padding, radius );
+            outColor      = vec4( vec3( mask ) * color, mask );
+        }`;
+    }
+
+    setScreenSize( v ){
+        this.uniforms.screenWidth.value  = v[0];
+        this.uniforms.screenHeight.value = v[1];
+        return this;
+    }
+}
+
+
+// Not used BUT KEEP
+class ScreenBorderMaterial extends THREE.RawShaderMaterial{
+    constructor( props={} ){
+        super();
+
+        // Merge custom props with default options
+        const opts = Object.assign({
+            padding : 20,
+            color   : new THREE.Color( '#505050' ),
+            depth   : false,
+        }, props)
+
+        this.name               = 'ScreenBorderMaterial';
+        this.glslVersion        = THREE.GLSL3;
+        this.depthTest          = opts.depth;
+        this.transparent        = true;
+        this.side               = THREE.DoubleSide;
+        
+        this.uniforms           = {
+            padding      : { value: opts.padding },
+            color        : { value: opts.color },
+            screenWidth  : { value: 0 },
+            screenHeight : { value: 0 },
+        };
+
+        this.vertexShader = `
+        in	vec3    position;
+        in  vec3    normal;
+        in	vec2    uv;
+
+        uniform mat4  modelMatrix;
+        uniform mat4  viewMatrix;
+        uniform mat4  projectionMatrix;
+
+        out vec3 fragLPos;
+        out vec2 fragUV;
+
+        // #####################################################################
+
+        void main(){
+            fragUV      = uv;
+            gl_Position = vec4( position.xy, 0.0, 1.0 );
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        in vec2  fragUV;
+        out vec4 outColor;
+
+        uniform float screenWidth;
+        uniform float screenHeight;
+        uniform float padding;
+        uniform vec3  color;
+
+        // #####################################################################
+
+        float borderMask( vec2 px, vec2 res, float size ){
+            vec2 dist       = abs( px - res * 0.5 );
+            vec2 borderDist = res * 0.5 - dist;
+            float mx        = step( size, borderDist.x );
+            float my        = step( size, borderDist.y );
+            float mask      = 1.0 - min( mx, my ); 
+            return mask;
+        }
+
+        void main(){
+            vec2 res    = vec2( screenWidth, screenHeight );
+            vec2 px     = gl_FragCoord.xy;
+            float mask  = borderMask( px, res, padding );
+
+            outColor = vec4( color * mask, mask);
+        }`;
+    }
+
+    setScreenSize( v ){
+        this.uniforms.screenWidth.value  = v[0];
+        this.uniforms.screenHeight.value = v[1];
+        return this;
+    }
+}
+
+
+class RoundedSceneStencilMaterial extends THREE.RawShaderMaterial{
+    constructor( props={} ){
+        super();
+
+        // Merge custom props with default options
+        const opts = Object.assign({
+            padding : 50,
+            radius  : 20,
+            depth   : false,
+            // color       : { value: new THREE.Color( '#202020' ) },
+        }, props)
+
+        this.name               = 'RoundedSceneStencilMaterial';
+        this.glslVersion        = THREE.GLSL3;
+        this.depthTest          = opts.depth;
+        this.transparent        = false;
+        // this.side               = THREE.DoubleSide;
+    
+        this.uniforms           = {
+            padding      : { value: opts.padding },
+            radius       : { value: opts.radius },
+            screenWidth  : { value: 0 },
+            screenHeight : { value: 0 },
+        };
+
+        this.vertexShader = `
+        in	vec3    position;
+        in  vec3    normal;
+        in	vec2    uv;
+
+        uniform mat4  modelMatrix;
+        uniform mat4  viewMatrix;
+        uniform mat4  projectionMatrix;
+
+        out vec3 fragLPos;
+        out vec2 fragUV;
+
+        // #####################################################################
+
+        void main(){
+            fragUV      = uv;
+            gl_Position = vec4( position.xy, 0.0, 1.0 );
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        in vec2  fragUV;
+        out vec4 outColor;
+
+        uniform float screenWidth;
+        uniform float screenHeight;
+        uniform float radius;
+        uniform float padding;
+
+        // #####################################################################
+
+        float roundedRect( vec2 px, vec2 res, float padd, float radius ){
+            vec2 dist        = abs( px - res * 0.5 );                           // Distance from center of screen
+            float radialDist = padd + radius;                                   // Padd away from edges, then add a radius curve to it
+            vec2 roundDist   = max( dist - ( res * 0.5 - radialDist ), 0.0 );   // Create padding mask for x & y
+            float roundLen   = length( roundDist );                             // Square Mask
+            float final      = 1.0 - step( radius, roundLen );                  // Square with rounded corners mask
+            return final;
+        }
+
+        void main(){
+            vec2 res    = vec2( screenWidth, screenHeight );
+            vec2 px     = res * fragUV; // gl_FragCoord.xy; can't use gl_FragCoord in mini view, using actual canvas pixel coord
+            float mask  = roundedRect( px, res, padding, radius );
+            
+            if( mask < 0.5 ) discard; // outColor = vec4( 0.0, 0.0, 0.0, 1.0 ); 
+            else             outColor = vec4( 1.0 );
+        }`;
+    }
+
+    setScreenSize( v ){
+        this.uniforms.screenWidth.value  = v[0];
+        this.uniforms.screenHeight.value = v[1];
+        return this;
+    }
+}
+
+
+// Not used BUT KEEP
+class ScreenClearMaterial extends THREE.RawShaderMaterial{
+    constructor( props={} ){
+        super();
+
+        // Merge custom props with default options
+        // const opts = Object.assign({}, props)
+
+        this.name               = 'ScreenClearMaterial';
+        this.glslVersion        = THREE.GLSL3;
+        this.depthTest          = false;
+        this.transparent        = false;
+        // this.side               = THREE.DoubleSide;
+
+        this.uniforms           = {
+        };
+
+        this.vertexShader = `
+        in	vec3    position;
+        void main(){
+            gl_Position = vec4( position.xy, 0.0, 1.0 );;
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        out vec4 outColor;
+        void main(){
+            outColor = vec4( 0.227451, 0.227451, 0.227451, 1.0 );
+        }`;
+    }
+}
+
+// #endregion
+
+</script></body></html>
