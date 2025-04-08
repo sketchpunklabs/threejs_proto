@@ -37,9 +37,11 @@ window.addEventListener( 'load', async ()=>{
     Debug.px.setPos( 0, 0 ).addText( 'MO', 1 );
     Debug.px.setPos( 0, 1 ).addText( 'Sketchpunk' );
 
+    Debug.ln.box( [1,0.5,1], [2,1,2], 0x707070 );
+
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     const cube = facedCube();
-    cube.position.set( 0, 0, -6 );
+    cube.position.set( 0, 0, -3 );
     App.scene.add( cube );
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
