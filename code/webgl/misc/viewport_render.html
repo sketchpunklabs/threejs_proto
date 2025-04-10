@@ -3,13 +3,31 @@
 <body><script src="../../../import-map.js"></script><script type="module">
 // #region IMPORTS
 import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
-import facedCube      from '@lib/meshes/FacedCube.js';
+import facedCube                from '@lib/meshes/FacedCube.js';
+import { Pane }                 from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+import * as TweakpaneEssentials from '@tp/tweakpane/tweakpane-plugin-essentials-0.2.1.min.js';
 // #endregion
 
 // #region MAIN
 let App   = useDarkScene( useThreeWebGL2() );
 let Debug = {};
-let Ref   = {};
+let Ref   = {
+    zoom        : 1,
+    width       : 150,
+    height      : 100,
+    useMouse    : false,
+
+    useBox  : 0.0,
+    hMin    : 0.3,
+    hMax    : 0.9,
+    hPad    : 0.1,
+    vMin    : 0.3,
+    vMax    : 0.9,
+    vPad    : 0.1,
+
+    padding : 10,
+    radius  : 30,
+};
 
 window.addEventListener( 'load', async ()=>{
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -25,7 +43,9 @@ window.addEventListener( 'load', async ()=>{
         padding   : 10,
     });
 
-    Ref.view.setCanvasSize( csize );
+    Ref.view
+        .setCanvasSize( csize )
+        .setInitialZoom( 7 );
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     const vsize = Ref.view.getSize();
@@ -61,8 +81,6 @@ window.addEventListener( 'load', async ()=>{
     Ref.stencil.name = 'Stencil';
     App.scene.add( Ref.stencil );
 
-    Ref.view.setZoom( 7 );
-
     // const test = screenQuad( new ScreenInnerRoundedBorderMaterial() );
     // test.material.setScreenSize( size );
     // App.scene.add( test );
@@ -70,13 +88,10 @@ window.addEventListener( 'load', async ()=>{
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     App.createRenderLoop( onPreRender, onPostRender ).start();
     // App.renderLoop();
+    buildUI();
 });
 
-function onPreRender( dt, et ){
-    // Ref.view.render( App.scene, App.camera, App.renderer );
-    // App.renderer.clear();
-    // App.renderer.clearStencil();
-}
+function onPreRender( dt, et ){}
 
 function onPostRender( dt, et ){
     Ref.reticle.visible = true;
@@ -107,9 +122,80 @@ function testStencilMask(){
 App.renderer.domElement.addEventListener( 'pointermove', e=>{
     const rect = App.renderer.domElement.getBoundingClientRect();
     const pos  = [ e.clientX - rect.left, e.clientY - rect.top ];
-
-    Ref.view.setPointer( pos );
+    Ref.view?.setPointer( Ref.useMouse? pos : null );
 });
+
+async function buildUI(){
+    appendGithubLink( false );
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const p = new Pane({ container: document.getElementById( 'paneCont' ), }); 
+    p.registerPlugin( TweakpaneEssentials );
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const f = p.addFolder({ title: 'Viewport', expanded: true });
+    f.addBinding( Ref, 'zoom', { min: 0.01, max: 2, step: 0.01, label: 'Zoom Prop' } ).on( 'change', e=>{
+        Ref.view?.setZoom( e.value );
+    });
+    
+    f.addBinding( Ref, 'width', { min: 60, max: 300, step: 5, label: 'Width' } ).on( 'change',e=>{
+        Ref.view.setSize( Ref.width, Ref.height );
+    });
+
+    f.addBinding( Ref, 'height', { min: 60, max: 300, step: 5, label: 'Height' } ).on( 'change',e=>{
+        Ref.view.setSize( Ref.width, Ref.height )
+    });
+
+    f.addBinding( Ref, 'useMouse', {
+        view        : 'radiogrid',
+        groupName   : 'mode',
+        label       : 'Follow Mouse',
+        size        : [ 2, 1 ],
+        cells       : ( x, y ) =>({ title: ( x === 0 )? 'No':'Yes', value: ( x === 0 )? false:true }),
+    });
+
+    // // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const f2 = p.addFolder({ title: 'Screen Placement', expanded: false });
+    f2.addBlade({
+        view  : 'buttongrid', size: [ 3, 3 ], label: '',
+        cells : ( x, y )=>({
+            title: [
+            ['NW', '', 'NE'],
+            ['',  '*', ''],
+            ['SW', '', 'SE'],
+            ][y][x],
+        })
+    }).on('click', e=>{
+        const x = e.index[1] * 3 + e.index[0]; // console.log(ev, x );
+        switch( x ){
+            case 0: return Ref.view.setPlacement( ViewPlacement.TopLeft );
+            case 2: return Ref.view.setPlacement( ViewPlacement.TopRight );
+            case 8: return Ref.view.setPlacement( ViewPlacement.BottomRight );
+            case 6: return Ref.view.setPlacement( ViewPlacement.BottomLeft );
+            case 4: return Ref.view.setPlacement( ViewPlacement.Center );
+        }
+    });
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const onMat = ( e )=>{ Ref.reticle.material.uniforms[ e.target.key ].value = e.value; };
+
+    const f3 = p.addFolder({ title: 'Reticle', expanded: false });
+    f3.addBinding( Ref, 'useBox', { min: 0, max: 1, step: 1, label: 'useBox' } ).on('change',onMat);
+    f3.addBinding( Ref, 'hMin', { min: 0, max: 1, step: 0.01, label: 'hMin' } ).on('change',onMat);
+    f3.addBinding( Ref, 'hMax', { min: 0, max: 1, step: 0.01, label: 'hMax' } ).on('change',onMat);
+    f3.addBinding( Ref, 'hPad', { min: 0, max: 1, step: 0.01, label: 'hPad' } ).on('change',onMat);
+
+    f3.addBinding( Ref, 'vMin', { min: 0, max: 1, step: 0.01, label: 'vMin' } ).on('change',onMat);
+    f3.addBinding( Ref, 'vMax', { min: 0, max: 1, step: 0.01, label: 'vMax' } ).on('change',onMat);
+    f3.addBinding( Ref, 'vPad', { min: 0, max: 1, step: 0.01, label: 'vPad' } ).on('change',onMat);
+
+    const f4 = p.addFolder({ title: 'Border', expanded: false });
+    f4.addBinding( Ref, 'padding', { min: 0, max: 100, step: 5, label: 'padding' } ).on('change',onMat);
+    f4.addBinding( Ref, 'radius', { min: 0, max: 100, step: 5, label: 'radius' } ).on('change',onMat)
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.pane = p;
+}
 
 // #endregion
 
@@ -157,6 +243,12 @@ class ViewportRenderer{
     // #region SETTERS
     setZoom( v ){
         this.#zoomScale = v;
+        this.#updateCameraMatrix();
+        return this;
+    }
+
+    setInitialZoom( v ){
+        this.#initZoom = v;
         this.#updateCameraMatrix();
         return this;
     }
@@ -233,7 +325,7 @@ class ViewportRenderer{
             case 'OrthographicCamera'   : this.#camera = new THREE.OrthographicCamera(); break;
         }
 
-        this.#initZoom = cam.zoom;
+        if( this.#initZoom === 1 ) this.#initZoom = cam.zoom;
         this.#updateCameraMatrix();
     }
 
@@ -860,4 +952,6 @@ class ScreenClearMaterial extends THREE.RawShaderMaterial{
 
 // #endregion
 
-</script></body></html>
+</script>
+<div style="position:fixed; bottom:10px; left:10px; width: fit-content; height: fit-content;" id="paneCont"></div>
+</body></html>
