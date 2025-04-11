@@ -1,0 +1,235 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import useTransformControl from '@lib/useTransformControl.js';
+
+import { Pane } from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    gizmo    : useTransformControl( App ).useAxes(),
+
+    steps    : 10,
+    arcLen   : 2.5,
+    startPos : [-1,1,0],
+    endPos   : [ 1.0,1,0],
+};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 20, 4, [0,1,0] );
+    Debug = await useVisualDebug( App );
+    Ref.gizmo.setPos( Ref.endPos );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    runSolver();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+    buildUI();
+});
+
+function onPreRender( dt, et ){}
+
+Ref.gizmo.onMove = p=>{
+    Ref.endPos = p;
+    runSolver();
+};
+
+async function buildUI(){
+    appendGithubLink( false );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const p = new Pane();
+
+    const f = p.addFolder({ title: 'Settings', expanded: true });
+    f.addBinding( Ref, 'arcLen', { min: 0.1, max: 10, step: 0.01, label: 'Arc Length' } ).on( 'change', runSolver );
+    f.addBinding( Ref, 'steps', { min: 6, max: 20, step: 1, label: 'Arc Steps' } ).on( 'change', runSolver );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.pane = p;
+}
+
+function runSolver(){
+    Debug.ln.reset();
+    Debug.pnt.reset();
+
+    const o = asincArc( Ref.arcLen, Ref.startPos, Ref.endPos );
+    drawResults( Ref.startPos, Ref.endPos, o );
+}
+
+function drawResults( p0, p1, o ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Draw the chord line from the two points
+    Debug.pnt.add( p0, 0x00ff00, 3 );
+    Debug.pnt.add( p1, 0xff0000, 3 );
+    Debug.ln.add( p0, p1, 0x00ff00, 0xff0000 );
+
+    if( !o ) return;
+
+    Debug.pnt.add( o.midPos, 0x00ffff, 2 );
+    Debug.pnt.add( o.centerPos, 0xffff00, 2 );
+
+    const x = [ o.midPos[0] + o.orthoAxis[0], o.midPos[1] + o.orthoAxis[1], o.midPos[2] + o.orthoAxis[2] ];
+    Debug.pnt.add( x, 0x00ffff, 2 );
+    Debug.ln.add( o.midPos, x, 0x808080, 0x00ffff );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Draw Arc
+    const steps = Ref.steps;
+    const v     = norm( sub( p0, o.centerPos ) );
+    let   t     = 0;
+    let   p, pp;
+
+    for( let i=0; i <= steps; i++ ){
+        t = i / steps;
+        p = axisAngle( v, o.orthoAxis, o.arcAngle * t );
+        p = add( scale( norm( p ), o.radius ), o.centerPos );
+
+        Debug.ln.add( o.centerPos, p, 0x707070 );
+        if( pp ) Debug.ln.add( pp, p, 0xffff00 );
+        pp = p;
+    }
+}
+// #endregion
+
+// #region ASINC
+// https://www.youtube.com/watch?v=UNrrd_XhPMA
+// https://www.youtube.com/watch?v=S-zAk6VqL-E
+// https://www.youtube.com/watch?v=docgrYp6A88
+// https://www.youtube.com/watch?v=MULuu-bkPKs
+// https://discussions.unity.com/t/ik-chain/406592/10
+function asinc( x0 ){
+    let   x  = 6 * ( 1-x0 );
+    const x1 = x;  
+    let   a  = x;                                        x *= x1; 
+    a += x                   / 20.0;                     x *= x1; 
+    a += x * 2.0             / 525.0;                    x *= x1; 
+    a += x * 13.0            / 37800.0;                  x *= x1; 
+    a += x * 4957.0          / 145530000.0;              x *= x1; 
+    a += x * 58007.0         / 16216200000.0;            x *= x1;
+    a += x * 1748431.0       / 4469590125000.0;          x *= x1; 
+    a += x * 4058681.0       / 92100645000000.0;         x *= x1;
+    a += x * 5313239803.0    / 1046241656460000000.0;    x *= x1;
+    a += x * 2601229460539.0 / 4365681093774000000000.0; // x^10
+    return Math.sqrt( a );
+}
+// #endregion
+
+// #region SOLVER
+function asincArc( arcLen, p0, p1 ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~    
+    // Chord Length, the distance between the end points of the arc
+    const dir           = [ p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2] ]; // sub( p1, p0 )
+    const chordLen      = Math.sqrt( dir[0]**2 + dir[1]**2 + dir[2]**2 );  // len( dir )
+
+    // Angle in radius of the arc with an arc length & chord length
+    // NOTE: should be arcLen / chordLen but doesn't work correctly with his version of asinc
+    const arcAngle      = 2 * asinc( chordLen / arcLen );
+    if( arcLen <= chordLen || isNaN( arcAngle ) || arcAngle <= 0 || arcAngle > Math.PI * 2 ){
+        return null;
+    }
+
+    // Radius of the circle the arc is part of
+    const radius        = arcLen / arcAngle;
+
+    // Distance frin mid point of the chord line to the circle center
+    const centerOffset  = Math.sqrt( radius**2 - ( chordLen / 2 ) ** 2 );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Chord line mid point
+    const mid = [
+        p0[0] * 0.5 + p1[0] * 0.5,
+        p0[1] * 0.5 + p1[1] * 0.5,
+        p0[2] * 0.5 + p1[2] * 0.5,
+    ];
+
+    // Normalize chord direction
+    dir[0] /= chordLen;
+    dir[1] /= chordLen;
+    dir[2] /= chordLen;
+
+    const axis = norm( cross( [0,1,0], dir ) ); // Ortho direction between up & chord dir
+    const up   = norm( cross( dir, axis ) );    // Direction toward circle center
+
+    // If angle is over 180d, flip direction to circle center
+    if( arcAngle <= Math.PI ){
+        up[0] = -up[0];
+        up[1] = -up[1];
+        up[2] = -up[2];
+    }
+
+    // Circle center, up * chordMidOffset + chordMid
+    const center = [
+        up[0] * centerOffset + mid[0],
+        up[1] * centerOffset + mid[1],
+        up[2] * centerOffset + mid[2],
+    ];
+
+    return {
+        radius, arcAngle, centerOffset, chordLen,
+        centerPos   : center,
+        midPos      : mid,
+        orthoAxis   : axis,
+    };
+}
+// #endregion
+
+// #region MATHS
+function add( a, b ){ return [ a[ 0 ] + b[ 0 ], a[ 1 ] + b[ 1 ], a[ 2 ] + b[ 2 ] ]; }
+
+function sub( a, b ){ return [ a[ 0 ] - b[ 0 ], a[ 1 ] - b[ 1 ], a[ 2 ] - b[ 2 ] ]; }
+
+function scale( a, s ){
+    a[ 0 ] = a[ 0 ] * s;
+    a[ 1 ] = a[ 1 ] * s;
+    a[ 2 ] = a[ 2 ] * s;
+    return a;
+}
+
+function norm( a ){
+    let mag = Math.sqrt( a[0]**2 + a[1]**2 + a[2]**2 );
+    if( mag != 0 ){
+        mag     = 1 / mag;
+        a[ 0 ] *= mag;
+        a[ 1 ] *= mag;
+        a[ 2 ] *= mag;
+    }else{ a[ 0 ] = 0; a[ 1 ] = 0; a[ 2 ] = 0; }
+    return a;
+}
+
+function dot( a, b ){ return a[ 0 ] * b[ 0 ] + a[ 1 ] * b[ 1 ] + a[ 2 ] * b[ 2 ]; }
+
+function cross( a, b ){
+    const ax = a[0], ay = a[1], az = a[2],
+          bx = b[0], by = b[1], bz = b[2];
+    return [
+        ay * bz - az * by,
+        az * bx - ax * bz,
+        ax * by - ay * bx,
+    ];
+}
+
+function axisAngle( p, axis, rad, out=[0,0,0] ){
+    // Rodrigues Rotation formula:
+    // v_rot = v * cos(theta) + cross( axis, v ) * sin(theta) + axis * dot( axis, v) * (1-cos(theta))
+    const cp  = cross( axis, p ),
+          d   = dot( axis, p ),
+          s   = Math.sin( rad ),
+          c   = Math.cos( rad ),
+          ci  = 1 - c;
+
+    out[ 0 ] = p[ 0 ] * c + cp[ 0 ] * s + axis[ 0 ] * d * ci;
+    out[ 1 ] = p[ 1 ] * c + cp[ 1 ] * s + axis[ 1 ] * d * ci;
+    out[ 2 ] = p[ 2 ] * c + cp[ 2 ] * s + axis[ 2 ] * d * ci;
+    return out;
+}
+// #endregion
+
+</script></body></html>

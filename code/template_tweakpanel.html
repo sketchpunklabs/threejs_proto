@@ -36,6 +36,8 @@ window.addEventListener( 'load', async _=>{
 function onPreRender( dt, et ){}
 
 async function buildUI(){    
+    appendGithubLink( false );
+
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     const p = new Pane();
     p.registerPlugin( TweakpaneEssentials );
