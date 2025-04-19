@@ -1,0 +1,1174 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+
+import facedCube           	from '@lib/meshes/FacedCube.js';
+import useTransformControl  from '@lib/useTransformControl.js';
+
+import { Pane }                 from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+import * as TweakpaneEssentials from '@tp/tweakpane/tweakpane-plugin-essentials-0.2.1.min.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    // -------------
+    gizmo   : useTransformControl( App ),
+    col     : 0x707070,
+    colSel  : 0xffff00,
+    selObj  : null,
+    tasks   : [],
+    camMesh : facedCube(),
+
+    // -------------
+    trackTime : 10,
+    animate   : 0,
+};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Setup
+	App.sphericalLook( 45, 30, 12 );
+    Debug       = await useVisualDebug( App );
+
+    // -------------------------------
+    Ref.picker  = new ScreenPicker();
+
+    // -------------------------------
+    Ref.view    = new ViewportRenderer({
+        width     : 200,
+        height    : 150,
+        placement : ViewPlacement.TopRight,
+        padding   : 10,
+    }).setCanvasSize( App.getSize() );
+
+    Ref.quadBorder = screenQuad( new ScreenBorderMaterial( { padding:2 } ) );
+    Ref.quadBorder.material.setScreenSize( Ref.view.getSize() );
+    App.scene.add( Ref.quadBorder );
+
+    // -------------------------------
+    Ref.camMesh.visible = false;
+    App.scene.add( facedCube( [0,0.5,0] ), Ref.camMesh );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.spline = new HermiteSpline();
+    Ref.spline.isLoop = true;
+    
+    const pnts = generatePoints( );
+    const geo  = new THREE.SphereGeometry( 0.15, 8, 6 );
+    const mat  = new THREE.MeshLambertMaterial({ color: Ref.col, flatShading: false });
+    let  m;
+    for( const [i,p] of pnts.entries() ){
+        m = new THREE.Mesh( geo, mat.clone() );
+        m.position.fromArray( p );
+        m.userData = { pIdx: i };
+        
+        App.scene.add( m );
+        Ref.spline.add( p );
+    }
+
+    renderSpline();
+
+    selectObject( m );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.createRenderLoop( null, onPostRender ).start();
+    // App.renderLoop();
+
+    buildUI();
+});
+
+// function onPreRender( dt, et ){}
+function onPostRender( dt, et ){
+    if( Ref.tasks.length > 0 ) Ref.tasks.pop()();
+
+    const tran = {};
+    
+    if( Ref.animate ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Animate movement on spline
+        const t         = ( et % Ref.trackTime ) / Ref.trackTime;
+        const pos       = [0,0,0];
+        Ref.spline.at( t, pos );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Compute Pos & Rotation of camera on spline
+        const tarPos    = [0,1,0];
+        const vp        = new THREE.Vector3().fromArray( pos );
+        const vt        = new THREE.Vector3().fromArray( tarPos );
+        // For some reason camera quat needs a VIEW SPACE quaternion
+        // This waste to much of my time to figure this out
+        const dumbTar   = vt.clone().sub( vp ).negate().add( vp );
+
+        Ref.camMesh.position.fromArray( pos );
+        Ref.camMesh.lookAt( dumbTar );
+        
+        tran.quat = Ref.camMesh.quaternion.toArray();
+        tran.pos = pos;
+
+        // To make the cube look at the correct direction to represent
+        // what direction the camera is looking, give it the NOT DUMB Target pos
+        Ref.camMesh.lookAt( vt );
+        Ref.camMesh.visible = true;
+    }else{
+        Ref.camMesh.visible = false;
+    }
+
+    Ref.quadBorder.visible = true;
+    Ref.view.render( App.scene, App.camera, App.renderer, tran );
+    Ref.quadBorder.visible = false;
+}
+
+// Ref.gizmo.onMove  = p=>{};
+// Ref.gizmo.onStart = ()=>{ console.log( 'GIZMO START' ) };
+Ref.gizmo.onStop  = ()=>{
+    // console.log( 'GIZMO STOP' )
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const idx = Ref.selObj.userData.pIdx;
+    const pos = Ref.selObj.position.toArray();
+    Ref.spline.setPos( idx, pos );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Debug.ln.reset();
+    renderSpline();
+};
+
+
+window.addEventListener( 'pointerdown', e=>{
+    if( Ref.gizmo.o.dragging ) return;
+
+    // Pick a single pixel
+    Ref.tasks.push( pickerTask( [ e.clientX, e.clientY ] ) );
+});
+
+async function buildUI(){
+    appendGithubLink( false );  
+    
+    const container = document.createElement( 'div' );
+    container.style.position    = 'fixed';
+    container.style.top         = '170px';
+    container.style.right       = '10px';
+    container.style.width       = '200px';
+    container.style.height      = 'fit-content';
+    document.body.appendChild( container );
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const p = new Pane({ container }); 
+    p.registerPlugin( TweakpaneEssentials );
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const f = p.addFolder({ title: 'Camera', expanded: true });
+
+    f.addBinding( Ref, 'animate', {
+        view        : 'radiogrid',
+        groupName   : 'animate',
+        label       : '',
+        size        : [ 2, 1 ],
+        cells       : ( x, y ) =>({ title: ( x === 0 )? 'Off':'On', value: ( x === 0 )? 0:1 }),
+    });
+
+    f.addBinding( Ref, 'trackTime', { min: 1, max:30, step: 1, label: 'Time' } )
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.pane = p;
+}
+
+// #endregion
+
+
+// #region HELPERS
+
+function selectObject( o=null ){
+    // Deselect previous point
+    if( Ref.selObj ){
+        Ref.selObj.material.emissive.set( 0x000000 );
+        Ref.selObj.material.needsUpdate = true;
+        Ref.selObj = null;
+
+        Ref.gizmo.detach();
+    }
+
+    // Select next point
+    if( o ){
+        o.material.emissive.set( Ref.colSel );
+        // o.material.emissiveIntensity = 0.9;
+        o.material.needsUpdate = true;
+        Ref.selObj = o;
+
+        Ref.gizmo.attach( o );
+    }
+}
+
+function generatePoints( cnt=8, radius=5, hHalf=1, hScl=6 ){
+    const PI2       = Math.PI * 2;
+    const rtn       = new Array( cnt );
+    const yOffset   = 0;
+    let t;
+    let rad;
+
+    for( let i=0; i < cnt; i++ ){
+        t      = i / cnt;
+        rad    = PI2 * t;
+        rtn[i] = [
+            radius * Math.cos( rad ),
+            yOffset + Math.sin( t * Math.PI * hScl ) * hHalf,
+            radius * Math.sin( rad )
+        ];
+        // Debug.pnt.add( rtn[i], 0x00ff00, 4 );
+    }
+
+    return rtn;
+}
+
+function renderSpline( steps=5, sp = Ref.spline ){
+    const cnt   = sp.curveCount;
+    const prev = [0,0,0]
+    const pos  = [0,0,0];
+    let t;
+
+    for( let c=0; c < cnt; c++ ){
+        sp.atCurve( c, 0, prev );
+        for( let s=1; s <= steps; s++ ){
+            t = s / steps;
+            sp.atCurve( c, t, pos );
+
+            Debug.ln.add( prev, pos, 0x707070 );
+            prev[0] = pos[0];
+            prev[1] = pos[1];
+            prev[2] = pos[2];
+        }
+    }
+}
+
+function pickerTask( pos ){
+    return ()=>{
+        console.log( 'PICKING', pos );
+        const { obj } = Ref.picker.pickPoint( App.camera, App.scene, App.renderer, pos ); // { id, obj, hitPos }
+        if( obj && obj.userData.pIdx != null ) selectObject( obj );
+    }
+}
+
+// #endregion
+
+
+// #region MATHS
+    function  cross( a, b, out=[0,0,0] ){
+        const ax = a[0], ay = a[1], az = a[2],
+              bx = b[0], by = b[1], bz = b[2];
+
+        out[ 0 ] = ay * bz - az * by;
+        out[ 1 ] = az * bx - ax * bz;
+        out[ 2 ] = ax * by - ay * bx;
+        return out;
+    }
+
+    function norm( a ){
+        let mag = Math.sqrt( a[ 0 ]**2 + a[ 1 ]**2 + a[ 2 ]**2 );
+        if( mag != 0 ){
+            mag    = 1 / mag;
+            a[ 0 ] = a[ 0 ] * mag;
+            a[ 1 ] = a[ 1 ] * mag;
+            a[ 2 ] = a[ 2 ] * mag;
+        }
+        return a;
+    }
+
+    
+    function quadFromMat3( m, out=[0,0,0,1] ){
+        // https://github.com/toji/gl-matrix/blob/master/src/gl-matrix/quat.js#L305
+        // Algorithm in Ken Shoemake's article in 1987 SIGGRAPH course notes
+        // article "Quat Calculus and Fast Animation".
+        let fRoot;
+        const fTrace = m[0] + m[4] + m[8];
+
+        if( fTrace > 0.0 ){
+            // |w| > 1/2, may as well choose w > 1/2
+            fRoot	= Math.sqrt( fTrace + 1.0 );  // 2w
+            this[3]	= 0.5 * fRoot;
+            
+            fRoot	= 0.5 / fRoot;  // 1/(4w)
+            this[0]	= (m[5]-m[7])*fRoot;
+            this[1]	= (m[6]-m[2])*fRoot;
+            this[2]	= (m[1]-m[3])*fRoot;
+        }else{
+            // |w| <= 1/2
+            let i = 0;
+
+            if ( m[4] > m[0] )		i = 1;
+            if ( m[8] > m[i*3+i] )	i = 2;
+            
+            const j = (i+1) % 3;
+            const k = (i+2) % 3;
+
+            fRoot	= Math.sqrt( m[i*3+i] - m[j*3+j] - m[k*3+k] + 1.0);
+            this[ i ]	= 0.5 * fRoot;
+
+            fRoot	= 0.5 / fRoot;
+            this[ 3 ]	= ( m[j*3+k] - m[k*3+j] ) * fRoot;
+            this[ j ]	= ( m[j*3+i] + m[i*3+j] ) * fRoot;
+            this[ k ]	= ( m[k*3+i] + m[i*3+k] ) * fRoot;
+        }
+        return this;
+    }
+
+    function quatLookAt( from, to, upDir=[0,1,0], out=[0,0,0,1] ){
+        const fwd = [
+            to[0] - from[0],
+            to[1] - from[1],
+            to[2] - from[2],
+        ];
+
+        const up  = cross( upDir, fwd );
+    }
+
+  // /** Create a rotation from eye & target position */
+    // lookAt(
+    //   out: TVec4,
+    //   eye: TVec3, // Position of camera or object
+    //   target: TVec3 = [0, 0, 0], // Position to look at
+    //   up: TVec3 = [0, 1, 0], // Up direction for orientation
+    // ): TVec4 {
+    //   // Forward is inverted, will face correct direction when converted
+    //   // to a ViewMatrix as it'll invert the Forward direction anyway
+    //   const z: TVec3 = vec3.sub([0, 0, 0], eye, target);
+    //   const x: TVec3 = vec3.cross([0, 0, 0], up, z);
+    //   const y: TVec3 = vec3.cross([0, 0, 0], z, x);
+    
+    //   vec3.normalize(x, x);
+    //   vec3.normalize(y, y);
+    //   vec3.normalize(z, z);
+    
+    //   // Format: column-major, when typed out it looks like row-major
+    //   quat.fromMat3(out, [...x, ...y, ...z]);
+    //   return quat.normalize(out, out);
+    // }
+
+// #endregion
+
+// #region SPLINE / CURVE MATH
+
+class Maths{
+    /** Modulas that handles Negatives
+     * @example
+     * Maths.mod( -1, 5 ) = 4 */
+     static mod( a, b ){	
+        const v = a % b;
+        return ( v < 0 )? b + v : v;
+    }
+}
+
+class Point{
+    attrib = {};
+    pos    = [ 0, 0, 0 ];
+    constructor( pos ){
+        this.pos[0] = pos[0];
+        this.pos[1] = pos[1];
+        this.pos[2] = pos[2];
+    }
+}
+
+class Spline{
+    // #region MAIN
+    points      = [];       // All the Points that defines all the curves of the Spline
+    _curveCnt   = 0;        // How many curves make up the spline
+    _pointCnt   = 0;        // Total points in spline
+    _isLoop     = false;    // Is the spline closed? Meaning should the ends be treated as another curve
+    // #endregion
+
+    // #region GETTERS / SETTERS
+    set isLoop( b ){ this._isLoop = b; }
+    get isLoop(){ return this._isLoop; }
+
+    get curveCount(){ return this._curveCnt; }
+    get pointCount(){ return this._pointCnt; }
+    // #endregion
+
+    // #region MANAGE POINTS
+    /** Add Points to the spline */
+    add( pos ){
+        const o = new Point( pos );
+        this.points.push( o );
+        this._pointCnt = this.points.length;
+        // TODO - Each subclass has to update the curveCount
+        return o;
+    }
+
+    /** Update point position */
+    setPos( idx, pos ){
+        const p = this.points[ idx ].pos;
+        p[0]    = pos[0];
+        p[1]    = pos[1];
+        p[2]    = pos[2];
+        return this;
+    }
+    // #endregion
+
+    // #region ABSTRACT METHODS
+    at( t, pos ){
+        return pos || [0,0,0];
+    }
+    // #endregion
+}
+
+class HermiteSpline extends Spline{
+    // #region MAIN
+    _tension  = 0;
+    _bias     = 0;
+    _tenBiasN = 0; // Optimize math
+    _tenBiasP = 0;
+
+    constructor( tension=0, bias=0 ){
+        super();
+        this._tension = tension;
+        this._bias    = bias;
+    }
+    // #endregion
+
+    // #region MANAGE POINTS
+    add( pos, tension=this._tension, bias=this._bias ){
+        const o = super.add( pos );
+        o.attrib.tension = tension;
+        o.attrib.bias    = bias;
+        
+        this._curveCnt   = ( !this._isLoop )
+            ? Math.max( 0, this._pointCnt - 3 )
+            : this._pointCnt;
+
+        return o;
+    }
+    // #endregion
+
+    // #region GETTERS
+    get curveCount(){ 
+        return ( !this._isLoop )? this._curveCnt : this._pointCnt;
+    }
+    // #endregion
+
+    // #region SPLINE OPERATIONS
+    /** Get position and derivatives of the spline at T */
+    at( t, pos, dxdy ){
+        // if( t > 1 )      t = 1;
+        // else if( t < 0 ) t = 0;
+        t = Math.min( 1, Math.max( 0, t ) );
+
+        const p                  = this.points;
+        const [ a, b, c, d, tt ] = ( !this._isLoop )
+            ? this._computeCurveIdx( t ) 
+            : this._computeLoopIdx( t );
+
+        this._precalcParams( tt, b, c );
+
+        if( pos )  this._at(   p[a].pos, p[b].pos, p[c].pos, p[d].pos, tt, pos );
+        if( dxdy ) this._dxdy( p[a].pos, p[b].pos, p[c].pos, p[d].pos, tt, dxdy );
+    }
+
+    /** Get position and derivatives of x curve at T */
+    atCurve( cIdx, t, pos, dxdy ){
+        // if( t > 1 )      t = 1;
+        // else if( t < 0 ) t = 0;
+        t = Math.min( 1, Math.max( 0, t ) );
+
+        const p = this.points;
+        const a = cIdx;
+        const b = Maths.mod( a + 1, this._pointCnt );
+        const c = Maths.mod( a + 2, this._pointCnt );
+        const d = Maths.mod( a + 3, this._pointCnt );
+
+        this._precalcParams( t, b, c );
+
+        if( pos )  this._at(   p[a].pos, p[b].pos, p[c].pos, p[d].pos, t, pos );
+        if( dxdy ) this._dxdy( p[a].pos, p[b].pos, p[c].pos, p[d].pos, t, dxdy );
+    }
+    // #endregion
+
+    // #region OPTIMIZED HERMITE CURVE
+    /** Precompute and cache values for every at call, for optimization */
+    _precalcParams( t, bi, ci ){
+        // Pre-caluate Paramters for Curve & Derivative Equations
+        const ti        = 1 - t;
+
+        // Lerp Tension and Bias between the main 2 points of the curve
+        const tension   = ti * this.points[ bi ].attrib.tension + t * this.points[ ci ].attrib.tension;
+        const bias      = ti * this.points[ bi ].attrib.bias    + t * this.points[ ci ].attrib.bias;
+
+        // Main Equation uses these values 4 times per component, Better
+        // to precompute now for optimization
+        this._tenBiasN  = ( 1 - bias ) * ( 1 - tension ) * 0.5;
+        this._tenBiasP  = ( 1 + bias ) * ( 1 - tension ) * 0.5;
+    }
+
+    _at( a, b, c, d, t, out=[0,0,0] ){
+        const   t2 = t * t,
+                t3 = t2 * t,
+                a0 = 2*t3 - 3*t2 + 1,
+                a1 = t3 - 2*t2 + t,
+                a2 = t3 - t2,
+                a3 = -2*t3 + 3*t2;
+
+        out[ 0 ] = a0*b[0] + a1 * ( (b[0]-a[0]) * this._tenBiasP + (c[0]-b[0]) * this._tenBiasN ) + a2 * ( (c[0]-b[0]) * this._tenBiasP + (d[0]-c[0]) * this._tenBiasN ) + a3*c[0];
+        out[ 1 ] = a0*b[1] + a1 * ( (b[1]-a[1]) * this._tenBiasP + (c[1]-b[1]) * this._tenBiasN ) + a2 * ( (c[1]-b[1]) * this._tenBiasP + (d[1]-c[1]) * this._tenBiasN ) + a3*c[1];
+        out[ 2 ] = a0*b[2] + a1 * ( (b[2]-a[2]) * this._tenBiasP + (c[2]-b[2]) * this._tenBiasN ) + a2 * ( (c[2]-b[2]) * this._tenBiasP + (d[2]-c[2]) * this._tenBiasN ) + a3*c[2];
+        return out;
+    }
+
+    _dxdy( a, b, c, d, t, out=[0,0,0] ){
+        const   tt  = t * t,
+                tt6 = 6 * tt,
+                tt3 = 3 * tt,
+                a0  = tt6 - 6*t,
+                a1  = tt3 - 4*t + 1,
+                a2  = tt3 - 2*t,
+                a3  = 6*t - tt6;
+
+         out[ 0 ] = a0 * b[0] + a1 * ( (b[0]-a[0]) * this._tenBiasP + (c[0]-b[0]) * this._tenBiasN ) + a2 * ( (c[0]-b[0]) * this._tenBiasP  + (d[0]-c[0]) * this._tenBiasN ) + a3 * c[0];
+         out[ 1 ] = a0 * b[1] + a1 * ( (b[1]-a[1]) * this._tenBiasP + (c[1]-b[1]) * this._tenBiasN ) + a2 * ( (c[1]-b[1]) * this._tenBiasP  + (d[1]-c[1]) * this._tenBiasN ) + a3 * c[1];
+         out[ 2 ] = a0 * b[2] + a1 * ( (b[2]-a[2]) * this._tenBiasP + (c[2]-b[2]) * this._tenBiasN ) + a2 * ( (c[2]-b[2]) * this._tenBiasP  + (d[2]-c[2]) * this._tenBiasN ) + a3 * c[2];
+         return out;
+    }
+    // #endregion
+
+    // #region HELPERS
+    /** Compute the point indices for open spline : Return: [ aIdx, bIdx, cIdx, dIdx, t ] */
+    _computeCurveIdx( t ){
+        let i, tt;
+
+        if( t != 1 ){
+            tt  = t * this._curveCnt;   // Using Curve count as a way to get the Index and the remainder is the T of the curve
+            i   = tt | 0;	            // BitwiseOR 0 same op as Floor
+            tt -= i;		            // Strip out the whole number to get the decimal to be used for the T of curve ( FRACT )
+        }else{
+            i	= ( this._curveCnt - 1 );
+            tt	= 1;                    // The end of the final curve.
+        }
+
+        return [ i, i+1, i+2, i+3, tt ];
+    }
+
+    /** Compute the point indices for closed spline : Return: [ aIdx, bIdx, cIdx, dIdx, t ] */
+    _computeLoopIdx( t ){
+        let i, tt;
+
+        if( t != 1 ){
+            tt  = t * this._pointCnt;  
+            i   = tt | 0;	            // BitwiseOR 0 same op as Floor
+            tt -= i;		            // Strip out the whole number to get the decimal to be used for the T of curve ( FRACT )
+        }else{
+            i	= this._pointCnt - 1;
+            tt	= 1;                    // The end of the final curve.
+        }
+
+        return [ 
+            i, 
+            Maths.mod( i+1, this._pointCnt ), 
+            Maths.mod( i+2, this._pointCnt ), 
+            Maths.mod( i+3, this._pointCnt ), 
+            tt
+        ];
+    }
+    // #endregion
+}
+
+// #endregion
+
+
+// #region GPU PICKING
+function uuidToInt( id ){
+    // First 8 characters are a random in hex form
+    // MAX int32 Value : 0x7FFFFFFF, 2_147_483_647
+    // Need to grab the first 7 char else using 8
+    // can overflow the value. Truncating the first 
+    // 24 bits out of a 128 bit number
+
+    return parseInt( id.substring( 0, 7 ), 16 );
+}
+
+function genIntRenderTarget( w=1, h=1, size=4 ){
+    let format          = null;
+    let internalFormat  = null;
+    switch( size ){
+        case 1: format = THREE.RedIntegerFormat;    internalFormat = 'R32I'; break;
+        case 4: format = THREE.RGBAIntegerFormat;   internalFormat = 'RGBA32I'; break;
+        default: return null;
+    }
+
+    return new THREE.WebGLRenderTarget( w, h, {
+        minFilter   : THREE.NearestFilter,
+        magFilter   : THREE.NearestFilter,
+        type        : THREE.IntType,
+        format,
+        internalFormat,
+    });
+}
+
+class ScreenPicker{
+    // #region MAIN
+    floatScale      = 10000;
+    emptyScene      = new THREE.Scene();              // Needed to render an empty scene to get renderList
+    targetScene     = null;                           // The scene that created the last renderList
+    targetRenderer  = null;
+    targetCamera    = null;
+    
+    bakClearColor   = new THREE.Color();                      // Backup Clear color of renderer
+    nulClearColor   = new THREE.Color().setRGB( -1, -1, -1 ); // Clear color for picking
+    
+    texPoint        = genIntRenderTarget( 1, 1, 4 );    // 1x1 Pixel storing RGBA
+    matHitID        = new PickingHitIDMaterial();       // Render meshes to get ID and Hit World Space Position
+
+    idMapper        = null;
+
+    constructor(){
+        this.emptyScene.onAfterRender = this.onAfterRender;
+    }
+    // #endregion
+
+    // #region PICKING METHODS
+    pickPoint( cam, scene, rend, p ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        /// Setup references used by onAfterRender
+        this.targetRenderer = rend;
+        this.targetScene    = scene;
+        this.targetCamera   = cam;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Set the render viewport size, for this mode we
+        // only need to render a single pixel worth
+        const dpr = window.devicePixelRatio;
+        cam.setViewOffset(
+            rend.domElement.width,      // fullWidth
+            rend.domElement.height,     // fullHeight
+            Math.floor( p[0] * dpr ),   // X
+            Math.floor( p[1] * dpr ),   // Y
+            1,                          // Width
+            1,                          // Height
+        );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Execute
+        this.pickingRender( this.texPoint, cam, rend );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Read Pixel
+        const pxBuf = new Int32Array( 4 );
+        rend.readRenderTargetPixels( this.texPoint, 0, 0, 1, 1, pxBuf );
+        // console.log( pxBuf );
+        
+        if( pxBuf[0] < 0 ) return { id:-1, hitPos:[0,0,0 ] };
+
+        return { 
+            id      : pxBuf[ 0 ],
+            obj     : this.idMapper[ pxBuf[ 0 ] ],
+            hitPos  : [
+                pxBuf[ 1 ] / this.floatScale,
+                pxBuf[ 2 ] / this.floatScale,
+                pxBuf[ 3 ] / this.floatScale,
+            ],
+        };
+    }
+    
+    pickRect( cam, scene, rend, pMin, pMax ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        /// Setup references used by onAfterRender
+        this.targetRenderer = rend;
+        this.targetScene    = scene;
+        this.targetCamera   = cam;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Set the render viewport size, for this mode we
+        // only need to render a single pixel worth
+        const w   = pMax[0] - pMin[0];
+        const h   = pMax[1] - pMin[1];
+        const dpr = window.devicePixelRatio;
+        cam.setViewOffset(
+            rend.domElement.width,          // fullWidth
+            rend.domElement.height,         // fullHeight
+            Math.floor( pMin[0] * dpr ),    // X
+            Math.floor( pMin[1] * dpr ),    // Y
+            w,                              // Width
+            h,                              // Height
+        );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Execute
+        const tex = genIntRenderTarget( w, h, 1 ); // Custom texture to fit rect select
+        this.pickingRender( tex, cam, rend );
+        
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Read Pixel
+        const pxBuf = new Int32Array( w * h );
+        rend.readRenderTargetPixels( tex, 0, 0, w, h, pxBuf );
+        
+        tex.dispose(); // Clear memory used by this texture. Can reuse these custom rect textures.
+        // console.log( pxBuf );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Create unique list of IDs
+        const idList = new Set();
+        for( const i of pxBuf ) if( i > 0 ) idList.add( i );
+
+        return idList; // Array.from( idList );
+    }
+    // #endregion
+
+    // #region RENDERING
+    // Begin render process to compute texture that will hold the pixel ID
+    pickingRender( tex, cam, rend ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Setup
+        this.idMapper = {};
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Need to render an empty scene with a post render callback setup
+        // to properly have access to internal bits that allows us to
+        // render objects manually along with getting a list of objects
+        // that was used to render the last frame. This list is how we can
+        // use the main scene to render without needing to keep track
+        // of a picking specific scene with cloned meshes.
+        rend.setRenderTarget( tex );                // Set which texture to render to
+        rend.getClearColor( this.bakClearColor );   // Backup existing clear color
+        rend.setClearColor( this.nulClearColor );   // Set new clear color used for picking
+        rend.render( this.emptyScene, cam );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Cleanup		
+        cam.clearViewOffset();
+        rend.setRenderTarget( null );
+        rend.setClearColor( this.bakClearColor );
+    }
+    
+    // Event bound to emptyScene, helps trigger rendering to the texture
+    // this is needed to keep alive currentRenderState & grab last renderList 
+    onAfterRender = ()=>{
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Get the last render list done by the renderer
+        // Meshes are split into 3 different lists, for now just 
+        // render opaque list since the picking objects will likely be solid
+        const rl = this.targetRenderer.renderLists.get( this.targetScene, 0 ); // scene, renderCallDepth 
+        // console.log( rl.opaque );
+        // console.log( rl.transmissive );
+        // console.log( rl.transparent );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Manually render each object
+        let intID;
+        for( const i of rl.opaque ){            
+            // Picking can store int32 in the R Channel, so lets truncate
+            // the UUID to an int to use it as an identifier.
+            // TODO: This part may need to change in later applications
+            // but this is good enough for this prototype
+            intID = uuidToInt( i.object.uuid );
+            // console.log( i.id, i.object.name || 'noname', i.object.uuid, intID, ( intID > 2_147_483_647 ) );
+
+            // Update picking material with object's ID
+            this.matHitID.intID    = intID;
+            this.idMapper[ intID ] = i.object;
+
+            // NOTE: renderBufferDirect only works on a scene.onAfterRender else an error out
+            // because currentRenderState is null. To handle this issue, render an empty scene
+            // which will then do nothing but still have access to a set render state while still
+            // having access to the previous frame's renderLists
+            
+            // Method is not documented, Will need to dig into source to get an idea.
+            // https://github.com/mrdoob/three.js/blob/master/src/renderers/WebGLRenderer.js#L750
+            this.targetRenderer.renderBufferDirect( 
+                this.targetCamera, 
+                null, 
+                i.geometry, 
+                this.matHitID, 
+                i.object, 
+                null
+            );
+        }
+    }
+    // #endregion
+}
+
+class PickingHitIDMaterial extends THREE.RawShaderMaterial{
+    set intID( v ){ 
+        this.uniforms.intID.value   = v; 
+        this.uniformsNeedUpdate     = true;
+    }
+
+    constructor(){
+        super({
+        name            : 'PickingHitIDMaterial',
+        glslVersion     : THREE.GLSL3,
+        depthTest       : true,
+        uniforms        : { intID : { type: 'int', value: 0 } },
+        vertexShader    : `
+        in vec3 position;
+
+        uniform mat4 modelMatrix;
+        uniform mat4 viewMatrix;
+        uniform mat4 projectionMatrix;
+        uniform mat4 modelViewMatrix;
+
+        out vec3 fragWPos;
+
+        void main(){
+            vec4 wPos     = modelMatrix * vec4( position, 1.0 );  // World Space
+            vec4 vPos     = viewMatrix * wPos;                    // View Space
+            gl_Position   = projectionMatrix * vPos;              // Projection Space
+            fragWPos      = wPos.xyz;                             // Worldspace Vertex Position
+        }`,
+
+        fragmentShader  : `
+        precision mediump float;
+
+        uniform int  intID;
+        in      vec3 fragWPos;
+        layout(location=0) out ivec4 outData;
+        
+        const float toInt = 10000.0; // Scale float values so they can sit inside an int32
+
+        void main(){ outData = ivec4( intID, ivec3( fragWPos * toInt ) ); }`
+        });
+    }
+}
+// #endregion
+
+
+// #region VIEWPORT
+
+const ViewPlacement = {
+    None        : 0,    // Disable Auto Placement, manually set top & left coordinate
+    Center      : 1,
+    TopLeft     : 2,
+    TopRight    : 3,
+    BottomRight : 4,
+    BottomLeft  : 5,
+};
+
+class ViewportRenderer{
+    // #region MAIN
+    #width          = 200;          // Size of the viewport
+    #height         = 200;
+    #left           = 0;            // Top-Left cordinate for the view port
+    #top            = 0;
+    #canvasWidth    = 0;            // Store canvas size to avoid keeping reference to renderer
+    #canvasHeight   = 0;
+    #padding        = 0;            // How much padded space to add to placement
+    #placement      = ViewPlacement.TopLeft;
+    #zoomScale      = 1;            // Scale the zoom value
+    #initZoom       = 1;            // Starting zoom value from main camera
+    #camera         = undefined;    // Internal camer for viewport rendering
+    #ndcPointer     = undefined;    // Used to position camera when following with orthographic camera
+    
+    constructor( props ){
+        if( props?.width && props?.height ){
+            this.#width  = props.width;
+            this.#height = props.height;
+        }
+
+        if( props?.padding ) this.#padding   = props.padding;
+        if( props?.zoom )    this.#zoomScale = props.zoom;
+        if( props?.placement !== undefined ) this.#placement = props.placement;
+
+        this.#updateCameraMatrix();
+        this.#updatePlacement();
+    }
+    // #endregion
+
+    // #region SETTERS
+    setZoom( v ){
+        this.#zoomScale = v;
+        this.#updateCameraMatrix();
+        return this;
+    }
+
+    setInitialZoom( v ){
+        this.#initZoom = v;
+        this.#updateCameraMatrix();
+        return this;
+    }
+
+    // set the width & height of the viewport
+    setSize( w, h ){
+        this.#width  = w;
+        this.#height = h;
+        this.#updateCameraMatrix();
+        this.#updatePlacement();
+        return this;
+    }
+
+    setCanvasSize( v ){
+        console.log( 'setCanvas', v );
+        this.#canvasWidth  = Math.round( v[0] );
+        this.#canvasHeight = Math.round( v[1] );
+        this.#updatePlacement();
+        return this;
+    }
+
+    setPlacement( v ){
+        this.#placement = v;
+        this.#updatePlacement();
+        return this;
+    }
+
+    // Top-Left pixe; cordinate for viewport
+    setPosition( x, y ){
+        this.#top  = y;
+        this.#left = x;
+        return this;
+    }
+
+    // Pixel padding away from canvas edges when using placement
+    setPadding( v ){
+        this.#padding = v;
+        this.#updatePlacement();
+        return this;
+    }
+
+    // Normalized Device Coordinate space of the mouse position
+    setNdcPointer( v ){
+        this.#ndcPointer = v;
+        return this;        
+    }
+
+    // Use mouse position to set NDC Pointer
+    setPointer( v ){
+        // Convert mouse position to normalized device coordinates ( -1 to 1 )
+        this.#ndcPointer = ( v )? new THREE.Vector2(
+            ( v[0] / this.#canvasWidth )  * 2 - 1,
+           -( v[1] / this.#canvasHeight ) * 2 + 1,
+        ) : undefined;
+
+        return this;
+    }
+    // #endregion
+
+    // #region GETTERS
+
+    getSize(){ return [ this.#width, this.#height ]; }
+
+    getPosition(){ return [ this.#left, this.#top ]; }
+
+    // #endregion
+
+    // #region MANAGE INTERNAL CAMERA
+
+    // Clone & prepare internal camera
+    #initCamera( cam ){
+        switch( cam.type ){
+            case 'PerspectiveCamera'    : this.#camera = new THREE.PerspectiveCamera();  break;
+            case 'OrthographicCamera'   : this.#camera = new THREE.OrthographicCamera(); break;
+        }
+
+        if( this.#initZoom === 1 ) this.#initZoom = cam.zoom;
+        this.#updateCameraMatrix();
+    }
+
+    // Update camera with sizes & regen its projection matrix
+    #updateCameraMatrix(){
+        if( this.#camera instanceof THREE.PerspectiveCamera ){
+            this.#camera.aspect = this.#width / this.#height;
+            this.#camera.zoom   = this.#initZoom * this.#zoomScale;
+
+        }else if( this.#camera instanceof THREE.OrthographicCamera ){
+            this.#camera.left   = this.#width  / -0.6; 
+            this.#camera.right  = this.#width  /  0.6;
+            this.#camera.top    = this.#height /  0.6; 
+            this.#camera.bottom = this.#height / -0.6;
+            this.#camera.zoom   = this.#initZoom * this.#zoomScale;
+        }
+
+        this.#camera?.updateProjectionMatrix();
+    }
+
+    // If not none, update the left & top coordinates of the view
+    #updatePlacement(){
+        const pad = this.#padding;
+        
+        switch( this.#placement ){
+            case ViewPlacement.TopLeft      : return this.setPosition( pad, pad );
+            case ViewPlacement.TopRight     : return this.setPosition( this.#canvasWidth - this.#width - pad, pad );
+            case ViewPlacement.BottomRight  : 
+                return this.setPosition( 
+                    this.#canvasWidth  - this.#width  - pad, 
+                    this.#canvasHeight - this.#height - pad,
+                );
+            case ViewPlacement.BottomLeft   : return this.setPosition( pad, this.#canvasHeight - this.#height - pad );
+            case ViewPlacement.Center       :
+                return this.setPosition( 
+                    Math.round( this.#canvasWidth  * 0.5 - this.#width  * 0.5 ),
+                    Math.round( this.#canvasHeight * 0.5 - this.#height * 0.5 ),
+                );
+        }
+
+        return this;
+    }
+
+    // Compute the 3D position of the 2D mouse in the camera's near plane
+    #getNearPlanePosition( ndc, cam ){
+        // Z = -1 to project onto near plane, use 1 for far plane
+        const pos = new THREE.Vector3( ndc.x, ndc.y, -1 );
+        pos.unproject( cam );
+        return pos;
+    }
+
+    // Compute the 3D position of the 2D mouse in the camera's near plane
+    #getFarPlanePosition( ndc, cam ){
+        // Z = -1 to project onto near plane, use 1 for far plane
+        const pos = new THREE.Vector3( ndc.x, ndc.y, 1 );
+        pos.unproject( cam );
+        return pos;
+    }
+    // #endregion
+
+    // #region RENDERING
+    render( scene, mainCamera, renderer, camTransform={} ){
+        // const screen = renderer.getDrawingBufferSize( new Vector2() );
+        const screen = renderer.getSize( new THREE.Vector2() );
+
+        // Convert between TOP-LEFT origin to BOTTOM-LEFT origin
+        const invTop = screen.y - this.#top - this.#height;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // PREPARE CAMERA
+
+        // NOTES: Reason for late initializing of inner camera
+        // Fiber/React have delays in execution. During initialization of react com
+        // the camera can be undefined at times. Then there is the usecase of
+        // switching the default to orthographic which results in having perspective
+        // in the initialization then ortho during render.
+        if( !this.#camera || this.#camera.type !== mainCamera.type ){
+            this.#initCamera( mainCamera );
+        }
+
+        // To follow under the mouse with orthographic, need mouse NDC 
+        // to reposition the camera at that relative & coplanar to the main camera
+        if( camTransform.pos ){
+            this.#camera.position.fromArray( camTransform.pos );
+        }else if( this.#camera.type === 'OrthographicCamera' && this.#ndcPointer  ){
+            this.#camera.position.copy( 
+                this.#getNearPlanePosition( this.#ndcPointer, mainCamera )
+            );
+        }else{
+            this.#camera.position.copy( mainCamera.position );
+        }
+
+        if( camTransform.quat ){
+            this.#camera.quaternion.fromArray( camTransform.quat );
+        }else if(  this.#camera.type === 'PerspectiveCamera' && this.#ndcPointer ){
+            // Reorient the camera to point toward the raycaster direction
+            // target_point = camera.pos + norm( ray.dir ) 
+            const dirLook  = this.#getFarPlanePosition( this.#ndcPointer, mainCamera )
+                .sub( mainCamera.position )
+                .normalize();
+
+            const pntLook = mainCamera.position.clone().add( dirLook );
+            this.#camera.lookAt( pntLook );
+        }else{
+            this.#camera.quaternion.copy( mainCamera.quaternion );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Set Renderer
+        renderer.setScissorTest( true );
+        renderer.setScissor(  this.#left, invTop, this.#width, this.#height );
+        renderer.setViewport( this.#left, invTop, this.#width, this.#height );
+        renderer.render( scene, this.#camera );
+        // renderer.render( scene, mainCamera );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Cleanup
+        renderer.setScissorTest( false );
+        renderer.setViewport( 0, 0, screen.x, screen.y );
+    }
+    // #endregion
+}
+
+function screenQuad( mat, order=100, size=2 ){
+    const mesh          = new THREE.Mesh( new THREE.PlaneGeometry(size, size, 1), mat );
+    mesh.renderOrder    = order;  // Usually set it last for rendering
+    mesh.frustumCulled  = false;  // Easily gets culled from frustum tests, disable it
+    return mesh;
+}
+
+class ScreenBorderMaterial extends THREE.RawShaderMaterial{
+    constructor( props={} ){
+        super();
+
+        // Merge custom props with default options
+        const opts = Object.assign({
+            padding : 20,
+            color   : new THREE.Color( '#505050' ),
+            depth   : false,
+        }, props)
+
+        this.name               = 'ScreenBorderMaterial';
+        this.glslVersion        = THREE.GLSL3;
+        this.depthTest          = opts.depth;
+        this.transparent        = true;
+        this.side               = THREE.DoubleSide;
+        
+        this.uniforms           = {
+            padding      : { value: opts.padding },
+            color        : { value: opts.color },
+            screenWidth  : { value: 0 },
+            screenHeight : { value: 0 },
+        };
+
+        this.vertexShader = `
+        in	vec3    position;
+        in  vec3    normal;
+        in	vec2    uv;
+
+        uniform mat4  modelMatrix;
+        uniform mat4  viewMatrix;
+        uniform mat4  projectionMatrix;
+
+        out vec2 fragUV;
+
+        // #####################################################################
+
+        void main(){
+            fragUV      = uv;
+            gl_Position = vec4( position.xy, 0.0, 1.0 );
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        in vec2  fragUV;
+        out vec4 outColor;
+
+        uniform float screenWidth;
+        uniform float screenHeight;
+        uniform float padding;
+        uniform vec3  color;
+
+        // #####################################################################
+
+        float borderMask( vec2 px, vec2 res, float size ){
+            vec2 dist       = abs( px - res * 0.5 );
+            vec2 borderDist = res * 0.5 - dist;
+            float mx        = step( size, borderDist.x );
+            float my        = step( size, borderDist.y );
+            float mask      = 1.0 - min( mx, my ); 
+            return mask;
+        }
+
+        void main(){
+            vec2 res    = vec2( screenWidth, screenHeight );
+            vec2 px     = res * fragUV; // gl_FragCoord.xy; can't use gl_FragCoord in mini view, using actual canvas pixel coord
+            float mask  = borderMask( px, res, padding );
+
+            outColor = vec4( color * mask, mask);
+
+            // if( gl_FragCoord.x < 900.0 ) outColor = vec4( 1.0, 0.0, 0.0, 1.0 );
+        }`;
+    }
+
+    setScreenSize( v ){
+        this.uniforms.screenWidth.value  = v[0];
+        this.uniforms.screenHeight.value = v[1];
+        return this;
+    }
+}
+
+// #endregion
+
+
+</script></body></html>
