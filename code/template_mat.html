@@ -1,0 +1,110 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 20, 8 );
+    Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const geo  = new THREE.PlaneGeometry( 2, 2 );
+    
+    geo.rotateX( -Math.PI / 2 );
+    geo.translate( 0, 0.05, 0 );
+    geo.scale( 3,1,3 );
+    
+    const mat  = new CustomMaterial();
+    const mesh = new THREE.Mesh( geo, mat );
+    // mesh.position.y = 0.5;
+    App.scene.add( mesh );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+});
+
+function onPreRender( dt, et ){}
+// #endregion
+
+class CustomMaterial extends THREE.RawShaderMaterial {
+  constructor( props={} ){
+        super();
+
+        // Merge custom props with default options
+        const opts = Object.assign({
+            offset : [ 0, 1, 0 ],
+            color  : new THREE.Color( '#00ff00' ),
+        }, props );
+
+        this.name             = 'CustomMaterial';
+        this.glslVersion      = THREE.GLSL3;
+        this.depthTest        = true
+        // this.transparent      = true;
+        // this.alphaToCoverage  = true;
+        this.side             = THREE.DoubleSide;
+        // this.lights           = false;
+    
+        this.uniforms = {
+        //   offset  : { value: opts.offset },
+        color   : { value: opts.color },
+        };
+
+        this.vertexShader = `
+        in vec3 position; // Vertex Position
+        in vec3 normal;   // Vertex Normal Direction
+        in vec2 uv;       // Vertex Texture UV Coordinate
+
+        uniform mat4 modelMatrix;       // To WorldSpace
+        uniform mat4 viewMatrix;        // To ViewSpace
+        uniform mat4 projectionMatrix;  // To NDC ( Normalized Device Coordinate Space ) aka ScreenSpace
+
+        // uniform vec3 offset;
+
+        out vec3 fragWPos;
+        out vec3 fragWNorm;
+        out vec2 fragUV;
+
+        void main(){
+            vec4 wpos   = modelMatrix * vec4( position, 1.0 );
+            
+            fragWPos    = wpos.xyz;
+            fragUV      = uv;
+            fragWNorm   = ( modelMatrix * vec4( normal, 0.0 ) ).xyz;
+            
+            gl_Position = projectionMatrix * viewMatrix * wpos;
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        in vec3 fragWPos;
+        in vec2 fragUV;
+        in vec3 fragWNorm;
+        
+        out vec4 outColor;
+        
+        // uniform vec3 cameraPosition;
+        uniform vec3 color;
+
+        void main(){
+            vec3 norm = normalize( fragWNorm );
+            outColor  = vec4( color, 1.0 );
+        }`;
+    }
+  
+  // #region SETTERS
+//   setOffset( v ){
+//     this.uniforms.offset.value = v;
+//     return this;
+//   }
+  // #endregion
+}
+
+</script></body></html>
