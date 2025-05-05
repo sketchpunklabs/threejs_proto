@@ -1,4 +1,4 @@
-
+const ver3js  = globalThis.VERSION_3JS || '0_172_0';
 const gitPage = '/threejs_proto';
 const prepend = ( document.location.hostname.indexOf( 'localhost' ) === -1 )? gitPage : '';
 
@@ -6,9 +6,9 @@ document.body.appendChild(Object.assign(document.createElement('script'), {
 type		: 'importmap',
 innerHTML	: `
     {"imports":{
-        "three"             : "${prepend}/thirdparty/three_0_172_0/three.module.min.js",
-        "three/"            : "${prepend}/thirdparty/three_0_172_0/",
-        "OrbitControls"	    : "${prepend}/thirdparty/three_0_172_0/OrbitControls.js",
+        "three"             : "${prepend}/thirdparty/three_${ver3js}/three.module.min.js",
+        "three/"            : "${prepend}/thirdparty/three_${ver3js}/",
+        "OrbitControls"	    : "${prepend}/thirdparty/three_${ver3js}/OrbitControls.js",
         "@lib/"             : "${prepend}/lib/",
         "@tp/"              : "${prepend}/thirdparty/"
     }}
