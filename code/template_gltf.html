@@ -1,0 +1,92 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import { GLTFLoader }       from 'three/GLTFLoader.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 20, 6 );
+    Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const tf = await GLTFLoaderAsync( '../../res/models/rigged-daisy.glb' );
+    // console.log( tf );
+    // App.scene.add( tf.scene );
+
+    // tf.scene.traverse( o=>console.log( 'x', o.type ) );
+
+    // const o = firstFind( tf.scene, o=> (o.type === 'SkinnedMesh') );
+    // const ary = findAll( tf.scene, o=> (o.type === 'SkinnedMesh') );
+    for( let i of traverseFind( tf.scene, o=> (o.type === 'SkinnedMesh') ) ){
+        console.log( i.geometry.boundingBox.min, i.geometry.boundingBox.max );
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+});
+
+function onPreRender( dt, et ){}
+
+/** Wrap ThreeJS's GLTFLoader in a promise to use Async/Await functionality */
+function GLTFLoaderAsync( url ){
+    return new Promise( ( resolve, reject )=>{
+        new GLTFLoader().load( url, resolve, null, reject );
+    });
+}
+
+// Promise.allSettled([
+//     GLTFLoaderAsync( './_res/models/mannequin/mannequin.gltf' ).then( doSomething ),
+//     GLTFLoaderAsync( './_res/anim/kaykit_char_animations.gltf' ).then( doSomething ),
+// ]).then( onReady )
+
+function firstFind( root, fn ) {
+  if( fn( root ) ) return root;
+
+  const stack = [ ...root.children ];
+  let o;
+
+  while( stack.length > 0 ){
+    if( fn( (o = stack.pop() )) )   return o;
+    else                            stack.push( ...o.children );
+  }
+
+  return null;
+}
+
+function findAll( root, fn ) {
+  const rtn     = [];
+  const stack   = [ root ];  
+  let o;
+
+  while( stack.length > 0 ){
+    if( fn( (o = stack.pop() )) ) rtn.push( o );
+    stack.push( ...o.children );
+  }
+
+  return rtn;
+}
+
+
+function* traverseFind( root, fn ) {
+  const stack = [ root ];  
+  let o;
+
+  while( stack.length > 0 ){
+    if( fn( (o = stack.pop() )) ){
+        yield o;
+    }
+    stack.push( ...o.children );
+  }
+}
+
+// #endregion
+</script></body></html>

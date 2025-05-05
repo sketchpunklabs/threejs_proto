@@ -7,3 +7,5 @@
 - https://cdn.jsdelivr.net/npm/three@0.172.0/
 - https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/controls/OrbitControls.js
 - https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/controls/TransformControls.js
+- https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/loaders/GLTFLoader.js
+- https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/utils/BufferGeometryUtils.js
