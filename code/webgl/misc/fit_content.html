@@ -1,0 +1,509 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+
+import { Pane } from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 20, 6 );
+    Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.mesh = new THREE.Mesh(
+        new THREE.BoxGeometry( 2, 2, 1 ),
+        new THREE.MeshBasicMaterial( { color: 0x00ffff, wireframe: true } )
+    );
+
+    Ref.mesh.position.set( -2, 1, -1 );
+    Ref.mesh.geometry.computeBoundingBox();
+    App.scene.add( Ref.mesh );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // const aabb = Ref.mesh.geometry.boundingBox;
+    // let box = new AABB( aabb.min.toArray(), aabb.max.toArray() );
+    // box.translate( Ref.mesh.position.toArray() );
+    // Debug.ln.box( box.min, box.max, 0x00ff00 );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+    buildUI();
+});
+
+function onPreRender( dt, et ){}
+
+async function buildUI(){    
+    appendGithubLink( false );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const p = new Pane( {  } );
+
+    const f = p.addFolder({ title: 'User Interface', expanded: true });
+    f.addButton({ title: 'Fit Box Look' }).on( 'click', ()=>{
+        Debug.reset();
+        fitBoxLookAt( Ref.mesh, App.camera )
+    } );
+
+    f.addButton({ title: 'Fit Box' }).on( 'click', ()=>{
+        Debug.reset();
+        fitBox( Ref.mesh, App.camera )
+    } );
+
+    f.addButton({ title: 'Fit Sphere Look' }).on( 'click', ()=>{
+        Debug.reset();
+        fitSphereLookAt( Ref.mesh, App.camera )
+    } );
+
+    f.addButton({ title: 'Fit Sphere' }).on( 'click', ()=>{
+        Debug.reset();
+        fitSphere( Ref.mesh, App.camera )
+    } );
+
+    f.addButton({ title: 'Reset Camera' }).on( 'click', ()=>{
+        Debug.reset();
+        App.sphericalLook( 0, 20, 6, [0,0,0] );
+    } );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.pane = p;
+}
+// #endregion
+
+// #region MATH FUNCS
+function qTransform( q, v, out=[0,0,0] ){ 
+    const qx = q[ 0 ],    qy = q[ 1 ],    qz = q[ 2 ], qw = q[ 3 ],
+        vx = v[ 0 ], vy = v[ 1 ], vz = v[ 2 ],
+        x1 = qy * vz - qz * vy,
+        y1 = qz * vx - qx * vz,
+        z1 = qx * vy - qy * vx,
+        x2 = qw * x1 + qy * z1 - qz * y1,
+        y2 = qw * y1 + qz * x1 - qx * z1,
+        z2 = qw * z1 + qx * y1 - qy * x1;
+    out[ 0 ] = vx + 2 * x2;
+    out[ 1 ] = vy + 2 * y2;
+    out[ 2 ] = vz + 2 * z2;
+    return out;
+}
+
+function qLook( fwd, up=[0,1,0], out=[0,0,0,1] ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Orthogonal axes to make a mat3x3
+    const zAxis	= fwd.slice();
+    const xAxis = vNorm( vCross( up, zAxis ) );     // Right
+
+    // Z & UP are parallel
+    if( vLenSq( xAxis ) === 0 ){
+        if( Math.abs( up[2] ) === 1 ) zAxis[0] += 0.0001;  // shift x when Fwd or Bak
+        else                          zAxis[2] += 0.0001;  // shift z
+
+        vNorm( zAxis, zAxis );      // ReNormalize
+        vCross( up, zAxis, xAxis ); // Redo Left
+        vNorm( xAxis, xAxis );
+    }
+    
+    const yAxis = vNorm( vCross( zAxis, xAxis ) );  // Up
+    const m     = [...xAxis, ...yAxis, ...zAxis];
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Mat3 to Quat
+    // Algorithm in Ken Shoemake's article in 1987 SIGGRAPH course notes
+    // article "Quat Calculus and Fast Animation".
+    let fRoot;
+    const fTrace = m[0] + m[4] + m[8]; // Diagonal axis
+
+    if( fTrace > 0.0 ){
+        // |w| > 1/2, may as well choose w > 1/2
+        fRoot	= Math.sqrt( fTrace + 1.0 );  // 2w
+        out[3]	= 0.5 * fRoot;
+        
+        fRoot	= 0.5 / fRoot;  // 1/(4w)
+        out[0]	= (m[5]-m[7])*fRoot;
+        out[1]	= (m[6]-m[2])*fRoot;
+        out[2]	= (m[1]-m[3])*fRoot;
+    }else{
+        // |w| <= 1/2
+        let i = 0;
+        if ( m[4] > m[0] )		i = 1;
+        if ( m[8] > m[i*3+i] )	i = 2;
+        
+        const j = (i+1) % 3;
+        const k = (i+2) % 3;
+
+        fRoot	    = Math.sqrt( m[i*3+i] - m[j*3+j] - m[k*3+k] + 1.0);
+        out[ i ]	= 0.5 * fRoot;
+        fRoot	    = 0.5 / fRoot;
+        out[ 3 ]	= ( m[j*3+k] - m[k*3+j] ) * fRoot;
+        out[ j ]	= ( m[j*3+i] + m[i*3+j] ) * fRoot;
+        out[ k ]	= ( m[k*3+i] + m[i*3+k] ) * fRoot;
+    }
+    return out;
+}
+
+function vLenSq( a ){ return a[ 0 ]**2 + a[ 1 ]**2 + a[ 2 ]** 2; }
+
+function vAdd( a, b, out=[0,0,0] ){
+    out[ 0 ] = a[ 0 ] + b[ 0 ];
+    out[ 1 ] = a[ 1 ] + b[ 1 ];
+    out[ 2 ] = a[ 2 ] + b[ 2 ];
+    return out;
+}
+
+function vSub( a, b, out=[0,0,0] ){
+    out[ 0 ] = a[ 0 ] - b[ 0 ];
+    out[ 1 ] = a[ 1 ] - b[ 1 ];
+    out[ 2 ] = a[ 2 ] - b[ 2 ];
+    return out;
+}
+
+function vCross( a, b, out=[0,0,0] ){
+    const ax = a[0], ay = a[1], az = a[2];
+    const bx = b[0], by = b[1], bz = b[2];
+
+    out[ 0 ] = ay * bz - az * by;
+    out[ 1 ] = az * bx - ax * bz;
+    out[ 2 ] = ax * by - ay * bx;
+    return out;
+}
+
+function vNorm( v, out=[0,0,0] ){
+    let mag = Math.sqrt( v[ 0 ]**2 + v[ 1 ]**2 + v[ 2 ]**2 );
+    if( mag == 0 ) return out;
+
+    mag = 1 / mag;
+    out[ 0 ] = v[ 0 ] * mag;
+    out[ 1 ] = v[ 1 ] * mag;
+    out[ 2 ] = v[ 2 ] * mag;
+    return out;
+}
+
+function vScaleThenAdd( s, v, a, out=[0,0,0] ){
+    out[0] = v[0] * s + a[0];
+    out[1] = v[1] * s + a[1];
+    out[2] = v[2] * s + a[2];
+    return out;
+}
+// #endregion
+
+// #region AABB
+class AABB{
+    min = [0,0,0];
+    max = [0,0,0];
+
+    constructor( min=null, max=null ){
+        if( min && max ) this.set( min, max );
+    }
+
+    set( min, max ){
+        this.min[0] = min[0];
+        this.min[1] = min[1];
+        this.min[2] = min[2];
+        this.max[0] = max[0];
+        this.max[1] = max[1];
+        this.max[2] = max[2];
+        return this;
+    }
+
+    translate( v ){
+        this.min[0] += v[0];
+        this.min[1] += v[1];
+        this.min[2] += v[2];
+
+        this.max[0] += v[0];
+        this.max[1] += v[1];
+        this.max[2] += v[2];
+        return this;
+    }
+
+    scale( v ){
+        const c = this.getCenter();
+        const a = this.min;
+        const b = this.max;
+
+        a[0] = ( a[0] - c[0] ) * v + c[0];
+        a[1] = ( a[1] - c[1] ) * v + c[1];
+        a[2] = ( a[2] - c[2] ) * v + c[2];
+
+        b[0] = ( b[0] - c[0] ) * v + c[0];
+        b[1] = ( b[1] - c[1] ) * v + c[1];
+        b[2] = ( b[2] - c[2] ) * v + c[2];
+        return this;
+    }
+
+    expandByPoint( pos ) {
+        this.min[0] = Math.min( this.min[0], pos[0] );
+        this.min[1] = Math.min( this.min[1], pos[1] );
+        this.min[2] = Math.min( this.min[2], pos[2] );
+        this.max[0] = Math.max( this.max[0], pos[0] );
+        this.max[1] = Math.max( this.max[1], pos[1] );
+        this.max[2] = Math.max( this.max[2], pos[2] );
+        return this;
+    }
+
+    getSize(){ 
+        return [
+            this.max[0] - this.min[0],
+            this.max[1] - this.min[1],
+            this.max[2] - this.min[2],
+        ];
+    }
+
+    getCenter(){
+        // lerp( a, b, 0.5 );        
+        return [
+            this.min[0] * 0.5 + this.max[0] * 0.5,
+            this.min[1] * 0.5 + this.max[1] * 0.5,
+            this.min[2] * 0.5 + this.max[2] * 0.5,
+        ];
+    }
+
+    getCorners(){
+        const x1  = this.min[0], y1 = this.min[1], z1 = this.min[2];
+        const x2  = this.max[0], y2 = this.max[1], z2 = this.max[2];
+        const rtn = [
+            [x1,y1,z1], // Bottom Face - Start at min corner
+            [x1,y1,z2], 
+            [x2,y1,z2],
+            [x2,y1,z1],
+
+            [x1,y2,z1], // Top face - start of min corner but max height
+            [x1,y2,z2],
+            [x2,y2,z2], // max corner
+            [x2,y2,z1],
+        ];
+        return new AABBCorners( rtn );
+    }
+}
+
+class AABBCorners{
+    // Bot  Top  :: CCW
+    // 0-3  4-7
+    // | |  | |
+    // 1-2  5-6
+    points = [];
+    constructor( points ){ this.points = points; }
+
+    applyQuat( q ){
+        const c = this.getCenter();
+        const v = [0,0,0];
+        for( const p of this.points ){
+            vSub( p, c, v );
+            qTransform( q, v, v );
+            vAdd( v, c, p );
+            // Debug.pnt.add( p, 0xffffff, 2 );
+        }
+        return this;
+    }
+
+    scale( s ){
+        const c = this.getCenter();
+        for( const p of this.points ){
+            p[0] = ( p[0] - c[0] ) * s + c[0];
+            p[1] = ( p[1] - c[1] ) * s + c[1];
+            p[2] = ( p[2] - c[2] ) * s + c[2];
+        }
+        return this;
+    }
+
+    getCenter(){
+        const div = 1 / this.points.length;
+        let x = 0;
+        let y = 0;
+        let z = 0;
+
+        for( const p of this.points ){
+            x += p[0];
+            y += p[1];
+            z += p[2];
+        }
+
+        return [ x * div, y * div, z * div ]
+    }
+
+    getSize(){
+        // Points can be any orientation, compute the distance between
+        // certain points to get the width, height and depth of the box
+        const a = this.points[0];
+        const b = this.points[1];
+        const c = this.points[2];
+        const d = this.points[5];
+
+        return [
+            Math.sqrt( (b[0]-c[0])**2 + (b[1]-c[1])**2 + (b[2]-c[2])**2 ),
+            Math.sqrt( (b[0]-d[0])**2 + (b[1]-d[1])**2 + (b[2]-d[2])**2 ),
+            Math.sqrt( (b[0]-a[0])**2 + (b[1]-a[1])**2 + (b[2]-a[2])**2 ),
+        ];
+    }
+
+    debug( c=0xffffff ){
+        const p = this.points;
+        for( let i=0; i < 4; i++ ){
+            const ni = (i + 1) % 4;
+            Debug.ln
+                .add( p[i], p[ni], c )      // bottom
+                .add( p[i+4], p[ni+4], c )  // top
+                .add( p[i], p[i+4], c );    // sides
+        }
+        return this;
+    }
+}
+// #endregion
+
+// #region MAIN FITTING MATH
+
+function fitBoxPerspectiveDistance( camera, width, height, depth, cover=false ){
+    // Cover tries to fill width more then height
+    const fov      = camera.getEffectiveFOV() * 0.01745329251; // FOV in Radians
+    const camRatio = camera.aspect;
+    const boxRatio = width / height;
+
+    const fitSize  = ( cover ? boxRatio > camRatio : boxRatio < camRatio ) ? height : width / camRatio;
+    return fitSize * 0.5 / Math.tan( fov * 0.5 ) + depth * 0.5;
+}
+
+function fitSpherePerspectiveDistance( camera, radius ){
+    // https://stackoverflow.com/a/44849975
+    const vFOV = camera.getEffectiveFOV() * 0.01745329251;
+    const fov  = ( 1 < camera.aspect )? 
+        vFOV : 
+        Math.atan( Math.tan( vFOV * 0.5 ) * camera.aspect ) * 2; // Horizontal FOV
+
+    return radius / Math.sin( fov * 0.5 );
+}
+
+function fitBoxOrthographicZoom( camera, width, height, cover=false ){
+    const w      = camera.right - camera.left;
+    const h      = camera.top   - camera.bottom;
+    return cover ? Math.max( w / width, h / height ) : Math.min( w / width, h / height );
+}
+
+function fitSphereOrthographicZoom( camera, radius ){
+    const w        = camera.right - camera.left;
+    const h        = camera.top   - camera.bottom;
+    const diameter = 2 * radius;
+    return Math.min( w / diameter, h / diameter );
+}
+
+// #endregion
+
+// #region COMPOSITE FITTING FUNCTIONS
+function fitBoxLookAt( mesh, cam, scl=1.2 ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const mBox      = mesh.geometry.boundingBox;
+    const box       = new AABB( mBox.min.toArray(), mBox.max.toArray() )
+        .translate( mesh.position.toArray() );
+
+    let boxCenter   = box.getCenter();
+    const dir       = vNorm( vSub( cam.position.toArray(), boxCenter ) );
+    const rot       = qLook( dir );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Make box look at the camera
+    // const camQuat   = App.camera.quaternion.toArray();
+    const corners = box.getCorners().applyQuat( rot ).scale( scl );
+    boxCenter     = corners.getCenter();
+    corners.debug( 0x707070 );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Compute the position away from box the camera should be in
+    const size = corners.getSize();
+    const dist = fitBoxPerspectiveDistance( cam, size[0], size[1], size[2], false );
+    const fwd  = vNorm( qTransform( rot, [0,0,1] ) );
+    const pos  = vScaleThenAdd( dist, fwd, boxCenter );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Apply Position & Look roation
+    cam.position.fromArray( pos );
+    cam.lookAt( new THREE.Vector3().fromArray( boxCenter ) );
+    
+    App.camCtrl.target.fromArray( boxCenter );
+    App.camCtrl.update();
+}
+
+function fitBox( mesh, cam, scl=1.2 ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const mBox      = mesh.geometry.boundingBox;
+    const box       = new AABB( mBox.min.toArray(), mBox.max.toArray() )
+        .scale( scl )
+        .translate( mesh.position.toArray() );
+
+    Debug.ln.box( box.min, box.max, 0x707070 );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const center = box.getCenter();
+    const size   = box.getSize();
+    const dist   = fitBoxPerspectiveDistance( cam, size[0], size[1], size[2], false );
+    const pos    = vScaleThenAdd( dist, [0,0,1], center  );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Apply Position & Look roation
+    cam.position.fromArray( pos );
+    cam.lookAt( new THREE.Vector3().fromArray( center ) );
+    
+    App.camCtrl.target.fromArray( center );
+    App.camCtrl.update();
+}
+
+function fitSphere( mesh, cam ){
+    const mSph   = mesh.geometry.boundingSphere;
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const dist   = fitSpherePerspectiveDistance( cam, mSph.radius );
+    const center = vAdd( mSph.center.toArray(), mesh.position.toArray() );
+    const pos    = vScaleThenAdd( dist, [0,0,1], center );
+    // Debug.pnt.add( p, 0x00ff00, 4 );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Apply Position & Look roation
+    cam.position.fromArray( pos );
+    cam.lookAt( new THREE.Vector3().fromArray( center ) );
+    
+    App.camCtrl.target.fromArray( center );
+    App.camCtrl.update();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const mBox      = mesh.geometry.boundingBox;
+    const offset    = ( mBox.max.z - mBox.min.z ) * 0.5;
+    const o         = vScaleThenAdd( offset, [0,0,1], center )
+    const u         = vScaleThenAdd( mSph.radius, [0,1,0], o );
+    const r         = vScaleThenAdd( mSph.radius, [1,0,0], o );
+    Debug.ln.add( o, u, 0x707070 );
+    Debug.ln.add( o, r, 0x707070 );
+}
+
+function fitSphereLookAt( mesh, cam ){
+    const mSph   = mesh.geometry.boundingSphere;
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const dist   = fitSpherePerspectiveDistance( cam, mSph.radius );
+    const center = vAdd( mSph.center.toArray(), mesh.position.toArray() );
+    const toCam  = vNorm( vSub( cam.position.toArray(), center ) );
+    const pos    = vScaleThenAdd( dist, toCam, center );
+    // Debug.pnt.add( p, 0x00ff00, 4 );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Apply Position & Look roation
+    cam.position.fromArray( pos );
+    cam.lookAt( new THREE.Vector3().fromArray( center ) );
+    
+    App.camCtrl.target.fromArray( center );
+    App.camCtrl.update();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const q = cam.quaternion.toArray();
+    const u = vScaleThenAdd( mSph.radius, qTransform( q, [0,1,0] ), center );
+    const r = vScaleThenAdd( mSph.radius, qTransform( q, [1,0,0] ), center );
+    Debug.ln.add( center, u, 0x707070 );
+    Debug.ln.add( center, r, 0x707070 );
+}
+// #endregion
+
+</script></body></html>

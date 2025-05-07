@@ -13,23 +13,45 @@ let Ref   = {};
 
 window.addEventListener( 'load', async ()=>{
 	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-	App.sphericalLook( 0, 20, 6 );
+	App.sphericalLook( 0, 20, 3 );
     Debug = await useVisualDebug( App );
 
-    console.log( THREE.REVISION );
+    // console.log( THREE.REVISION );
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    // const tf = await GLTFLoaderAsync( '../../res/models/rigged-daisy.glb' );
+    const tf = await new GLTFLoader().loadAsync( '../../res/models/rigged-daisy.glb' );
     // console.log( tf );
-    // App.scene.add( tf.scene );
+    App.scene.add( tf.scene );
 
-    // tf.scene.traverse( o=>console.log( 'x', o.type ) );
+    // tf.scene.traverse( o=>console.log( 'x', o.type, o.name ) );
+    // Group, Object3D, Bone, Mesh, SkinnedMesh
 
     // const o = firstFind( tf.scene, o=> (o.type === 'SkinnedMesh') );
     // const ary = findAll( tf.scene, o=> (o.type === 'SkinnedMesh') );
-    // for( let i of traverseFind( tf.scene, o=> (o.type === 'SkinnedMesh') ) ){
-    //     console.log( i.geometry.boundingBox.min, i.geometry.boundingBox.max );
-    // }
+
+    let cnt = 0;
+    for( let i of traverseFind( tf.scene, o=> (o.type === 'SkinnedMesh') ) ){
+        // console.log( i.geometry.boundingBox.min, i.geometry.boundingBox.max );
+        
+        // if( i.geometry.boundingBox.max.y > 0.9 ){
+        console.log( i.name );
+        // Debug.ln.box( 
+        //     i.geometry.boundingBox.min.toArray(), 
+        //     i.geometry.boundingBox.max.toArray(), 
+        //     0x00ff00
+        // )
+
+        if( i.name === 'Mesh_geo' ) i.visible = false;
+        if( i.name === 'Mesh003' ) i.visible = false;
+        if( i.name === 'Mesh003_1' ) i.visible = false;
+        
+
+        // }
+        cnt++;
+    }
+
+    console.log( 'Count', cnt );
+    // 103
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // App.createRenderLoop( onPreRender ).start();
@@ -38,18 +60,9 @@ window.addEventListener( 'load', async ()=>{
 
 function onPreRender( dt, et ){}
 
-/** Wrap ThreeJS's GLTFLoader in a promise to use Async/Await functionality */
-function GLTFLoaderAsync( url ){
-    return new Promise( ( resolve, reject )=>{
-        new GLTFLoader().load( url, resolve, null, reject );
-    });
-}
+// #endregion
 
-// Promise.allSettled([
-//     GLTFLoaderAsync( './_res/models/mannequin/mannequin.gltf' ).then( doSomething ),
-//     GLTFLoaderAsync( './_res/anim/kaykit_char_animations.gltf' ).then( doSomething ),
-// ]).then( onReady )
-
+// #region HELPERS
 function firstFind( root, fn ) {
   if( fn( root ) ) return root;
 
@@ -77,7 +90,6 @@ function findAll( root, fn ) {
   return rtn;
 }
 
-
 function* traverseFind( root, fn ) {
   const stack = [ root ];  
   let o;
@@ -89,6 +101,6 @@ function* traverseFind( root, fn ) {
     stack.push( ...o.children );
   }
 }
-
 // #endregion
+
 </script></body></html>
