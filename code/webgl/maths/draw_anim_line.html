@@ -1,0 +1,252 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import facedCube    from '@lib/meshes/FacedCube.js';
+
+import { qTransform, vDist, vCross, vOrthogonal, vScaleThenAdd, vLerp, fNorm } from '@lib/maths.js';
+
+import { Ray, intersectPlane } from '@lib/ray.js';
+
+import { Pane } from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    time   : Infinity,
+    tmax   : 2,
+
+    cube   : null,
+    ray    : new Ray(),
+    path   : null,
+    points : [],
+};
+
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 20, 6 );
+    Debug = await useVisualDebug( App );
+
+    Ref.path = new Path(); //.load( Ref.points );
+    Ref.drag = new DragEvents( App.renderer.domElement );
+    Ref.drag.onDown      = onDrawDown;
+    Ref.drag.onMove      = onDrawMove;
+    Ref.drag.onDragStart = ()=>{ App.camCtrl.enabled = false };
+    Ref.drag.onDragEnd   = ()=>{ 
+        App.camCtrl.enabled = true; 
+        Ref.path.load( Ref.points );
+    };
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.cube = facedCube();
+    App.scene.add( Ref.cube );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.createRenderLoop( onPreRender ).start();
+    // App.renderLoop();
+    
+    Ref.drag?.startEvents();
+    buildUI();
+});
+
+function onPreRender( dt, et ){
+    if( Ref.path.distance !== 0 && Ref.time <= Ref.tmax ){
+        Ref.time += dt;
+
+        const t = Math.min( 1, Ref.time / Ref.tmax );
+        const p = Ref.path.at( t );
+        
+        Ref.cube.position.fromArray( p );
+
+        if( t >= 1 ) Ref.time = Infinity;
+    }
+}
+
+function onDrawDown( e ){ 
+    if( e.shiftKey ){
+        [ Ref.planePos, Ref.planeNorm ] = getPlane();
+        Ref.points.length = 0;
+    }
+    return e.shiftKey;
+}
+
+function onDrawMove( e ){
+    Ref.ray.fromAppEvent( App, e );
+
+    const t = intersectPlane( Ref.ray, Ref.planePos, Ref.planeNorm );
+    if( t != null ){
+        Ref.points.push( Ref.ray.posAt( t ) );
+        // Debug.pnt.add( Ref.ray.posAt( t ), 0x00ff00, 3 )
+        drawPoints();
+    }
+}
+
+function drawPoints(){
+    Debug.reset();
+    for( let i=1; i < Ref.points.length; i++ ){
+        Debug.ln.add( Ref.points[i-1], Ref.points[i], 0x00ffff );
+    }
+    Debug.ln._updateGeometry();
+}
+
+async function buildUI(){    
+    appendGithubLink( false );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const p = new Pane( {  } );
+
+    const f = p.addFolder({ title: 'User Interface', expanded: true });
+    f.addButton({ title: 'Animate' }).on( 'click', ()=>{ Ref.time = 0 } );
+    f.addBinding( Ref, 'tmax', { min: 1, max: 10, step: 0.1, label: 'Time' } );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.pane = p;
+}
+
+// function onPointerDown( e ){
+//     if( e.shiftKey ){
+//         Ref.ray.fromAppEvent( App, e );
+//         Debug.ln.add( Ref.ray.posStart , Ref.ray.posEnd );
+
+//         const [ pos, norm ] = getPlane();
+//         const t = intersectPlane( Ref.ray, pos, norm );
+//         if( t != null ) Debug.pnt.add( Ref.ray.posAt( t ), 0x00ff00, 3 );
+//     }
+// }
+// #endregion
+
+function getPlane(){
+    const q = App.camera.quaternion.toArray();
+    // const x = qTransform( q, [1,0,0] );
+    // const y = qTransform( q, [0,1,0] );
+    const z = qTransform( q, [0,0,1] );
+    const p = Ref.cube.position.toArray();
+    // Debug.ln.add( p, vScaleThenAdd( 1, z, p ), 0x0000ff );
+    // Debug.ln.add( p, vScaleThenAdd( 1, y, p ), 0x00ff00 );
+    // Debug.ln.add( p, vScaleThenAdd( 1, x, p ), 0xff0000 );
+    // return [x,y,z];
+    return [ p, z ];
+}
+
+
+class DragEvents{
+    elm         = null;
+    dragging    = false;
+    onDragStart = null;
+    onDragEnd   = null;
+    onDown      = null;
+    onMove      = null;
+    onUp        = null;
+
+    constructor( elm ){
+        this.elm = elm;
+    }
+
+    // #region METHODS
+    startEvents(){
+        const o = this.elm;
+        o.addEventListener( 'pointerdown',   this.onPointerDown );
+        o.addEventListener( 'pointermove',   this.onPointerMove );
+        o.addEventListener( 'pointerup',     this.onPointerUp );
+        o.addEventListener( 'pointercancel', this.onPointerCancel );
+        return this;
+    }
+
+    disableEvents(){
+        const o = this.elm;
+        o.removeEventListener( 'pointerdown',   this.onPointerDown );
+        o.removeEventListener( 'pointermove',   this.onPointerMove );
+        o.removeEventListener( 'pointerup',     this.onPointerUp );
+        o.removeEventListener( 'pointercancel', this.onPointerCancel );
+        return this;
+    }
+    // #endregion
+
+    // #region EVENTS
+    onPointerDown = e=>{
+        if( this.onDown && this.onDown( e ) ){
+            this.dragging = true;
+            this.elm.setPointerCapture( e.pointerId );
+            if( this.onDragStart ) this.onDragStart();
+        }
+    }
+
+    onPointerMove = e=>{
+        if( this.dragging && this.onMove ) this.onMove( e );
+    }
+
+    onPointerUp = e=>{
+        if( this.dragging ){
+            this.dragging = false;
+            this.elm.releasePointerCapture( e.pointerId );
+
+            if( this.onDragEnd ) this.onDragEnd();
+            if( this.onUp )      this.onUp( e );
+        }
+    }
+
+    onPointerCancel = e=>{
+        if( this.dragging ){
+            this.dragging = false;
+            this.elm.releasePointerCapture( e.pointerId );
+            if( this.onDragEnd ) this.onDragEnd();
+        }
+    }
+    // #endregion
+}
+
+
+class Path{
+    steps    = [];
+    points   = null;
+    distance = 0;
+
+    load( pnts ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const s  = this.steps;
+        const p  = this.points = pnts;
+        s.length = 0;
+        s.push( 0 );
+        
+        this.distance = 0;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        let len;
+        for( let i=1; i < p.length; i++ ){
+            this.distance += vDist( p[i-1], p[i] );
+            s.push( this.distance );
+        }
+
+        console.log( this.distance );
+        // console.log( JSON.stringify(p) );
+        return this;
+    }
+
+    at( t ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if( t <= 0 ) return this.points[0].slice();
+        if( t >= 1 ) return this.points.at(-1).slice();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Find in between steps
+        const d = this.distance * t;
+        for( let i=1; i < this.steps.length; i++ ){
+            if( d < this.steps[ i ] ){
+                const tt = fNorm( this.steps[i-1], this.steps[i], d );
+                return vLerp( this.points[i-1], this.points[i], tt );
+            }
+        }
+
+        return null;
+    }
+}
+
+</script>
+<div style="position:fixed; bottom:10px; left:10px; font-family: monospace; color:yellow;">
+HOW DOWN SHIFT TO DRAW PATH
+</div>
+</body></html>
