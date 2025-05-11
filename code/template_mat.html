@@ -38,13 +38,14 @@ function onPreRender( dt, et ){}
 class CustomMaterial extends THREE.RawShaderMaterial {
   constructor( props={} ){
         super();
-
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         // Merge custom props with default options
         const opts = Object.assign({
             offset : [ 0, 1, 0 ],
             color  : new THREE.Color( '#00ff00' ),
         }, props );
 
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         this.name             = 'CustomMaterial';
         this.glslVersion      = THREE.GLSL3;
         this.depthTest        = true
@@ -54,14 +55,15 @@ class CustomMaterial extends THREE.RawShaderMaterial {
         // this.lights           = false;
     
         this.uniforms = {
-        //   offset  : { value: opts.offset },
-        color   : { value: opts.color },
+          //   offset  : { value: opts.offset },
+          color   : { value: opts.color },
         };
 
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         this.vertexShader = `
-        in vec3 position; // Vertex Position
-        in vec3 normal;   // Vertex Normal Direction
-        in vec2 uv;       // Vertex Texture UV Coordinate
+        in vec3 position;
+        in vec3 normal;
+        in vec2 uv;
 
         uniform mat4 modelMatrix;       // To WorldSpace
         uniform mat4 viewMatrix;        // To ViewSpace
@@ -83,6 +85,7 @@ class CustomMaterial extends THREE.RawShaderMaterial {
             gl_Position = projectionMatrix * viewMatrix * wpos;
         }`;
 
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         this.fragmentShader = `precision mediump float;
         in vec3 fragWPos;
         in vec2 fragUV;

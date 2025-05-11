@@ -1,0 +1,888 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+
+import { GLTFLoader } from 'three/GLTFLoader.js';
+import { firstFind }  from '@lib/util.js';
+import { 
+    vSub, vLen, vNorm, vOrthogonal, vScaleThenAdd, vNegate, vCopy,
+    qLook, qSwing, qTransform, qFromAxes, qNorm, qMul, qInvert, qCopy, }
+from '@lib/maths/maths.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    arySkel : [],
+};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 25, 20, 5, [0,0.6,0] );
+    Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    // await testAxel();
+    await testAnimation();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.createRenderLoop( onPreRender ).start();
+    // App.renderLoop();
+});
+
+function onPreRender( dt, et ){
+    if( Ref.mixer ){
+        Ref.mixer.update( dt );
+
+        for( const i of Ref.arySkel ){
+            i.updateRotations();
+        }
+    }
+}
+
+async function testAnimation(){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // LOADING
+    const [ glChar, glAnim ] = await Promise.all([ // Promise.allSettled
+        new GLTFLoader().loadAsync( '../../../res/models/mannequin.gltf' ),
+        new GLTFLoader().loadAsync( '../../../res/anim/kaykit_char_animations.gltf' ),
+    ]);
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // CHAR SETUP
+    const meshChar = firstFind( glChar.scene, o=>( o instanceof THREE.SkinnedMesh ));
+
+    // Add Char, need to add first bone too or animations wont work
+    App.scene.add( meshChar, meshChar.skeleton.bones[0] );
+
+    // Add 3js's skeleton helper to the scene
+    App.scene.add( new THREE.SkeletonHelper( meshChar.skeleton.bones[0] ) );
+
+    // gltf.scene.traverse( o=>{ if( !mesh && o instanceof THREE.SkinnedMesh ) mesh = o; });
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // ANIMATION SETUP
+    // for( let [i,o] of glAnim.animations.entries() ) console.log( i, o.name );
+    // 54 'Running_A'
+    // 55 'Running_B'
+    // 56 'Running_C'
+    // 90 'Walking_A'
+    // 91 'Walking_B'
+    // 93 'Walking_C'
+    // 94 'Walking_D_Skeletons'
+
+    Ref.mixer = new THREE.AnimationMixer( meshChar );
+
+    const act               = Ref.mixer.clipAction( glAnim.animations[54] );
+    act.loop                = THREE.LoopRepeat; //THREE.LoopOnce;
+    act.clampWhenFinished   = true;
+    act.play();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // SETUP CUSTOM SKELETON RENDERS
+    const skel0 = new SkeletonView( cuboidBone(), new CuboidBoneMaterial() );
+    skel0.setSkeleton( meshChar.skeleton );
+    skel0.position.x = -2;
+
+    App.scene.add( skel0 );
+    Ref.arySkel.push( skel0 );
+
+    // -----------------------------
+    const skel1 = new SkeletonView( jointBone(), new JointBoneMaterial() );
+    skel1.setSkeleton( meshChar.skeleton );
+    skel1.position.x = 2;
+
+    App.scene.add( skel1 );
+    Ref.arySkel.push( skel1 );
+
+    // -----------------------------
+    const skel2 = new SkeletonView( blenderBone(), new BlenderBoneMaterial() );
+    skel2.setSkeleton( meshChar.skeleton );
+    skel2.position.z = 2;
+
+    App.scene.add( skel2 );
+    Ref.arySkel.push( skel2 );
+}
+
+async function testAxel(){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const tf = await new GLTFLoader().loadAsync( '../../../res/models/axel.glb' );
+    App.scene.add( tf.scene );
+    // tf.scene.traverse( o=>console.log( 'x', o.type, o.name ) );
+
+    const mesh = firstFind( tf.scene, i=>( i.type === 'SkinnedMesh' ) );
+
+    // const skel = new SkeletonView( cuboidBone(), new CuboidBoneMaterial() );
+    // const skel = new SkeletonView( jointBone(), new JointBoneMaterial() );
+    const skel = new SkeletonView( blenderBone(), new BlenderBoneMaterial() );
+
+    skel.setSkeleton( mesh.skeleton );
+    App.scene.add( skel );
+
+    // debugBones( mesh.skeleton.bones );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // 55 'left_hip_BIND'
+    mesh.skeleton.bones[55].rotation.y += 30;
+    skel.updateRotations();
+}
+
+function debugBones( bones ){
+    const posMap = new Map();
+
+    for( let [i,b] of bones.entries() ){
+        posMap.set( b, b.getWorldPosition( new THREE.Vector3() ) );
+        Debug.pnt.add( posMap.get( b ).toArray(), 0xffffff, 1.5, 6 );
+    }
+
+    let b, bp;
+    let c, cp;
+    for( b of bones ){
+        bp = posMap.get( b );
+        for( c of b.children ){
+            cp = posMap.get( c );
+            Debug.ln.add( bp.toArray(), cp.toArray(), 0x00ff00, 0x606060 );
+        }
+    }
+}
+
+// #endregion
+
+class SkeletonView extends THREE.Mesh{
+    // #region MAIN
+    skel    = null;
+    mapBone = null;
+    bufPos  = null;
+    bufRot  = null;
+    bufLen  = null;
+
+    constructor( iGeo, iMat ){
+        super( iGeo, iMat );
+    }
+    // #endregion
+
+    setSkeleton( sk ){
+        const bPos = [];    // Position Buffer
+        const bLen = [];    // Len Buffer
+        const bRot = [];    // Quat Buffer
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Compute bind / rest pose
+        const mapTmp    = new Map();
+        const tv        = new THREE.Vector3();
+        const tq        = new THREE.Quaternion();
+        
+        this.mapBone    = new Map();
+
+        for( const b of sk.bones ){
+            mapTmp.set( b, {
+                wpos    : b.getWorldPosition( tv ).toArray(),
+                irot    : qInvert( b.getWorldQuaternion( tq ).toArray() ),
+            } );
+
+            this.mapBone.set( b, { inst: [] } );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const v = [0,0,0];
+        const q = [0,0,0,1]; 
+        let cnt = 0;
+
+        let p, po;  // Parent Object
+        let c, co;  // Child Object
+        let bo;     // Bone map object to store final values
+        let inst;   // Bone instance data object
+        let ax;
+
+        for( p of sk.bones ){
+            bo = this.mapBone.get( p ); // Get bone papping data
+            po = mapTmp.get( p );       // Get ws bone data of parent
+
+            for( c of p.children ){
+                // --------------------------------------
+                co = mapTmp.get( c ); // Get ws bone data of child
+                // Debug.ln.add( po.tran.pos, co.tran.pos, 0x00ff00, 0x606060 );
+                
+                // Compute vector from parent to child joint
+                vSub( co.wpos, po.wpos, v );
+
+                // Save initial data for connection renderer
+                inst = {
+                    idx     : cnt,
+                    len     : vLen( v ),
+                    lrot    : [0,0,0,1],
+                };
+
+                // --------------------------------------
+                // Compute WS rotation that will align the bone render
+                // at the direction from parent to child joint
+                ax = vOrthogonal( vNorm(v,v), [0,0,1] );                // Create Axes Vectors with up being forward & vice versa
+                qFromAxes( vNegate(ax[0],ax[0]), ax[2], ax[1], q );     // Flip vectors around & create rotation form it
+                qMul( po.irot, q, inst.lrot );                          // To Local space
+
+                // --------------------------------------
+                // Save initial world space values to the buffers
+                bLen.push( inst.len );
+                bPos.push( ...po.wpos );
+                bRot.push( ...q );
+
+                // --------------------------------------
+                // Finish up
+                bo.inst.push( inst );
+                cnt++;
+            }
+        }
+
+        this.createInstances( bLen, bPos,  bRot );
+        return this;
+    }
+
+    createInstances( bLen, bPos,  bRot ){
+        const geo = this.geometry;
+        let attr;
+
+        geo.instanceCount = bPos.length / 3;
+        // geo._maxInstanceCount = Infinity; //ThreeJS is buggy, found in a forum setting this can fix Instancing not rendering sometimes
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.bufLen = new Float32Array( bLen );
+        attr        = geo.getAttribute( 'ilen' );
+        if( !attr ) geo.setAttribute( 'ilen', new THREE.InstancedBufferAttribute( this.bufLen, 1 ) );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.bufPos = new Float32Array( bPos );
+        attr        = geo.getAttribute( 'ipos' );
+        if( !attr ) geo.setAttribute( 'ipos', new THREE.InstancedBufferAttribute( this.bufPos, 3 ) );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.bufRot = new Float32Array( bRot );
+        attr        = geo.getAttribute( 'irot' );
+        if( !attr ) geo.setAttribute( 'irot', new THREE.InstancedBufferAttribute( this.bufRot, 4 ) );
+    }
+
+    updateRotations(){
+        const tq = new THREE.Quaternion();
+        const tv = new THREE.Vector3();
+        const wq = [0,0,0,1]; 
+        
+        let wp;     // World position
+        let q;      // Current world rotation from bone
+        let j, k;   // Indexers
+
+        for( const [b,o] of this.mapBone ){
+            q  = b.getWorldQuaternion( tq ).toArray();
+            wp = b.getWorldPosition( tv ).toArray();
+
+            for( let i of o.inst ){
+                j = i.idx * 3;
+                k = i.idx * 4;
+
+                qMul( q, i.lrot, wq );
+
+                this.bufPos[ j+0 ] = wp[0];
+                this.bufPos[ j+1 ] = wp[1];
+                this.bufPos[ j+2 ] = wp[2];
+
+                this.bufRot[ k+0 ] = wq[0];
+                this.bufRot[ k+1 ] = wq[1];
+                this.bufRot[ k+2 ] = wq[2];
+                this.bufRot[ k+3 ] = wq[3];
+            }
+        }
+
+        this.geometry.getAttribute( 'irot' ).needsUpdate = true;
+        this.geometry.getAttribute( 'ipos' ).needsUpdate = true;
+    }
+}
+
+// #region CUBOID BONE
+
+// TODO, Try to parse Improved Lambert into simple GLSL insert
+// https://x.com/manish4u2/status/1779582587985371451
+// https://github.com/mrdoob/three.js/pull/28543
+class CuboidBoneMaterial extends THREE.RawShaderMaterial{
+    constructor(){
+        super();
+
+        // #region SETUP
+        this.name               = 'CuboidBoneMaterial';
+        this.glslVersion        = THREE.GLSL3;
+        this.renderOrder        = 100;
+        this.depthTest          = false;
+        // this.side               = THREE.DoubleSide;
+        // this.transparent        = true;
+        // this.alphaToCoverage    = true;
+        // this.lights             = true;
+
+        this.uniforms           = {
+            // oRadius     : { value: 0.49 },
+            // color       : { value: new THREE.Color( '#202020' ) },
+            colors       : { value:[
+                new THREE.Color( '#ff0000' ), // Right
+                new THREE.Color( '#00ff00' ), // Up
+                new THREE.Color( '#0000ff' ), // Front
+                new THREE.Color( '#b0b0b0' ), // Left
+                new THREE.Color( '#707070' ), // Bottom
+                new THREE.Color( '#909090' ), // Back
+            ] },
+            
+        };
+        // #endregion
+        
+        this.vertexShader = `
+        in vec4  position;
+        in vec3  normal;
+        in vec2  uv;
+        in vec3  ipos;
+        in vec4  irot;
+        in float ilen;
+
+        uniform mat4 modelMatrix;
+        uniform mat4 viewMatrix;
+        uniform mat4 projectionMatrix;
+
+        out vec3 fragLPos;
+        out vec3 fragWPos;
+        out vec3 fagWNorm;
+
+        flat out int iColor;
+
+        // #####################################################################
+
+        // Quat * Vec3 - Rotates Vec3
+        vec3 q_mul_vec( vec4 q, vec3 v ){
+            // return v + cross( 2.0 * q.xyz, cross( q.xyz, v) + q.w * v );  // Either Seems to Work, not sure which is the correct way to handle transformation
+            return v + 2.0 * cross( q.xyz, cross( q.xyz, v ) + q.w * v );
+        } 
+
+        // #####################################################################
+
+        void main(){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // INSTANCE TRANSFORM
+            vec3 pos = position.xyz * ilen;     // Scale
+            pos      = q_mul_vec( irot, pos );  // Rotate
+            pos     += ipos;                    // Translate
+            
+            // pos.y += float( gl_InstanceID ) * 1.0;
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // MAIN TRANSFORM
+            vec4 wPos   = modelMatrix * vec4( pos, 1.0 );
+            gl_Position = projectionMatrix * viewMatrix * wPos;
+            
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // OUT VALUES
+            fragWPos    = wPos.xyz;
+            fragLPos    = pos;
+            iColor      = int( position.w );
+
+            vec3 N      = q_mul_vec( irot, normal );            // Apply instance Rotation
+            fagWNorm    = ( modelMatrix * vec4( N, 0.0 ) ).xyz; // Apply world rotation
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        in vec3 fragLPos;
+        in vec3 fragWPos;
+        in vec3 fagWNorm;
+        flat in int iColor;
+
+        out vec4 outColor;
+
+        uniform float oRadius;
+        uniform vec3[6] colors;
+
+        uniform highp vec3 cameraPosition;
+
+        // #####################################################################
+
+        vec3 lightDir = normalize( vec3( 4.0, 5.0, 4.0 ) );
+
+        void main(){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~    
+            vec3 colFace = colors[ iColor ];
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Lambert Lighting
+            vec3 N    = normalize( fagWNorm );        
+            float NdL = dot( N, lightDir );
+            NdL       = NdL * 0.5 + 0.5;                    // Remap -1:0 to 0:1
+            NdL       = clamp( 0.0, 1.0, NdL );             // Help remove any midtone shadows, don't notice it using planes
+            NdL       = NdL * NdL;                          // Valve's Half Lambert, just curves the light value
+            
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Fresnel - Note, doesn't look great on flat surfaces
+            // vec3 V = normalize( cameraPosition - fragWPos );
+            // float fresnelPow = 3.5;
+            // float fresnelFac = 1.0 - abs( dot( V, N ) );
+            // float fresnel    = pow( fresnelFac, fresnelPow );
+
+            // outColor = vec4( vec3( fresnel ), 1.0 );
+            // outColor = vec4( mix( colFace * NdL, vec3(0.8), fresnel ), 1.0 );
+            
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            outColor = vec4( colFace * NdL, 1.0 );
+        }`;
+    }
+}
+
+function cuboidBone( size=0.1 ){
+    const w = size;
+    const h = 1;
+    const d = size;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const x1 = w * 0.5;
+    const y1 = h;
+    const z1 = d * 0.5;
+    const x0 = -x1;
+    const y0 = 0;
+    const z0 = -z1;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~    
+    // Starting bottom left corner, then working counter clockwise to create the front face.
+    // Backface is the first face but in reverse (3,2,1,0)
+    // keep each quad face built the same way to make index and uv easier to assign
+    const vert = [
+        x0, y1, z1, 2,	//0 Front
+        x0, y0, z1, 2, 	//1
+        x1, y0, z1, 2, 	//2
+        x1, y1, z1, 2, 	//3 
+
+        x1, y1, z0, 5,  //4 Back
+        x1, y0, z0, 5,  //5
+        x0, y0, z0, 5,  //6
+        x0, y1, z0, 5,  //7 
+
+        x1, y1, z1, 0, 	// 3 Right
+        x1, y0, z1, 0,  // 2 
+        x1, y0, z0, 0,  // 5
+        x1, y1, z0, 0,  // 4
+
+        x0, y0, z1, 4,  //1 Bottom
+        x0, y0, z0, 4,  //6
+        x1, y0, z0, 4,  //5
+        x1, y0, z1, 4,  //2
+
+        x0, y1, z0, 3,  //7 Left
+        x0, y0, z0, 3,  //6
+        x0, y0, z1, 3,  //1
+        x0, y1, z1, 3,  //0
+
+        x0, y1, z0, 1,  //7 Top
+        x0, y1, z1, 1,  //0
+        x1, y1, z1, 1,  //3
+        x1, y1, z0, 1,  //4
+    ];
+
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Hardcode indices - Build the index of each quad [0,1,2, 2,3,0]
+    const idx = [ 
+        0, 1, 2, 2, 3, 0, 
+        4, 5, 6, 6, 7, 4, 
+        8, 9, 10, 10, 11, 8, 
+        12, 13, 14, 14, 15, 12, 
+        16, 17, 18, 18, 19, 16, 
+        20, 21, 22, 22, 23, 20,
+    ];
+
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Build UV data for each vertex
+    const uv = [];
+    for( let i=0; i < 6; i++) uv.push( 0,0,  0,1,  1,1,  1,0 );
+
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // const geo = new THREE.BufferGeometry();
+    const geo = new THREE.InstancedBufferGeometry();
+    geo.setAttribute( 'position', new THREE.BufferAttribute( new Float32Array(vert), 4 ) );
+    geo.setAttribute( 'uv', new THREE.BufferAttribute( new Float32Array(uv), 2 ) );
+    geo.setAttribute( 'normal', new THREE.BufferAttribute( new Float32Array([
+        0, 0, 1,     0, 0, 1,    0, 0, 1,    0, 0, 1,   // Front
+        0, 0,-1,     0, 0,-1,    0, 0,-1,    0, 0,-1,   // Back
+        1, 0, 0,     1, 0, 0,    1, 0, 0,    1, 0, 0,   // Left
+        0,-1, 0,     0,-1, 0,    0,-1, 0,    0,-1, 0,   // Bottom
+       -1, 0, 0,    -1, 0, 0,   -1, 0, 0,   -1, 0, 0,   // Right
+        0, 1, 0,     0, 1, 0,    0, 1, 0,    0, 1, 0    // Top
+    ]), 3 ) );
+
+    geo.setIndex( new THREE.BufferAttribute( new Uint16Array(idx), 1));
+
+    // geo.setAttribute( 'ipos', new THREE.InstancedBufferAttribute( new Float32Array( [0,-1,0,  1,2,-2] ), 3 ) );
+
+    // geo.instanceCount       = 2;
+    // geo._maxInstanceCount   = Infinity; //ThreeJS is buggy, found in a forum setting this can fix Instancing not rendering sometimes
+
+    return geo;
+}
+
+// #endregion
+
+// #region JOINT BONE
+
+class JointBoneMaterial extends THREE.RawShaderMaterial{
+    constructor(){
+        super();
+
+        // #region SETUP
+        this.name               = 'JointBoneMaterial';
+        this.glslVersion        = THREE.GLSL3;
+        this.renderOrder        = 100;
+        this.depthTest          = true;
+        this.depthWrite         = true;
+        // this.side               = THREE.DoubleSide;
+        // this.transparent        = true;
+        // this.alphaToCoverage    = true;
+        // this.lights             = true;
+
+        this.uniforms = {
+            colors : { value:[
+                new THREE.Color( '#808080' ), // Capsule
+                new THREE.Color( '#ffff00' ), // Sphere
+            ] },
+        };
+        // #endregion
+        
+        this.vertexShader = `
+        in vec4  position;
+        in vec3  normal;
+        in vec2  uv;
+        in vec3  ipos;
+        in vec4  irot;
+        in float ilen;
+
+        uniform mat4 modelMatrix;
+        uniform mat4 viewMatrix;
+        uniform mat4 projectionMatrix;
+
+        out vec3 fragLPos;
+        out vec3 fragWPos;
+        out vec3 fagWNorm;
+
+        flat out int iColor;
+
+        // #####################################################################
+
+        // Quat * Vec3 - Rotates Vec3
+        vec3 q_mul_vec( vec4 q, vec3 v ){
+            // return v + cross( 2.0 * q.xyz, cross( q.xyz, v) + q.w * v );  // Either Seems to Work, not sure which is the correct way to handle transformation
+            return v + 2.0 * cross( q.xyz, cross( q.xyz, v ) + q.w * v );
+        } 
+
+        // #####################################################################
+
+        void main(){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // INSTANCE TRANSFORM
+            vec3 pos = position.xyz * ilen;     // Scale
+            pos      = q_mul_vec( irot, pos );  // Rotate
+            pos     += ipos;                    // Translate
+            
+            // vec3 pos = position.xyz + ipos;
+            // pos.y += float( gl_InstanceID ) * 1.0;
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // MAIN TRANSFORM
+            vec4 wPos   = modelMatrix * vec4( pos, 1.0 );
+            gl_Position = projectionMatrix * viewMatrix * wPos;
+            
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // OUT VALUES
+            fragWPos    = wPos.xyz;
+            fragLPos    = pos;
+            iColor      = int( position.w );
+
+            vec3 N      = q_mul_vec( irot, normal );            // Apply instance Rotation
+            fagWNorm    = ( modelMatrix * vec4( N, 0.0 ) ).xyz; // Apply world rotation
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        in vec3 fragLPos;
+        in vec3 fragWPos;
+        in vec3 fagWNorm;
+        flat in int iColor;
+
+        out vec4 outColor;
+
+        uniform float oRadius;
+        uniform vec3[2] colors;
+
+        uniform highp vec3 cameraPosition;
+
+        // #####################################################################
+
+        vec3 lightDir = normalize( vec3( 4.0, 5.0, 4.0 ) );
+
+        void main(){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~    
+            vec3 colFace = colors[ iColor ];
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Lambert Lighting
+            vec3 N    = normalize( fagWNorm );        
+            float NdL = dot( N, lightDir );
+            NdL       = NdL * 0.5 + 0.5;                    // Remap -1:0 to 0:1
+            NdL       = clamp( 0.0, 1.0, NdL );             // Help remove any midtone shadows, don't notice it using planes
+            NdL       = NdL * NdL;                          // Valve's Half Lambert, just curves the light value
+            
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Fresnel - Note, doesn't look great on flat surfaces
+            // vec3 V = normalize( cameraPosition - fragWPos );
+            // float fresnelPow = 3.5;
+            // float fresnelFac = 1.0 - abs( dot( V, N ) );
+            // float fresnel    = pow( fresnelFac, fresnelPow );
+
+            // outColor = vec4( vec3( fresnel ), 1.0 );
+            // outColor = vec4( mix( colFace * NdL, vec3(0.8), fresnel ), 1.0 );
+            
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            outColor = vec4( colFace * NdL, 1.0 );
+        }`;
+    }
+}
+
+function jointBone(){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const vert = [];
+    const norm = [];
+    const indi = [];
+    let offset = 0;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const fnMerge = ( geo, iOff, n )=>{
+        const vAry = geo.getAttribute( 'position' ).array;
+        const nAry = geo.getAttribute( 'normal' ).array;
+        const iAry = geo.index.array;
+
+        for( let i=0; i < vAry.length; i+=3 ){
+            vert.push( vAry[i+0], vAry[i+1], vAry[i+2], n );
+            norm.push( nAry[i+0], nAry[i+1], nAry[i+2] );
+        }
+
+        for( let i of iAry ) indi.push( iOff + i );
+
+        return vAry.length / 3;
+    };
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const r     = 0.06
+    const cGeo  = new THREE.CapsuleGeometry( r, 1.0 - r*2, 1, 10 );
+    cGeo.translate( 0, 0.5, 0 );
+    offset += fnMerge( cGeo, offset, 0 );
+
+    const sGeo = new THREE.SphereGeometry( 0.1, 10, 8 );
+    offset += fnMerge( sGeo, offset, 1 );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // const geo = new THREE.BufferGeometry();
+    const geo = new THREE.InstancedBufferGeometry();
+    geo.setAttribute( 'position', new THREE.BufferAttribute( new Float32Array(vert), 4 ) );
+    geo.setAttribute( 'normal', new THREE.BufferAttribute( new Float32Array(norm), 3 ) );
+    geo.setIndex( new THREE.BufferAttribute( new Uint16Array(indi), 1));
+    
+    // geo.setAttribute( 'ipos', new THREE.InstancedBufferAttribute( new Float32Array( [0,-1,0,  1,2,-2] ), 3 ) );
+    // geo.instanceCount = 2;
+
+    return geo;
+}
+
+// #endregion
+
+// #region BLENDER BONE
+
+class BlenderBoneMaterial extends THREE.RawShaderMaterial{
+    constructor(){
+        super();
+
+        // #region SETUP
+        this.name               = 'BlenderBoneMaterial';
+        this.glslVersion        = THREE.GLSL3;
+        this.renderOrder        = 100;
+        this.depthTest          = true;
+        this.depthWrite         = true;
+        // this.side               = THREE.DoubleSide;
+        // this.transparent        = true;
+        // this.alphaToCoverage    = true;
+        // this.lights             = true;
+
+        this.uniforms = {
+            colors : { value:[
+                new THREE.Color( '#00ffff' ), // Capsule
+                new THREE.Color( '#e0e0e0' ), // Sphere
+            ] },
+        };
+        // #endregion
+        
+        this.vertexShader = `
+        in vec4  position;
+        in vec3  normal;
+        in vec2  uv;
+        in vec3  ipos;
+        in vec4  irot;
+        in float ilen;
+
+        uniform mat4 modelMatrix;
+        uniform mat4 viewMatrix;
+        uniform mat4 projectionMatrix;
+
+        out vec3 fragLPos;
+        out vec3 fragWPos;
+        out vec3 fagWNorm;
+
+        flat out int iColor;
+
+        // #####################################################################
+
+        // Quat * Vec3 - Rotates Vec3
+        vec3 q_mul_vec( vec4 q, vec3 v ){
+            // return v + cross( 2.0 * q.xyz, cross( q.xyz, v) + q.w * v );  // Either Seems to Work, not sure which is the correct way to handle transformation
+            return v + 2.0 * cross( q.xyz, cross( q.xyz, v ) + q.w * v );
+        } 
+
+        // #####################################################################
+
+        void main(){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // INSTANCE TRANSFORM
+            vec3 pos = position.xyz * ilen;     // Scale
+            pos      = q_mul_vec( irot, pos );  // Rotate
+            pos     += ipos;                    // Translate
+            
+            // vec3 pos = position.xyz + ipos;
+            // pos.y += float( gl_InstanceID ) * 1.0;
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // MAIN TRANSFORM
+            vec4 wPos   = modelMatrix * vec4( pos, 1.0 );
+            gl_Position = projectionMatrix * viewMatrix * wPos;
+            
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // OUT VALUES
+            fragWPos    = wPos.xyz;
+            fragLPos    = pos;
+            iColor      = int( position.w );
+
+            vec3 N      = q_mul_vec( irot, normal );            // Apply instance Rotation
+            fagWNorm    = ( modelMatrix * vec4( N, 0.0 ) ).xyz; // Apply world rotation
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        in vec3 fragLPos;
+        in vec3 fragWPos;
+        in vec3 fagWNorm;
+        flat in int iColor;
+
+        out vec4 outColor;
+
+        uniform float oRadius;
+        uniform vec3[2] colors;
+
+        uniform highp vec3 cameraPosition;
+
+        // #####################################################################
+
+        vec3 lightDir = normalize( vec3( 4.0, 5.0, 4.0 ) );
+
+        void main(){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~    
+            vec3 colFace = colors[ iColor ];
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Lambert Lighting
+            vec3 N    = normalize( fagWNorm );        
+            float NdL = dot( N, lightDir );
+            NdL       = NdL * 0.5 + 0.5;                    // Remap -1:0 to 0:1
+            NdL       = clamp( 0.0, 1.0, NdL );             // Help remove any midtone shadows, don't notice it using planes
+            NdL       = NdL * NdL;                          // Valve's Half Lambert, just curves the light value
+            
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Fresnel - Note, doesn't look great on flat surfaces
+            // vec3 V = normalize( cameraPosition - fragWPos );
+            // float fresnelPow = 3.5;
+            // float fresnelFac = 1.0 - abs( dot( V, N ) );
+            // float fresnel    = pow( fresnelFac, fresnelPow );
+
+            // outColor = vec4( vec3( fresnel ), 1.0 );
+            // outColor = vec4( mix( colFace * NdL, vec3(0.8), fresnel ), 1.0 );
+            
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            outColor = vec4( colFace * NdL, 1.0 );
+        }`;
+    }
+}
+
+function blenderBone(){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const vert = [];
+    const norm = [];
+    const indi = [];
+    let offset = 0;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const fnMerge = ( geo, iOff, n )=>{
+        const vAry = geo.getAttribute( 'position' ).array;
+        const nAry = geo.getAttribute( 'normal' ).array;
+        const iAry = geo.index?.array;
+
+        for( let i=0; i < vAry.length; i+=3 ){
+            vert.push( vAry[i+0], vAry[i+1], vAry[i+2], n );
+            norm.push( nAry[i+0], nAry[i+1], nAry[i+2] );
+        }
+
+        for( let i of iAry ) indi.push( iOff + i );
+
+        return vAry.length / 3;
+    };
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const oGeo = octahedron( 0.94 );
+    oGeo.translate( 0, 0.06, 0 );
+    offset += fnMerge( oGeo, offset, 0 );
+
+    const sGeo = new THREE.SphereGeometry( 0.06, 6, 6 );
+    offset += fnMerge( sGeo, offset, 1 );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // const geo = new THREE.BufferGeometry();
+    const geo = new THREE.InstancedBufferGeometry();
+    geo.setAttribute( 'position', new THREE.BufferAttribute( new Float32Array(vert), 4 ) );
+    geo.setAttribute( 'normal', new THREE.BufferAttribute( new Float32Array(norm), 3 ) );
+    geo.setIndex( new THREE.BufferAttribute( new Uint16Array(indi), 1));
+    
+    // geo.setAttribute( 'ipos', new THREE.InstancedBufferAttribute( new Float32Array( [0,-1,0,  1,2,-2] ), 3 ) );
+    // geo.instanceCount = 2;
+
+    return geo;
+}
+
+function octahedron( nh=1, ns=0.1, nt=0.12 ){
+    const vert = [
+        -ns,nt,ns,  ns,nt,ns,   0,nh,0,
+        ns,nt,ns,   ns,nt,-ns,  0,nh,0,
+        ns,nt,-ns, -ns,nt,-ns,  0,nh,0,
+        -ns,nt,-ns, -ns,nt,ns,  0,nh,0,
+
+        -ns,nt,ns,  ns,nt,ns,   0,0,0,
+        ns,nt,ns,   ns,nt,-ns,  0,0,0,
+        ns,nt,-ns, -ns,nt,-ns,  0,0,0,
+        -ns,nt,-ns, -ns,nt,ns,  0,0,0,
+    ];
+
+    const indi = [ 
+        0,1,2, 3,4,5, 6,7,8, 9,10,11,
+        14,13,12, 17,16,15, 20,19,18, 23,22,21,
+    ];
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute( 'position', new THREE.BufferAttribute( new Float32Array(vert), 3 ) );
+    geo.setIndex( new THREE.BufferAttribute( new Uint16Array(indi), 1));
+    geo.computeVertexNormals();
+    return geo;
+}
+
+// #endregion
+
+</script></body></html>
