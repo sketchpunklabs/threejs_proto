@@ -1,0 +1,592 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+
+import { smoothStep, spherical, 
+    vScale, vScaleThenAdd, vAdd, vSub, vDot, vCopy,
+    qFromEuler, qTransform,
+} from '@lib/maths/maths.js';
+
+import { Pane } from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+	// target 		: [1, 0.25, -1 ],
+	// planeRot	: [0,0], //[ Math.PI * 0.25, Math.PI * 0.25 ], 
+	// planePos	: [ 0, 0, 0 ],
+
+    pivotRotX   : 0,
+    pivotRotY   : 0,
+    pivotRotZ   : 0,
+    pivotPos    : { x:0, y:0, z:0 },
+
+	planeDist 	: 0.5,
+    planeRotX   : 0,
+    planeRotY   : 0,
+    planePos    : { x:0, y:0, z:0 },
+};
+
+/*
+Skinnless Deformations
+- Original : https://x.com/PavelBoytchev/status/1924170555852255581
+- Demo : https://boytchev.github.io/disfigure/examples/entangled-space/
+- Info : https://boytchev.github.io/disfigure/
+- Code : https://github.com/boytchev/disfigure/
+- Visual of body weights : https://x.com/PavelBoytchev/status/1924285587160244398
+- https://x.com/PavelBoytchev/status/1926331170486096017
+- https://boytchev.github.io/disfigure/examples/rigged-skeleton/
+
+Basic Rotator
+- Original : https://x.com/PavelBoytchev/status/1924176081646411823
+- Demo : https://boytchev.github.io/tsl-textures/online/rotator.html
+- Info : https://boytchev.github.io/tsl-textures/docs/rotator.html
+- Code : https://github.com/boytchev/tsl-textures/blob/main/online/rotator.html
+- Code : https://github.com/boytchev/tsl-textures/blob/main/src/rotator.js
+- Code : https://github.com/boytchev/tsl-textures/blob/main/online/online.js
+*/
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 20, 6 );
+    Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const geo = new THREE.BoxGeometry( 2, 2, 2, 20, 20, 20 );
+
+    // Ref.mat    = new THREE.PointsMaterial( { size:3.0, sizeAttenuation:1, color: 0x88ff88 } );
+	Ref.mat    = new CustomMaterial();
+    const mesh = new THREE.Points( geo, Ref.mat  );
+    App.scene.add( mesh );
+
+    updateMat();
+
+	// debugPlane();
+    // debugPlane2();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+    buildUI();
+});
+
+function onPreRender( dt, et ){}
+
+function updateMat(){
+
+    const planePos = [Ref.planePos.x, Ref.planePos.y, Ref.planePos.z];
+    const pivotPos = [Ref.pivotPos.x, Ref.pivotPos.y, Ref.pivotPos.z];
+
+    Ref.mat.setPivotRot( [Ref.pivotRotX, Ref.pivotRotY, Ref.pivotRotZ] );
+    Ref.mat.setPivotPos( [Ref.pivotPos.x, Ref.pivotPos.y, Ref.pivotPos.z] );
+
+    Ref.mat.setPlaneDist( Ref.planeDist );
+    Ref.mat.setPlaneRot( [Ref.planeRotX, Ref.planeRotY] );
+    Ref.mat.setPlanePos( planePos );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const n     = spherical( Ref.planeRotX, Ref.planeRotY ); // Compute Plane Normal Direction
+    const sn    = vScale( n, Ref.planeDist );   // Max Distance
+    const snh   = vScale( sn, 0.5 );		    // Half Distance
+    const uPos  = vSub( planePos, snh );        // Pos under plane, MIN range  
+    const xPos  = vAdd( planePos, snh );        // Only for debug, max point away from plane
+    Debug.reset();
+
+    Debug.pnt.add( planePos, 0x00ffff, 4 );
+    Debug.pnt.add( uPos, 0xff3333, 3 );
+    Debug.pnt.add( xPos, 0x00ff00, 3 );
+    Debug.ln.add( uPos, vScaleThenAdd( 1.5 + Ref.planeDist, n, uPos ), 0xffffff );
+
+    Debug.pnt.add( pivotPos, 0xffffff, 5, 6 );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Spherical can be created using YX quaternion rotation
+    const q  = qFromEuler( Ref.planeRotX, Ref.planeRotY, 0, 'YXZ' );
+    // const nn = qTransform( q, [0,1,0] );
+    // Debug.ln.add( planePos, vScaleThenAdd( 1.5, nn, planePos ), 0xffff00 );
+
+    const st = 16;
+    const r  = 1.9;
+    const p  = [0,0,0];
+    const pp = [0,0,0];
+    for( let i=0; i <= st; i++ ){
+        p[0] = r * Math.cos( Math.PI * 2 * (i / st) );
+        p[1] = 0;
+        p[2] = r * Math.sin( Math.PI * 2 * (i / st) );
+
+        qTransform( q, p, p );
+        vAdd( p, planePos, p );
+
+        if( i > 0 ) Debug.ln.add( p, pp, 0x009999 );
+        vCopy( p, pp );
+    }
+
+}
+
+async function buildUI(){
+    appendGithubLink( false );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const p = new Pane( {  } );
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const f2 = p.addFolder({ title: 'Plane', expanded: true });
+    f2.addBinding( Ref, 'planeRotX', { min: -Math.PI, max: Math.PI, step: 0.01, label: 'RotX' } ).on( "change", updateMat );
+    f2.addBinding( Ref, 'planeRotY', { min: -Math.PI, max: Math.PI, step: 0.01, label: 'RotY' } ).on( "change", updateMat );
+    f2.addBinding( Ref, 'planeDist', { min:0.01, max: 4, step: 0.01, label: 'Range' } ).on( "change", updateMat );
+
+    f2.addBinding( Ref, 'planePos',{
+        label: "Position",
+        x: { min:-2, max:2, step: 0.1 },
+        y: { min:-2, max:2, step: 0.1 },
+        z: { min:-2, max:2, step: 0.1 },
+    }).on( "change", updateMat );;
+
+    f2.addButton({ title: 'Reset' }).on( 'click', ()=>{
+        Ref.planeRotX = 0;
+        Ref.planeRotY = 0;
+        Ref.planeDist = 0.5;
+        Ref.planePos.x = 0;
+        Ref.planePos.y = 0;
+        Ref.planePos.z = 0;
+
+        f2.refresh();
+        updateMat();
+    });
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const f1 = p.addFolder({ title: 'Pivot Transform', expanded: true });
+    f1.addBinding( Ref, 'pivotRotX', { min: -Math.PI, max: Math.PI, step: 0.01, label: 'RotX' } ).on( "change", updateMat );
+    f1.addBinding( Ref, 'pivotRotY', { min: -Math.PI, max: Math.PI, step: 0.01, label: 'RotY' } ).on( "change", updateMat );
+    f1.addBinding( Ref, 'pivotRotZ', { min: -Math.PI, max: Math.PI, step: 0.01, label: 'RotZ' } ).on( "change", updateMat );
+
+    f1.addBinding( Ref, 'pivotPos',{
+        label: "Position",
+        x: { min:-3, max:3, step: 0.1 },
+        y: { min:-3, max:3, step: 0.1 },
+        z: { min:-3, max:3, step: 0.1 },
+    }).on( "change", updateMat );
+
+    f1.addButton({ title: 'Reset' }).on( 'click', ()=>{
+        Ref.pivotRotX = 0;
+        Ref.pivotRotY = 0;
+        Ref.pivotRotZ = 0;
+        Ref.pivotPos.x = 0;
+        Ref.pivotPos.y = 0;
+        Ref.pivotPos.z = 0;
+
+        f1.refresh();
+        updateMat();
+    });
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.pane = p;
+}
+
+// #endregion
+
+class CustomMaterial extends THREE.RawShaderMaterial{
+    constructor( props={} ){
+        super();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Merge custom props with default options
+        // const opts = Object.assign({
+        //     offset : [ 0, 1, 0 ],
+        //     color  : new THREE.Color( '#00ff00' ),
+        // }, props );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.name               = 'CustomMaterial';
+        this.glslVersion        = THREE.GLSL3;
+        // this.side               = THREE.DoubleSide;
+        // this.depthTest          = true;
+        // this.transparent        = true;
+        // this.alphaToCoverage    = true;
+        // this.lights             = true;
+
+        this.uniforms           = {
+            // oRadius     : { value: 0.49 },
+            // color       : { value: new THREE.Color( '#202020' ) },
+            // tex         : { type: 'sampler2D', value: props.tex },
+            pivotRot       : { value: [0,0,0] },
+            pivotPos       : { value: [0,0,0] },
+
+            planePos 	   : { value: [0,0,0] },
+            planeRot       : { value: [0,0] },
+            planeDist      : { value: 1.0 },
+        };
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.vertexShader = `
+        in vec3 position;
+        in vec3 normal;
+        in vec2 uv;
+        
+        // uniform highp vec3 cameraPosition;
+
+        uniform vec3 pivotRot;
+        uniform vec3 pivotPos;
+		uniform vec3 planePos;
+		uniform vec2 planeRot;
+		uniform float planeDist;
+
+        uniform mat4 modelMatrix;
+        uniform mat4 viewMatrix;
+        uniform mat4 projectionMatrix;
+
+        out vec3 fragLPos;
+        out vec3 fragWPos;
+        out vec3 fragWNorm;
+        out vec2 fragUV;
+        out vec3 fColor;
+
+		// #####################################################################
+        const float PI = 3.14159265359;
+
+		vec3 spherical( float x, float y ){
+            float sx = sin( x );
+            return vec3(
+                sin( y ) * sx,
+                cos( x ),
+                cos( y ) * sx
+            );
+        }
+
+        // #region VECTOR
+
+        vec3 vAxisAngle( vec3 p, vec3 axis, float rad ){
+            float c = cos( rad );
+            return p * c + cross( axis, p ) * sin( rad ) + axis * dot( axis, p ) * ( 1.0 - c );
+        }
+
+        vec3 vTransformYXZ( vec3 pos, vec3 euler ){
+            float cX = cos( euler.x );
+            float sX = sin( euler.x );
+            float cY = cos( euler.y );
+            float sY = sin( euler.y );
+            float cZ = cos( euler.z );
+            float sZ = sin( euler.z );
+
+            // Z
+            float tempX = pos.x;
+            float tempY = pos.y;
+            pos.x = tempX * cZ - tempY * sZ;
+            pos.y = tempX * sZ + tempY * cZ;
+
+            // X
+            tempY = pos.y;
+            float tempZ = pos.z;
+            pos.y = tempY * cX - tempZ * sX;
+            pos.z = tempY * sX + tempZ * cX;
+
+            // Y
+            tempX = pos.x;
+            tempZ = pos.z;
+            pos.x =  tempX * cY + tempZ * sY;
+            pos.z = -tempX * sY + tempZ * cY;
+
+            return pos;
+        }
+
+        // #endregion
+
+        // #region QUATERNION
+        vec4 qNorm( vec4 q ){
+            float len = 1.0 / sqrt( q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w );
+            return vec4(
+                q.x * len,
+                q.y * len,
+                q.z * len,
+                q.w * len
+            );
+        }
+
+        vec4 qAxisAngle( vec3 axis, float rad ){ 
+            float h = rad * 0.5;
+            float s = sin( h );
+            return vec4(
+                axis.x * s,
+                axis.y * s,
+                axis.z * s,
+                cos( h )
+            );
+        }
+
+        vec3 qTransform( vec4 q, vec3 v ){
+            //return v + cross( 2.0 * q.xyz, cross( q.xyz, v) + q.w * v );  // Either Seems to Work, not sure which is the correct way to handle transformation
+            return v + 2.0 * cross( q.xyz, cross( q.xyz, v ) + q.w * v );
+        } 
+
+        vec4 qEulerYXZ( vec3 euler ){
+            // Half angles for sine and cosine calculations
+            float hx = euler.x * 0.5;
+            float hy = euler.y * 0.5;
+            float hz = euler.z * 0.5;
+
+            float cx = cos(hx);
+            float sx = sin(hx);
+            float cy = cos(hy);
+            float sy = sin(hy);
+            float cz = cos(hz);
+            float sz = sin(hz);
+
+            // This is the direct formula for YXZ Euler to Quaternion
+            // based on Q = Qy * Qx * Qz
+            // Qx = (sx, 0, 0, cx)
+            // Qy = (0, sy, 0, cy)
+            // Qz = (0, 0, sz, cz)
+
+            return vec4(
+                cx * sy * sz + sx * cy * cz,
+                cx * sy * cz - sx * cy * sz,
+                cx * cy * sz - sx * sy * cz,
+                cx * cy * cz + sx * sy * sz
+            );
+        }
+        // #endregion
+
+        // #region MAT3x3
+        mat3 mat3YXZ( vec3 euler ) {
+            float cX = cos(euler.x);
+            float sX = sin(euler.x);
+            float cY = cos(euler.y);
+            float sY = sin(euler.y);
+            float cZ = cos(euler.z);
+            float sZ = sin(euler.z);
+
+            mat3 Rx = mat3(
+                1.0, 0.0, 0.0,
+                0.0, cX, -sX,
+                0.0, sX, cX
+            );
+
+            mat3 Ry = mat3(
+                cY, 0.0, sY,
+                0.0, 1.0, 0.0,
+                -sY, 0.0, cY
+            );
+            
+            mat3 Rz = mat3(
+                cZ, -sZ, 0.0,
+                sZ, cZ, 0.0,
+                0.0, 0.0, 1.0
+            );
+
+            return Ry * Rx * Rz;
+        }
+        
+        // Optimized version of mat3YXZ
+        mat3 mat3YXZ_opt( vec3 euler ){
+            float cX = cos( euler.x );
+            float sX = sin( euler.x );
+            float cY = cos( euler.y );
+            float sY = sin( euler.y );
+            float cZ = cos( euler.z );
+            float sZ = sin( euler.z );
+
+            // The combined rotation matrix M = Ry * Rx * Rz
+            // M =
+            // | cY*cZ + sY*sX*sZ   -cY*sZ + sY*sX*cZ    sY*cX  |
+            // | cX*sZ              cX*cZ               -sX     |
+            // |-sY*cZ + cY*sX*sZ    sY*sZ + cY*sX*cZ    cY*cX  |
+
+            return mat3(
+                // Column 0
+                cY * cZ + sY * sX * sZ,  // m00
+                cX * sZ,                 // m10
+               -sY * cZ + cY * sX * sZ,  // m20
+
+                // Column 1
+               -cY * sZ + sY * sX * cZ,  // m01
+                cX * cZ,                 // m11
+                sY * sZ + cY * sX * cZ,  // m21
+
+                // Column 2
+                sY * cX,                 // m02
+               -sX,                      // m12
+                cY * cX                  // m22
+            );
+        }
+        // #endregion
+
+        // #####################################################################
+
+        void main(){
+            vec3 pos = position;
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // The general idea is to use a plane to divide vertices with an offset
+            // above & below to define a range of influence on the vertices. Between the
+            // min and max the rotation can be applied by the gradient. 0 Means no influence, 
+            // from there moving torward 1 where all points after the max distance will have 100%
+            // influence of the rotation.
+
+            // Quite a interesting way to lower the plane point half distance below while using the
+            // max vector length allows to project the vector to a 0 to 1 ratio, meaning 0 and less
+            // is below min range with 1 & higher being above max range.
+
+            // X being the plane position, 0 to 1 is plane Distance.
+            //  -- 0 --- X --- 1 -- 
+
+            vec3 n           = spherical( planeRot.x, planeRot.y ); // Compute Plane Normal
+            vec3 sn          = n * planeDist;                       // Scale plane normal by how far away from plane as max distance of influence
+            vec3 underPos    = planePos - sn * 0.5;                 // Get point half distance blow plane
+            vec3 v2u         = underPos - pos;                      // Delta from vector to under plane pos
+            float k           = -( dot(v2u,sn) / dot(sn,sn) );      // Project v2u vector onto max distance vector
+            k = smoothstep( 0.0, 1.0, k );                          // Clamp & smooth value between 0 and 1
+
+            // Color the vertex influence range
+            fColor = mix( vec3(0.3), vec3( 0.3, 1.0, 0.3 ), 1.0-abs(k - 0.5)/0.5 );
+
+            // ------------------------------
+            // Euler Transform
+            pos = vTransformYXZ( pos - pivotPos, pivotRot * k ) + pivotPos;
+
+            // ------------------------------
+            // Euler to Mat3x3
+            // mat3 m = mat3YXZ_opt( pivotRot * k );
+            // pos = m * ( pos - pivotPos ) + pivotPos;
+
+            // ------------------------------
+            // Euler to Quaternion
+            // vec4 q = qEulerYXZ( pivotRot * k );
+            // pos = qTransform( q, pos - pivotPos ) + pivotPos;
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+            vec4 wPos       = modelMatrix * vec4( pos, 1.0 );
+			vec4 vPos       = viewMatrix * wPos;
+            
+            fragWPos        = wPos.xyz;
+            fragLPos        = position.xyz;
+            fragUV          = uv;
+            fragWNorm       = ( modelMatrix * vec4( normal, 0.0 ) ).xyz;
+
+            // gl_Position     = projectionMatrix * viewMatrix * wPos;
+			gl_Position     = projectionMatrix * vPos;
+			gl_PointSize    = 0.6 * ( 20.0 / -vPos.z );
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        in vec3 fragLPos;
+        in vec3 fragWPos;
+        in vec3 fragWNorm;
+        in vec2 fragUV;
+        in vec3 fColor;
+
+        out vec4 outColor;
+
+        // uniform float oRadius;
+        // uniform vec3  color;
+        // uniform sampler2D tex;
+
+        // #####################################################################
+
+        void main(){
+            //outColor = texture( tex, fragUV );
+            // outColor = vec4( 1.0, 0.3, 0.3, 1.0 );
+            outColor = vec4( fColor, 1.0 );
+        }`;
+    }
+
+    // #region SETTERS
+
+    setPlanePos( v ){
+        this.uniforms.planePos.value[0] = v[0];
+        this.uniforms.planePos.value[1] = v[1];
+        this.uniforms.planePos.value[2] = v[2];
+        return this;
+    }
+
+    setPlaneRot( v ){
+        this.uniforms.planeRot.value[0] = v[0];
+        this.uniforms.planeRot.value[1] = v[1];
+        return this;
+    }
+
+    setPlaneDist( v ){ this.uniforms.planeDist.value = v; return this; }
+
+    setPivotRot( v ){
+        this.uniforms.pivotRot.value[0] = v[0];
+        this.uniforms.pivotRot.value[1] = v[1];
+        this.uniforms.pivotRot.value[2] = v[2];
+        return this;
+    }
+
+    setPivotPos( v ){
+        this.uniforms.pivotPos.value[0] = v[0];
+        this.uniforms.pivotPos.value[1] = v[1];
+        this.uniforms.pivotPos.value[2] = v[2];
+        return this;
+    }
+
+    // #endregion
+}
+
+// #region WORKING OUT MATHS
+function debugPlane(){
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	
+	const planePos  = Ref.planePos;
+	const planeDist = Ref.planeDist;
+
+	const vPos = Ref.target	
+
+
+	// sn = spherical() * maxDistance ::  Plane Normal * Radius
+	const n  = spherical( Ref.planeRot[0], Ref.planeRot[1] );
+	const sn = vScale( n, planeDist );
+
+	// underPos    = planePos - sn * 0.5
+	// vectToUnder = underPos - vectorPos
+	const snh 		= vScale( sn, 0.5 );		// Half Distance
+	const underPos	= vSub( planePos, snh );	// Go that distance UNDER plane
+	const v2u 		= vSub( underPos, vPos );	// Vector from vertex to under plane pos
+
+	// k = - (( pp * sn ) / ( sn * sn ))
+	const k 		= -( vDot( v2u, sn ) / vDot( sn, sn ) ) // Kind if like a plane projection
+	console.log( k, smoothStep( 0, 1, k ) );
+
+
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	Debug.pnt.add( planePos, 0x00ff00, 2 );
+	Debug.pnt.add( underPos, 0x00ff00, 2, 0 );
+	Debug.ln.add( planePos, vScaleThenAdd( 1.0, sn, planePos ), 0x00ff00 );
+
+
+	Debug.pnt.add( vPos , 0xff5555, 3 );
+	Debug.ln.add( vPos, vAdd( vPos, v2u ), 0xff5555 );
+	Debug.ln.add( vPos, vScaleThenAdd( -k, n, vPos ), 0xff5555 );
+}
+
+function debugPlane2(){
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	const tPos      = Ref.target;
+    const planePos  = Ref.planePos;
+	const planeDist = Ref.planeDist;
+	const planeNorm = spherical( Ref.planeRot[0], Ref.planeRot[1] );
+
+    const toPP      = vSub( tPos, planePos );
+    const dist      = vDot( toPP, planeNorm );    
+    
+    console.log( dist )
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Debug.pnt.add( planePos, 0x00ff00, 2 );
+    Debug.ln.add( planePos, vScaleThenAdd( 1.0, planeNorm, planePos ), 0x00ff00 );
+
+    Debug.pnt.add( tPos , 0xff5555, 3 );
+    Debug.ln.add( tPos, vSub( tPos, toPP ), 0xff5555 );
+    Debug.ln.add( tPos, vScaleThenAdd( -dist, planeNorm, tPos ), 0xff5555 );
+}
+
+// #endregion
+
+</script></body></html>

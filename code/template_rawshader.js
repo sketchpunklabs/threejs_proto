@@ -52,13 +52,15 @@ class CustomMaterial extends THREE.RawShaderMaterial{
             fragWNorm       = ( modelMatrix * vec4( normal, 0.0 ) ).xyz;
 
             gl_Position     = projectionMatrix * viewMatrix * wPos;
+
+            // gl_PointSize    = 1.0 * ( 20.0 / -vPos.z ); // vPos = viewMatrix * wPos
         }`;
 
         this.fragmentShader = `precision mediump float;
         in vec3 fragLPos;
         in vec3 fragWPos;
         in vec3 fragWNorm;
-        in vec2 fragUV
+        in vec2 fragUV;
 
         out vec4 outColor;
 
