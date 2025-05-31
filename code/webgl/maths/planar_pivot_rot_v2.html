@@ -1,0 +1,572 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import useTransformControl  from '@lib/useTransformControl.js';
+import { GLTFLoader }       from 'three/GLTFLoader.js';
+import { firstFind }        from '@lib/Util.js'
+
+import { smoothStep, spherical, 
+    vScale, vScaleThenAdd, vAdd, vSub, vDot, vCopy,
+    qFromEuler, qTransform,
+} from '@lib/maths/maths.js';
+
+import { Pane }         from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+import * as TweakInputs from '@tp/tweakpane/tweakpane-plugin-inputs.min.js';
+import * as CameraKit        from '@tp/tweakpane/tweakpane-plugin-camerakit.js';
+
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Gizmo = useTransformControl( App ).useAxes()
+let Debug = {};
+let Ref   = {
+    showDebug    : false,
+    showGizmo    : true,
+
+	planeDist 	 : 0.1,
+    planeRotX    : 0,
+    planeRotY    : 0,
+
+    pivotRotX    : 0,
+    pivotRotY    : 0,
+    pivotRotZ    : 0,
+
+    pivotOffsetX : 0,
+    pivotOffsetY : 0,
+    pivotOffsetZ : 0,
+};
+
+/* 
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+REFERENCES
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Skinless Deformations
+- Original : https://x.com/PavelBoytchev/status/1924170555852255581
+- Demo : https://boytchev.github.io/disfigure/examples/entangled-space/
+- Info : https://boytchev.github.io/disfigure/
+- Code : https://github.com/boytchev/disfigure/
+- Visual of body weights : https://x.com/PavelBoytchev/status/1924285587160244398
+- https://x.com/PavelBoytchev/status/1926331170486096017
+- https://boytchev.github.io/disfigure/examples/rigged-skeleton/
+
+Basic Rotator
+- Original : https://x.com/PavelBoytchev/status/1924176081646411823
+- Demo : https://boytchev.github.io/tsl-textures/online/rotator.html
+- Info : https://boytchev.github.io/tsl-textures/docs/rotator.html
+- Code : https://github.com/boytchev/tsl-textures/blob/main/online/rotator.html
+- Code : https://github.com/boytchev/tsl-textures/blob/main/src/rotator.js
+- Code : https://github.com/boytchev/tsl-textures/blob/main/online/online.js
+*/
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 45, 20, 4, [0,0.7,0] );
+    Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const geo = new THREE.BoxGeometry( 2, 2, 2, 20, 20, 20 );
+
+    const tf = await new GLTFLoader().loadAsync( '../../../res/models/nabba.gltf' );
+    App.scene.add( tf.scene );
+
+    const charMesh = firstFind( App.scene );
+    charMesh.material = Ref.mat = new CustomMaterial();
+
+    Ref.joint = new PlanarJoint();
+    jointChange()
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.renderLoop();
+    buildUI();
+});
+
+Gizmo.onMove = p=>{
+    Ref.joint.planePos = p;
+    jointChange();
+    // console.log( p );
+};
+
+
+function jointChange(){
+    const toRad = Math.PI / 180;
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Update Joint
+	Ref.joint.planeDist   = Ref.planeDist;
+    Ref.joint.planeRot[0] = Ref.planeRotX * toRad;
+    Ref.joint.planeRot[1] = Ref.planeRotY * toRad;
+
+    Ref.joint.pivotRot[0] = Ref.pivotRotX * toRad;
+    Ref.joint.pivotRot[1] = Ref.pivotRotY * toRad;
+    Ref.joint.pivotRot[2] = Ref.pivotRotZ * toRad;
+
+    Ref.joint.pivotOffset[0] = Ref.pivotOffsetX;
+    Ref.joint.pivotOffset[1] = Ref.pivotOffsetY;
+    Ref.joint.pivotOffset[2] = Ref.pivotOffsetZ;
+    Ref.joint.compute();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Update Material
+    Ref.mat.setPlaneDist( Ref.joint.planeDist );
+    Ref.mat.setPlanePos( Ref.joint.planePos );
+    Ref.mat.setPlaneNorm( Ref.joint.planeNorm );
+
+    Ref.mat.setPivotPos( Ref.joint.pivotPos );
+    Ref.mat.setPivotRot( Ref.joint.pivotRot );
+ 
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    if( Ref.showDebug ) Ref.joint.debug();
+    else Debug.reset();
+}
+
+// #endregion
+
+// #region UI
+
+const presets = [
+    { text: 'Chest', value: {
+        pos : [0, 0.9911884366059804, -0.019352825338340512]
+    }},
+
+    { text: 'Neck', value: {
+        pos         : [0, 1.2561277886414293, -0.046845539938870515],
+        planeDist   : 0.05,
+        planeRotX   : 13.50,
+    }},
+
+    { text: 'Shoulder', value: {
+        pos         : [0.1182334214112071, 1.180433878869781, -0.06498035394760263],
+        planeDist   : 0.05,
+        planeRotX   : 90,
+        planeRotY   : 90,
+    }},
+
+    { text: 'Elbow', value: {
+        pos         : [0.3183501507580993, 1.1828984580614843, -0.06585557001520266],
+        planeDist   : 0.07,
+        planeRotX   : 90,
+        planeRotY   : 90,
+    }},
+
+    { text: 'Thigh', value: {
+        pos         : [0.07546315241548107, 0.8147191818564803, 0],
+        planeDist   : 0.1,
+        planeRotX   : -180,
+    }},
+
+    { text: 'Knee', value: {
+        pos         : [0.08197962535677619, 0.4749632526104558, -0.026474231329423906],
+        planeDist   : 0.12,
+        planeRotX   : -180,
+    }},
+
+    { text: 'Deform', value: {
+        pos          : [0, 1.8, 0],
+        planeDist    : 0.12,
+        pivotRotX    : 180,
+        pivotOffsetY : -1.1,
+        showGizmo    : true,
+    }},
+
+    { text: ' ', value: {}},
+];
+// chest { plPos: [0, 0.9911884366059804, -0.019352825338340512] }
+// neck { plPos:[0, 1.2561277886414293, -0.046845539938870515], dist:0.05, plRot:13.50 }
+// shoulder { plPos:[0.1182334214112071, 1.180433878869781, -0.06498035394760263], plRot 90,90, dist:0.01  }
+// elbow [0.3183501507580993, 1.1828984580614843, -0.06585557001520266] rot9090, dist 0.07
+// knee [0.08197962535677619, 0.4749632526104558, -0.026474231329423906], rotX -180, dist 0.12
+// THIGH [0.07546315241548107, 0.8147191818564803, 0], X-180, DIST:0.1
+
+function applyPreset( p ){
+    const opt = {
+        showDebug    : false,
+        showGizmo    : false,
+
+        planeDist 	 : 0.1,
+        planeRotX    : 0,
+        planeRotY    : 0,
+
+        pivotRotX    : 0,
+        pivotRotY    : 0,
+        pivotRotZ    : 0,
+
+        pivotOffsetX : 0,
+        pivotOffsetY : 0,
+        pivotOffsetZ : 0,
+        ...p
+    };
+
+    if( opt.pos ){
+        Gizmo.setPos( opt.pos );
+        Ref.joint.planePos = opt.pos;
+    }
+
+    if( opt.showGizmo ) Gizmo.show();
+    else                Gizmo.hide();
+
+    for( const [k,v] of Object.entries( opt ) ){
+        if( k !== 'pos' ) Ref[ k ] = v;
+    }
+
+    Ref.refreshUI();
+    jointChange();
+}
+
+function cameraRing( pane, rProp, lbl ){
+    return pane.addBinding( Ref, rProp, {
+        view    : 'cameraring',
+        series  : 1,
+        unit    : { ticks: 4, pixels: 40, value: 20 },
+        wide    : false,
+        min     : -180,
+        max     :  180,
+        step    : 0.02,
+        label   : lbl,
+    });
+}
+
+async function buildUI(){
+    appendGithubLink( false );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const p = new Pane( {} );
+    p.registerPlugin( TweakInputs );
+    p.registerPlugin( CameraKit );
+    
+    // const tab = p.addTab({
+    //     pages: [
+    //         {title: 'Plane'},
+    //         {title: 'Pivot'},
+    //     ],
+    // });
+
+    // const f2 = tab.pages[0];
+    // const f1 = tab.pages[1];
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const f0 = p.addFolder({ title: 'Stuff', expanded: true });
+    
+    f0.addBlade({ view: 'list', label: 'Presets', value: '', options: presets }).on( 'change', e=>{
+        applyPreset( e.value );
+    });
+    
+    f0.addBinding( Ref, 'showGizmo', {  label: 'Gizmo' } ).on( "change", e=>{
+        if( e.value ) Gizmo.show();
+        else          Gizmo.hide();
+    });
+
+    f0.addBinding( Ref, 'showDebug', {  label: 'Debug' } ).on( "change", jointChange );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const f2 = p.addFolder({ title: 'Plane', expanded: true });
+    cameraRing( f2, 'planeRotX', 'RotX' ).on( "change", jointChange );
+    cameraRing( f2, 'planeRotY', 'RotY' ).on( "change", jointChange );
+    f2.addBinding( Ref, 'planeDist', { min:0.01, max: 4, step: 0.01, label: 'Range' } ).on( "change", jointChange );
+
+    f2.addButton({ title: 'Reset' }).on( 'click', ()=>{
+        Ref.planeRotX = 0;
+        Ref.planeRotY = 0;
+        Ref.planeDist = 0.1;
+        f2.refresh();
+        jointChange();
+    });
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const f1 = p.addFolder({ title: 'Pivot Transform', expanded: true });
+    cameraRing( f1, 'pivotRotX', 'RotX' ).on( "change", jointChange );
+    cameraRing( f1, 'pivotRotY', 'RotY' ).on( "change", jointChange );
+    cameraRing( f1, 'pivotRotZ', 'RotZ' ).on( "change", jointChange );
+    
+    f1.addBinding( Ref, 'pivotOffsetX', { view:'stepper', step:0.1, label: 'OffsetX' }).on( "change", jointChange );
+    f1.addBinding( Ref, 'pivotOffsetY', { view:'stepper', step:0.1, label: 'OffsetY' }).on( "change", jointChange );
+    f1.addBinding( Ref, 'pivotOffsetZ', { view:'stepper', step:0.1, label: 'OffsetZ' }).on( "change", jointChange );
+
+    f1.addButton({ title: 'Reset' }).on( 'click', ()=>{
+        Ref.pivotRotX  = 0;
+        Ref.pivotRotY  = 0;
+        Ref.pivotRotZ  = 0;
+        Ref.pivotOffsetX = 0;
+        Ref.pivotOffsetY = 0;
+        Ref.pivotOffsetZ = 0;
+
+        f1.refresh();
+        jointChange();
+    });
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.pane = p;
+
+    Ref.refreshUI = ()=>{
+        f2.refresh();
+        f1.refresh();
+        f0.refresh();
+    }
+}
+// #endregion
+
+// #region PLANAR DEFORMER BITS
+class PlanarJoint{
+    // Input
+    pivotRot    = [0,0,0]; // Euler in YXZ Order
+    pivotOffset = [0,0,0]; // Offset from plane pos in local space
+
+	planeDist 	= 0.5;
+    planeRot    = [0,0];
+    planePos    = [0,0,0];
+
+    // Gen output
+    planeNorm   = [0,0,1];
+    pivotPos    = [0,0,0];
+    constructor(){}
+
+    compute(){
+        // Spherical can be recreated with : quaternionYX * UP
+        // Having a quat allows for locking data to plane rotation
+        const q = qFromEuler( this.planeRot[0], this.planeRot[1], 0, 'YXZ' );
+        qTransform( q, [0,1,0], this.planeNorm );
+
+        // NOTE: Trying something different by making pivotPos rotation locked to plane
+        // pivotPos = planePos + pivotOffset * YXRotation
+        vAdd( this.planePos, qTransform( q, this.pivotOffset ), this.pivotPos );
+        
+        return this;
+    }
+
+    debug(){
+        Debug.reset();
+
+        const sn    = vScale( this.planeNorm, this.planeDist ); // Max Distance
+        const snh   = vScale( sn, 0.5 );		                // Half Distance
+        const uPos  = vSub( this.planePos, snh );               // Pos under plane, MIN range  
+        const xPos  = vAdd( this.planePos, snh );               // Only for debug, max point away from plane
+
+        Debug.pnt.add( this.planePos, 0x00ffff, 1.5 );
+        Debug.pnt.add( uPos, 0xff3333, 1 );
+        Debug.pnt.add( xPos, 0x00ff00, 1 );    
+        Debug.ln.add( uPos, vScaleThenAdd( 0.3 + this.planeDist, this.planeNorm, uPos ), 0x00ffff );
+
+        Debug.pnt.add( this.pivotPos, 0xffffff, 2, 7 );
+    }
+}
+
+class CustomMaterial extends THREE.RawShaderMaterial{
+    constructor( props={} ){
+        super();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Merge custom props with default options
+        // const opts = Object.assign({
+        //     offset : [ 0, 1, 0 ],
+        //     color  : new THREE.Color( '#00ff00' ),
+        // }, props );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.name               = 'CustomMaterial';
+        this.glslVersion        = THREE.GLSL3;
+        // this.side               = THREE.DoubleSide;
+        // this.depthTest          = true;
+        // this.transparent        = true;
+        // this.alphaToCoverage    = true;
+        // this.lights             = true;
+
+        this.uniforms           = {
+            unweightColor  : { value: new THREE.Color( 0x909090 ) },
+            weightColor    : { value: new THREE.Color( 0x00ffff ) },
+
+            pivotRot       : { value: [0,0,0] },
+            pivotPos       : { value: [0,0,0] },
+
+            planePos 	   : { value: [0,0,0] },
+            planeNorm      : { value: [0,1,0] },
+            planeDist      : { value: 0.3 },
+        };
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.vertexShader = `
+        in vec3 position;
+        in vec3 normal;
+        in vec2 uv;
+        
+        // uniform highp vec3 cameraPosition;
+
+        uniform vec3 unweightColor;
+        uniform vec3 weightColor;
+
+        uniform vec3 pivotRot;
+        uniform vec3 pivotPos;
+		uniform vec3 planePos;
+		uniform vec3 planeNorm;
+		uniform float planeDist;
+
+        uniform mat4 modelMatrix;
+        uniform mat4 viewMatrix;
+        uniform mat4 projectionMatrix;
+
+        out vec3 fragLPos;
+        out vec3 fragWPos;
+        out vec3 fragWNorm;
+        out vec2 fragUV;
+        out vec3 fColor;
+
+		// #####################################################################
+
+        // #region VECTOR
+
+        vec3 vTransformYXZ( vec3 pos, vec3 euler ){
+            float cX = cos( euler.x );
+            float sX = sin( euler.x );
+            float cY = cos( euler.y );
+            float sY = sin( euler.y );
+            float cZ = cos( euler.z );
+            float sZ = sin( euler.z );
+
+            // Z
+            float tempX = pos.x;
+            float tempY = pos.y;
+            pos.x = tempX * cZ - tempY * sZ;
+            pos.y = tempX * sZ + tempY * cZ;
+
+            // X
+            tempY = pos.y;
+            float tempZ = pos.z;
+            pos.y = tempY * cX - tempZ * sX;
+            pos.z = tempY * sX + tempZ * cX;
+
+            // Y
+            tempX = pos.x;
+            tempZ = pos.z;
+            pos.x =  tempX * cY + tempZ * sY;
+            pos.z = -tempX * sY + tempZ * cY;
+
+            return pos;
+        }
+
+        // #endregion
+
+        // #####################################################################
+
+        void main(){
+            vec3 pos  = position;
+            vec3 norm = normal;
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // The general idea is to use a plane to divide vertices with an offset
+            // above & below to define a range of influence on the vertices. Between the
+            // min and max the rotation can be applied by the gradient. 0 Means no influence, 
+            // from there moving torward 1 where all points after the max distance will have 100%
+            // influence of the rotation.
+
+            // Quite a interesting way to lower the plane point half distance below while using the
+            // max vector length allows to project the vector to a 0 to 1 ratio, meaning 0 and less
+            // is below min range with 1 & higher being above max range.
+
+            // X being the plane position, 0 to 1 is plane Distance.
+            //  -- 0 --- X --- 1 -- 
+
+            vec3 sn          = planeNorm * planeDist;               // Scale plane normal by how far away from plane as max distance of influence
+            vec3 underPos    = planePos - sn * 0.5;                 // Get point half distance blow plane
+            vec3 v2u         = underPos - pos;                      // Delta from vector to under plane pos
+            float k           = -( dot(v2u,sn) / dot(sn,sn) );      // Project v2u vector onto max distance vector
+            k = smoothstep( 0.0, 1.0, k );                          // Clamp & smooth value between 0 and 1
+
+            // Color the vertex influence range
+            fColor = mix( unweightColor, weightColor, 1.0-abs(k - 0.5)/0.5 );
+
+            // Euler Transform
+            // TODO - Optimize things so SIN/COS are computed once then applied
+            // to both position and normal
+            pos  = vTransformYXZ( pos - pivotPos, pivotRot * k ) + pivotPos;
+            norm = vTransformYXZ( norm, pivotRot * k );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+            vec4 wPos       = modelMatrix * vec4( pos, 1.0 );
+			vec4 vPos       = viewMatrix * wPos;
+            
+            fragWPos        = wPos.xyz;
+            fragLPos        = position.xyz;
+            fragUV          = uv;
+            fragWNorm       = ( modelMatrix * vec4( norm, 0.0 ) ).xyz;
+
+            // gl_Position  = projectionMatrix * viewMatrix * wPos;
+			gl_Position     = projectionMatrix * vPos;
+			gl_PointSize    = 0.6 * ( 20.0 / -vPos.z );
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        in vec3 fragLPos;
+        in vec3 fragWPos;
+        in vec3 fragWNorm;
+        in vec2 fragUV;
+        in vec3 fColor;
+
+        out vec4 outColor;
+
+        // uniform float oRadius;
+        // uniform vec3  color;
+        // uniform sampler2D tex;
+
+        // #####################################################################
+
+        // TODO, Try to parse Improved Lambert into simple GLSL insert
+        // https://x.com/manish4u2/status/1779582587985371451
+        // https://github.com/mrdoob/three.js/pull/28543
+
+        vec3 lightDir = normalize( vec3( 4.0, 5.0, 4.0 ) );
+        vec3 lambertLighting( vec3 norm, vec3 color, float nMin ){
+            vec3 N    = normalize( norm );        
+            float NdL = dot( N, lightDir );
+            NdL       = NdL * 0.5 + 0.5;                    // Remap -1:0 to 0:1
+            NdL       = clamp( 0.0, 1.0, NdL );             // Help remove any midtone shadows, don't notice it using planes
+            NdL       = NdL * NdL;                          // Valve's Half Lambert, just curves the light value
+
+            return color * max( nMin, NdL );
+        }
+
+        // #####################################################################
+
+        void main(){
+            outColor = vec4( 1.0, 0.3, 0.3, 1.0 );
+            outColor.rgb = lambertLighting( fragWNorm, fColor, 0.4 );
+        }`;
+    }
+
+    // #region SETTERS
+
+    setPlaneDist( v ){ this.uniforms.planeDist.value = v; return this; }
+    setPlanePos( v ){
+        this.uniforms.planePos.value[0] = v[0];
+        this.uniforms.planePos.value[1] = v[1];
+        this.uniforms.planePos.value[2] = v[2];
+        return this;
+    }
+
+    setPlaneNorm( v ){
+        this.uniforms.planeNorm.value[0] = v[0];
+        this.uniforms.planeNorm.value[1] = v[1];
+        this.uniforms.planeNorm.value[2] = v[2];
+        return this;
+    }
+
+    setPivotPos( v ){
+        this.uniforms.pivotPos.value[0] = v[0];
+        this.uniforms.pivotPos.value[1] = v[1];
+        this.uniforms.pivotPos.value[2] = v[2];
+        return this;
+    }
+
+    setPivotRot( v ){
+        this.uniforms.pivotRot.value[0] = v[0];
+        this.uniforms.pivotRot.value[1] = v[1];
+        this.uniforms.pivotRot.value[2] = v[2];
+        return this;
+    }
+
+    // #endregion
+}
+// #endregion
+
+</script></body></html>

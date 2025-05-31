@@ -70,6 +70,23 @@ class CustomMaterial extends THREE.RawShaderMaterial{
 
         // #####################################################################
 
+        // TODO, Try to parse Improved Lambert into simple GLSL insert
+        // https://x.com/manish4u2/status/1779582587985371451
+        // https://github.com/mrdoob/three.js/pull/28543
+
+        vec3 lightDir = normalize( vec3( 4.0, 5.0, 4.0 ) );
+        vec3 lambertLighting( vec3 norm, vec3 color, float nMin ){
+            vec3 N    = normalize( norm );        
+            float NdL = dot( N, lightDir );
+            NdL       = NdL * 0.5 + 0.5;                    // Remap -1:0 to 0:1
+            NdL       = clamp( 0.0, 1.0, NdL );             // Help remove any midtone shadows, don't notice it using planes
+            NdL       = NdL * NdL;                          // Valve's Half Lambert, just curves the light value
+
+            return color * max( nMin, NdL );
+        }
+
+        // #####################################################################
+
         void main(){
             //outColor = texture( tex, fragUV );
             outColor = vec4( 1.0, 0.0, 0.0, 1.0 );
