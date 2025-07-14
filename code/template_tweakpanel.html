@@ -50,11 +50,13 @@ async function buildUI(){
     // https://github.com/LuchoTurtle/tweakpane-plugin-file-import
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     const container = document.createElement( 'div' );
+    // container.className         = 'ppane';
     container.style.position    = 'fixed';
     container.style.bottom      = '10px';
     container.style.right       = '10px';
     container.style.width       = 'fit-content';
     container.style.height      = 'fit-content';
+    // container.style.transform   = 'translateX(-50%)';
     document.body.appendChild( container );
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -74,8 +76,40 @@ async function buildUI(){
     // f.addBinding( Ref, 'outputLen', { min: 0.1, max: 4, step: 0.1, label: 'output' } );
     // f.addBinding( Ref, 'couplerLen', { min: 0.1, max: 4, step: 0.1, label: 'coupler' } );
 
+    // const f2 = p.addFolder({ title: 'Info', expanded: true });
+    // f2.addBinding( Ref, 'Green', { readonly: true, });
+    // f2.addBinding( Ref, 'Yellow', { readonly: true, });
+    // f2.addBinding( Ref, 'L_click', { readonly: true, });
+    // f2.addBinding( Ref, 'R_click', { readonly: true, });
+    
+    // f0.addBinding( Ref, 'showGizmo', {  label: 'Gizmo' } ).on( "change", e=>{
+    //     if( e.value ) Gizmo.show();
+    //     else          Gizmo.hide();
+    // });
+
+    // f2.addButton({ title: 'Reset' }).on( 'click', ()=>{
+    //     Ref.pivotRotX  = 0;
+    //     Ref.pivotRotY  = 0;
+
+    //     f1.refresh();
+    // });
+
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     Ref.pane = p;
 }
 // #endregion
-</script></body></html>
+</script>
+<style>
+/* Main Panel */
+.ppane{ position: fixed; top: 10px; right: 10px; }
+.ppane .tp-rotv { width: 400px; }
+
+/* Label  */
+.ppane .tp-lblv_l{ max-width:30px; }
+
+/* Input */
+.ppane .tp-lblv_v { flex:1; flex-grow:1; }
+.ppane .tp-sldtxtv_t { max-width: 40px; }
+.ppane .tp-sglv_i{ color:white; }
+</style>
+</body></html>

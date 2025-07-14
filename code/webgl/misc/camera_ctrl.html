@@ -1,0 +1,1162 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import facedCube           	from '@lib/meshes/FacedCube.js';
+
+import { Pane } from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    fov     : 45,
+};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	// App.sphericalLook( 0, 20, 6 );
+    // Debug = await useVisualDebug( App );
+    App.camCtrl.enabled = false;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    Ref.ctrl = new Orbit( App.renderer );
+    Ref.ctrl.sphericalLook( 0, 40, 6 );
+    App.scene.add( Ref.ctrl.cursor );
+
+    App.camera = Ref.ctrl.camera;
+
+    Ref.cube = facedCube( [0,0.5,0] );
+    App.scene.add( Ref.cube );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.renderLoop();
+    buildUI();
+});
+
+async function buildUI(){    
+    appendGithubLink( false );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const p = new Pane( );
+    p.on( 'change', e=>{
+        // console.log( e );
+        // console.log( e.target.label, e.value );
+    });
+
+    const f = p.addFolder({ title: 'User Interface', expanded: true });
+    f.addButton({ title: 'Round Axes' }).on( 'click', ()=>Ref.ctrl.roundAxes() );
+    f.addButton({ title: 'Toggle Ortho' }).on( 'click', ()=>{
+        Ref.ctrl.useOrtho( !Ref.ctrl.isOrtho );
+        App.camera = Ref.ctrl.camera;
+    } );
+
+    f.addButton({ title: 'Fit BoundingBox' }).on( 'click', ()=>{
+        if( !Ref.cube.geometry.boundingBox ) Ref.cube.geometry.computeBoundingBox();
+
+        const box = Ref.cube.geometry.boundingBox;
+        const pos = Ref.cube.position.toArray();
+
+        Ref.ctrl.fitBoundingBox( pos, box.min.toArray(), box.max.toArray() );
+    } );
+
+    f.addBinding( Ref, 'fov', { min:1, max:90, step:1, label:'FoV' } ).on( 'change', e=>{ Ref.ctrl.setFov( e.value ) });
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.pane = p;
+}
+// #endregion
+
+
+// https://github.com/sketchpunk/threejs_starter/blob/main/templates/starter_cam_orbit_cursor.html
+// https://github.com/sketchpunk/threejs_starter/blob/main/lib/camera/CameraMovements.js
+class Orbit{
+    // #region MAIN
+    targetPos   = [0,0,0];
+    camera      = null;       // Active Camera
+    canvas      = null;
+    cursor      = cursorMesh();
+
+    initTarget  = [0,0,0];    // Cache target positition
+    initPos     = [0,0,0];    // Cache camera position
+    initRot     = [0,0,0,1];  // Cache camera rotation
+    initBtn     = 0;
+
+    evtPointer  = null;
+    
+    panScale    = 1.0;        // Stepping scale
+    zoomScale   = 0.8;        // Zoom scale for scroll wheel
+
+    camPersp    = new THREE.PerspectiveCamera( 45, 1, 0.01, 1000 );
+    camOrtho    = new THREE.OrthographicCamera( -1, 1, 1, -1, -10, 1000 );
+
+    constructor( renderer ){
+        this.camera = this.camPersp;
+        this.camPersp.rotation.reorder('YXZ');
+        this.camOrtho.rotation.reorder('YXZ');
+
+        if( renderer ) this.init( renderer );
+    }
+
+    init( renderer ){
+        this.canvas = renderer.domElement;
+
+        // Setup Perspective Camera
+        this.camera.aspect = this.canvas.clientWidth / this.canvas.clientHeight;
+        this.camera.updateProjectionMatrix();
+
+        // Setup Mouse Events
+        this.evtPointer = new CanvasPointerHandlers( this.canvas ).enable();
+        this.evtPointer.onPointerDown  = this.onPointerDown;
+        this.evtPointer.onPointerMove  = this.onPointerMove;
+        this.evtPointer.onPointerWheel = this.onPointerWheel;
+
+        return this;
+    }
+    // #endregion
+
+    // #region GETTERS / SETTERS
+
+    set enabled( b ){
+        if( b ) this.pointer.enabled();
+        else    this.pointer.disable();
+    }
+
+    get canvasSize(){ return [this.canvas.clientWidth,this.canvas.clientHeight]; }
+
+    get cameraPos(){ return this.camera.position.toArray(); }
+    get cameraRot(){ return this.camera.quaternion.toArray(); }
+
+    set cameraPos( v ){ 
+        this.camera.position.fromArray( v );
+        this.updateLook();
+    }
+    set cameraRot( v ){ this.camera.quaternion.fromArray( v ); }
+
+    get targetDistance(){
+        const pos = this.cameraPos;
+        return Math.sqrt(
+            (pos[0] - this.targetPos[0])**2 +
+            (pos[1] - this.targetPos[1])**2 +
+            (pos[2] - this.targetPos[2])**2
+        )
+    }
+
+    setTargetDistance( v ){ this.cameraPos = CameraMath.zoomTarget( this.cameraPos, this.targetPos, v ); return this; }
+
+    updateLook(){ this.cameraRot = CameraMath.lookAt( [0,0,0,1], this.cameraPos, this.targetPos ); }
+
+    getProjDistScale( startPos=null ){
+        // Camera distance / Focal Length / Viewport Height
+        return vDist( this.cameraPos, startPos || this.targetPos ) * 
+                Math.tan( ( this.camPersp.getEffectiveFOV() * 0.5 ) * 0.01745329251 ) /
+                this.canvas.clientHeight;
+    }
+
+    get orthoHScale(){
+        const c = this.camera;
+        return ( c.top - c.bottom ) / c.zoom / this.canvas.clientHeight
+    }
+    
+    get orthoWScale(){
+        const c = this.camera;
+        return ( c.right - c.left ) / c.zoom / this.canvas.clientWidth;
+    }
+
+    get isOrtho(){ return !!this.camera.isOrthographicCamera; }
+    useOrtho( turnOn ){
+        if( turnOn && !this.camera.isOrthographicCamera ){
+            CameraMath.perp2orth( this.camPersp, this.camOrtho, this.targetPos, this.canvasSize );
+            this.camera = this.camOrtho;
+
+        }else if( !turnOn && this.camera.isOrthographicCamera ){
+            CameraMath.orth2perp( this.camOrtho, this.camPersp, this.targetPos );
+            this.camera = this.camPersp;
+        }
+        return this;
+    }
+
+    // #endregion
+
+    // #region POINTER CONTROLS
+    onPointerWheel = ( e, dx, dy )=>{
+        const scl  = this.zoomScale;
+
+        if( !this.camera.isOrthographicCamera ){
+            const tick = Math.sign( dy );
+            const pos  = this.cameraPos;
+            const d    = Math.sqrt(
+                (pos[0] - this.targetPos[0])**2 +
+                (pos[1] - this.targetPos[1])**2 +
+                (pos[2] - this.targetPos[2])**2
+            );
+            
+            // Zoom In : dist * scl,  Zoom out : dist / scl
+            this.setTargetDistance( ( tick === -1 )? d * scl : d / scl );
+        }else{
+            const c =  this.camera;
+            const z = ( dy < 0 )? c.zoom / scl : c.zoom * scl;
+            c.zoom = Math.max( 0.000001, z );
+            c.updateProjectionMatrix();
+        }
+    };
+
+    onPointerDown = ( e, coord )=>{
+        this.initPos    = this.cameraPos;
+        this.initRot    = this.cameraRot;
+        this.initTarget = this.targetPos.slice();
+        this.initBtn    = e.button; // Can't get button number during pointer_move, save it on down
+        return true;
+    };
+
+    onPointerMove = ( e, coord, delta, vel )=>{
+        switch( this.initBtn ){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Left Click
+            case 0:
+                if( e.shiftKey ){
+                    // Screen Panning
+                    this.stepScreenPan( -delta[0], delta[1], this.initTarget );
+                }else{
+                    // Orbit around the target
+                    this.stepOrbit( -delta[0], delta[1], 1.0, 1.0, this.initPos );
+                }
+                break;
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Right Click
+            case 2:
+                break;
+        }
+    };
+    // #endregion
+
+    // #region CAMERA OPERATIONS
+    stepOrbit( dx, dy, sx=1, sy=1, startPos=this.cameraPos ){ // deltaXY, scaleXY, Current Camera Position
+        // Delta * Degrees then scaled by canvas height, this makes it possible
+        // to rotate a whole X degrees from center to edge of screen
+        const rx        = ( dx * Math.PI * sx ) / this.canvas.clientHeight;
+        const ry        = ( dy * Math.PI * sy ) / this.canvas.clientHeight; 
+        this.cameraPos  = CameraMath.orbitStep( rx, ry, startPos, this.targetPos );
+        return this;
+    }
+
+    sphericalLook( lon, lat, radius, target=null ){
+        if( target ){
+            this.targetPos[0] = target[0];
+            this.targetPos[1] = target[1];
+            this.targetPos[2] = target[2];
+        }
+
+        const [ pos, rot ] = CameraMath.sphericalLook( lon, lat, radius, this.targetPos );
+        this.cameraPos = pos;
+        this.cameraRot = rot;
+        return this;
+    };
+    
+    stepScreenPan( dx, dy, startPos=this.targetPos.slice() ){
+        let x = 0;
+        let y = 0;
+        if( !this.camera.isOrthographicCamera ){
+            const scl = this.getProjDistScale( startPos );
+            x = dx * this.panScale * scl;
+            y = dy * this.panScale * scl;
+        }else{
+            x = dx * this.orthoWScale;
+            y = dy * this.orthoHScale;
+        }
+
+        const pos = CameraMath.screenPanStep( startPos, this.cameraRot, x, y );
+        this.setTarget( pos );
+        return this;
+    }
+
+    setTarget( p ){        
+        const delta = [
+            p[0] - this.targetPos[0],
+            p[1] - this.targetPos[1],
+            p[2] - this.targetPos[2],
+        ];
+
+        const camPos = this.cameraPos;
+        camPos[0]   += delta[0];
+        camPos[1]   += delta[1];
+        camPos[2]   += delta[2];
+
+        this.targetPos = p;
+        this.cameraPos = camPos;
+        this.cursor.position.fromArray( p );
+        return this;
+    }
+
+    setFov( v ){
+        const [pos, scl] = CameraMath.switchFov( this.cameraPos, this.targetPos, this.camPersp.fov, v );
+        
+        this.camPersp.fov = v;
+        this.camPersp.position.fromArray( pos );
+        this.camPersp.updateProjectionMatrix();
+
+        this.cursor.setFactor( this.cursor.getFactor() * (1 / scl) );
+        
+        return this;
+    }
+    
+    roundAxes(){
+        const dir = vSub( this.cameraPos, this.targetPos );
+        // vNorm( dir, dir )''
+        const rDir      = CameraMath.roundAxisLook( dir );
+        const dist      = this.targetDistance;
+        this.cameraPos  = [
+            rDir[0] * dist + this.targetPos[0],
+            rDir[1] * dist + this.targetPos[1],
+            rDir[2] * dist + this.targetPos[2]
+        ];
+    }
+    
+    fitBoundingBox( wpos, min, max, scl=1.2 ){
+        if( this.camera.isOrthographicCamera ){ console.log( 'FixBoundingBox for Ortho not implemented' ); return; }
+        
+        const [ pos, tar ] = CameraMath.fitBox( wpos, min, max, this.camera );
+        this.targetPos[0] = tar[0];
+        this.targetPos[1] = tar[1];
+        this.targetPos[2] = tar[2];
+        this.cameraPos    = pos;
+    }
+    // #endregion
+}
+
+// #region MATH
+
+import {
+    vSub, vNorm, vCross, vLen, vDist, 
+    qNorm, qFromAxes, qTransform,
+} from '@lib/maths/maths.js';
+
+class CameraMath{
+
+    // #region ORBIT
+
+    static orbitStep( rx, ry, startPos, targetPos=[0,0,0] ){
+        // Offset position from target
+        const pos = [
+            startPos[0] - targetPos[0],
+            startPos[1] - targetPos[1],
+            startPos[2] - targetPos[2],
+        ];
+        const dist = Math.sqrt( pos[0]**2 + pos[1]**2 + pos[2]**2 );
+
+        // Convert radius to Degrees to use with spherical coordinates
+        // Clamp lat so it doesn't roll to the other side
+        const polar = this.cartesian2spherical( pos );
+        polar[ 0 ]  = (polar[0] * 180 / Math.PI) + rx * 57.2957795131;
+        polar[ 1 ]  = Math.min( 89.9999, Math.max( -89.9999, (polar[1] * 180 / Math.PI) + ry * 57.2957795131 ) );
+        
+        this.spherical2cartesian( 
+            polar[0] * (Math.PI / 180),
+            polar[1] * (Math.PI / 180),
+            dist, pos
+        );
+        
+        // Position from target pos
+        pos[0] += targetPos[0];
+        pos[1] += targetPos[1];
+        pos[2] += targetPos[2];
+        
+        return pos;
+    }
+
+    /** Set a position from a distance to a target */
+    static zoomTarget( pos, target, distance ){
+        const dir = [
+            pos[0] - target[0],
+            pos[1] - target[1],
+            pos[2] - target[2],
+        ];
+
+        // Normalize direction
+        const m = Math.sqrt( dir[0]**2 + dir[1]**2 + dir[2]**2 );
+        dir[0] /= m;
+        dir[1] /= m;
+        dir[2] /= m;
+
+        // Scale direction vector & add to get position
+        dir[0] = dir[0] * distance + target[0];
+        dir[1] = dir[1] * distance + target[1];
+        dir[2] = dir[2] * distance + target[2];
+        return dir;
+    }
+
+    // #endregion
+
+    // #region SCREEN PANNING
+
+    /** Move camera based on view's UP and RIGHT Axis */
+    static screenPanStep( cPos, cRot, xSteps, ySteps ){    
+        // Find the screen's UP and RIGHT Direction
+        const rit = qTransform( cRot, [1,0,0] );
+        const up  = qTransform( cRot, [0,1,0] );
+
+        return [
+            cPos[0] + (rit[0] * xSteps) + (up[0] * ySteps),
+            cPos[1] + (rit[1] * xSteps) + (up[1] * ySteps),
+            cPos[2] + (rit[2] * xSteps) + (up[2] * ySteps),
+        ];
+    }
+
+    static screenPanStepInc( cRot, xSteps, ySteps ){    
+        // Find the screen's UP and RIGHT Direction
+        const rit = qTransform( cRot, [1,0,0] );
+        const up  = qTransform( cRot, [0,1,0] );
+
+        rit[0] *= xSteps;
+        rit[1] *= xSteps;
+        rit[2] *= xSteps;
+
+        up[0]  *= ySteps;
+        up[1]  *= ySteps;
+        up[2]  *= ySteps;
+
+        return [ rit, up ];
+    }
+
+    // #endregion
+
+    // #region LOOK
+    /** Use spherical coordinates to set position/rotation of orbit camera */
+    static sphericalLook( lon, lat, radius, target=[0,0,0] ){
+        const pos   = [0, 0, 0];
+        const phi   = ((90 - lat) * Math.PI) / 180;
+        const theta = ((lon + 180) * Math.PI) / 180;
+        const sPhi  = Math.sin( phi );
+    
+        pos[0] = -( radius * sPhi * Math.sin( theta ));
+        pos[1] = radius * Math.cos( phi );
+        pos[2] = -( radius * sPhi * Math.cos( theta ) );
+        
+        const rot = [0,0,0,1];
+        if( target ){
+            // Rotate camera to look directly at the target
+            pos[0] += target[0];
+            pos[1] += target[1];
+            pos[2] += target[2];
+            this.lookAt( rot, pos, target );
+        }
+        
+        return [ pos, rot ];
+    }
+    
+    /** Create a rotation from eye & target position */
+    static lookAt( out, eye, target=[0,0,0], up=[0,1,0] ){
+        // Forward is inverted, will face correct direction when converted
+        // to a ViewMatrix as it'll invert the Forward direction anyway
+        const z = vSub( eye, target );
+        const x = vCross( up, z );
+        const y = vCross( z, x );
+
+        vNorm( x, x );
+        vNorm( y, y );
+        vNorm( z, z );
+
+        qFromAxes( x, y, z, out );
+        return qNorm( out, out );
+    }
+
+    /** Compute rotation from a look & up direction */
+    static lookDirection( dir, up=[0,1,0], out=[0,0,0,1] ){
+        const z = dir.slice();
+        const x = vCross( up, z );
+        const y = vCross( z, x );
+    
+        vNorm( x, x );
+        vNorm( y, y );
+        vNorm( z, z );
+
+        qFromAxes( x, y, z, out );
+        return qNorm( out, out );
+    }
+    // #endregion
+
+    // #region ROUND AXIS LOOK ( ALIGN LOOK TO NEAREST WORLD AXIS)
+
+    static roundAxisLook( lookDir, out=[0,0,0] ){
+        // Get spherical coordinates of the look rotation in radians
+        const coord = this.cartesian2spherical( lookDir );
+
+        // Round the angles to the nearest half pi
+        const step = Math.PI * 0.5; 
+        coord[ 0 ] = Math.round( coord[ 0 ] / step ) * step;
+        coord[ 1 ] = Math.round( coord[ 1 ] / step ) * step;
+
+        // Convert coords back to a direction then to a rotation
+        return this.spherical2cartesian( coord[0], coord[1], 1, out );
+    }
+
+    static roundQuatAxis( q, out=[0,0,0,1] ){
+        const lookDir = qTransform( q, [0,0,1] );
+        this.axisDir  = this.roundAxisLook( lookDir );
+        return this.lookDirection( axisDir, out );
+    }
+
+    // #endregion
+
+    // #region COORDINATE SYSTEMS
+
+    static spherical2cartesian( lonRad, latRad, radius=1, out=[0,0,0] ){
+        const theta = ( lonRad + Math.PI );
+        let   phi   = ( 1.5707963267948966 - latRad ); // PI HALF
+              phi   = Math.max( 0.000001, Math.min( Math.PI - 0.000001, phi ) );
+        const sPhi  = Math.sin( phi );
+        
+        out[0] = -(radius * sPhi * Math.sin( theta ));
+        out[1] = radius * Math.cos( phi );
+        out[2] = -(radius * sPhi * Math.cos( theta ));
+
+        return out;
+    }
+    
+    static cartesian2spherical( v ){
+        const len = Math.sqrt( v[0]**2 + v[2]**2 );
+        return [
+            Math.atan2( v[0], v[2] ),
+            Math.atan2( v[1], len ), 
+        ];
+    }
+
+    // #endregion
+
+    // #region CAMERA SWITCHING
+
+    // Switch from perspective to orthographic
+    static perp2orth( pCam, oCam, targetPos, size ){
+        const toRad     = Math.PI / 180;
+        const aspect    = size[0] / size[1];
+        const camPos    = pCam.position.toArray();
+
+        const height    = 2 * Math.tan( pCam.fov * 0.5 * toRad ) * vDist( camPos, targetPos ); // originall vLen( camPos )
+        const width     = height * aspect;
+
+        oCam.left       = -width  * 0.5;
+        oCam.right      =  width  * 0.5;
+        oCam.top        =  height * 0.5;
+        oCam.bottom     = -height * 0.5;
+        oCam.near       = -10; // There is some clipping, -1 works ok, -10 better
+        oCam.far        = pCam.far;
+        oCam.zoom       = 1;
+
+        oCam.position.copy( pCam.position );
+        oCam.quaternion.copy( pCam.quaternion );
+        oCam.updateProjectionMatrix();
+    }
+
+    // Switch from orthographic to perspective 
+    static orth2perp( oCam, pCam, targetPos ){
+        const camPos    = oCam.position.toArray();
+        const dir       = vSub( camPos, targetPos );
+        const dist      = vLen( dir ) * ( 1 / oCam.zoom ); // Original code is just len( camPos ). dir is for target
+
+        vNorm( dir, dir );
+        camPos[0]       = dir[0] * dist + targetPos[0]; // Original code didnt have + targetPos
+        camPos[1]       = dir[1] * dist + targetPos[1];
+        camPos[2]       = dir[2] * dist + targetPos[2];
+
+        pCam.position.fromArray( camPos );
+        pCam.quaternion.copy( oCam.quaternion );
+    }
+
+    // #endregion
+
+    // #region FITTING
+
+    static fitBoxPerspectiveDistance( camera, width, height, depth, cover=false ){
+        // Cover tries to fill width more then height
+        const fov      = camera.getEffectiveFOV() * 0.01745329251; // FOV in Radians
+        const camRatio = camera.aspect;
+        const boxRatio = width / height;
+
+        const fitSize  = ( cover ? boxRatio > camRatio : boxRatio < camRatio ) ? height : width / camRatio;
+        return fitSize * 0.5 / Math.tan( fov * 0.5 ) + depth * 0.5;
+    }
+
+    static fitSpherePerspectiveDistance( camera, radius ){
+        // https://stackoverflow.com/a/44849975
+        const vFOV = camera.getEffectiveFOV() * 0.01745329251;
+        const fov  = ( 1 < camera.aspect )? 
+            vFOV : 
+            Math.atan( Math.tan( vFOV * 0.5 ) * camera.aspect ) * 2; // Horizontal FOV
+
+        return radius / Math.sin( fov * 0.5 );
+    }
+
+    static fitBoxOrthographicZoom( camera, width, height, cover=false ){
+        const w      = camera.right - camera.left;
+        const h      = camera.top   - camera.bottom;
+        return cover ? Math.max( w / width, h / height ) : Math.min( w / width, h / height );
+    }
+
+    static fitSphereOrthographicZoom( camera, radius ){
+        const w        = camera.right - camera.left;
+        const h        = camera.top   - camera.bottom;
+        const diameter = 2 * radius;
+        return Math.min( w / diameter, h / diameter );
+    }
+
+    static fitBox( pos, bMin, bMax, cam, scl=1.2 ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const box  = new AABB( bMin, bMax )
+            .scale( scl )
+            .translate( pos );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const center = box.getCenter();
+        const size   = box.getSize();
+        const dist   = this.fitBoxPerspectiveDistance( cam, size[0], size[1], size[2], false )
+        const p      = [ // center + fwd * dist
+            center[0],
+            center[1],
+            center[2] + dist,
+        ];
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        return [ p, center ]; // Camera Pos + Target Pos
+    }
+
+    // static fitSphere( mesh, cam ){
+    //     const mSph   = mesh.geometry.boundingSphere;
+        
+    //     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    //     const dist   = fitSpherePerspectiveDistance( cam, mSph.radius );
+    //     const center = vAdd( mSph.center.toArray(), mesh.position.toArray() );
+    //     const pos    = vScaleThenAdd( dist, [0,0,1], center );
+    //     // Debug.pnt.add( p, 0x00ff00, 4 );
+
+    //     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    //     // Apply Position & Look roation
+    //     cam.position.fromArray( pos );
+    //     cam.lookAt( new THREE.Vector3().fromArray( center ) );
+        
+    //     App.camCtrl.target.fromArray( center );
+    //     App.camCtrl.update();
+    // }
+
+    // #endregion
+
+    // #region MISC
+    
+    /** Compute new camera position when switching FOV */
+    static switchFov( camPos, targetPos, fromFov, toFov ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const toRad = Math.PI / 180;        
+        const scl   = Math.tan( fromFov * 0.5 * toRad ) / 
+                      Math.tan( toFov   * 0.5 * toRad );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // norm( camPos - targetPos )
+        const dir = [
+            camPos[0] - targetPos[0],
+            camPos[1] - targetPos[1],
+            camPos[2] - targetPos[2],
+        ];
+
+        const dist = Math.sqrt( dir[0]**2 + dir[1]**2 + dir[1]**2 );
+        dir[0] /= dist;
+        dir[1] /= dist;
+        dir[2] /= dist;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const pos = [
+            targetPos[0] + dir[0] * dist * scl,
+            targetPos[1] + dir[1] * dist * scl,
+            targetPos[2] + dir[2] * dist * scl,
+        ];
+
+        return [ pos, scl ];
+    }
+
+    // #endregion
+
+}
+
+class AABB{
+    min = [0,0,0];
+    max = [0,0,0];
+
+    constructor( min=null, max=null ){
+        if( min && max ) this.set( min, max );
+    }
+
+    set( min, max ){
+        this.min[0] = min[0];
+        this.min[1] = min[1];
+        this.min[2] = min[2];
+        this.max[0] = max[0];
+        this.max[1] = max[1];
+        this.max[2] = max[2];
+        return this;
+    }
+
+    translate( v ){
+        this.min[0] += v[0];
+        this.min[1] += v[1];
+        this.min[2] += v[2];
+
+        this.max[0] += v[0];
+        this.max[1] += v[1];
+        this.max[2] += v[2];
+        return this;
+    }
+
+    scale( v ){
+        const c = this.getCenter();
+        const a = this.min;
+        const b = this.max;
+
+        a[0] = ( a[0] - c[0] ) * v + c[0];
+        a[1] = ( a[1] - c[1] ) * v + c[1];
+        a[2] = ( a[2] - c[2] ) * v + c[2];
+
+        b[0] = ( b[0] - c[0] ) * v + c[0];
+        b[1] = ( b[1] - c[1] ) * v + c[1];
+        b[2] = ( b[2] - c[2] ) * v + c[2];
+        return this;
+    }
+
+    expandByPoint( pos ) {
+        this.min[0] = Math.min( this.min[0], pos[0] );
+        this.min[1] = Math.min( this.min[1], pos[1] );
+        this.min[2] = Math.min( this.min[2], pos[2] );
+        this.max[0] = Math.max( this.max[0], pos[0] );
+        this.max[1] = Math.max( this.max[1], pos[1] );
+        this.max[2] = Math.max( this.max[2], pos[2] );
+        return this;
+    }
+
+    getSize(){ 
+        return [
+            this.max[0] - this.min[0],
+            this.max[1] - this.min[1],
+            this.max[2] - this.min[2],
+        ];
+    }
+
+    getCenter(){
+        // lerp( a, b, 0.5 );        
+        return [
+            this.min[0] * 0.5 + this.max[0] * 0.5,
+            this.min[1] * 0.5 + this.max[1] * 0.5,
+            this.min[2] * 0.5 + this.max[2] * 0.5,
+        ];
+    }
+
+    getCorners(){
+        const x1  = this.min[0], y1 = this.min[1], z1 = this.min[2];
+        const x2  = this.max[0], y2 = this.max[1], z2 = this.max[2];
+        const rtn = [
+            [x1,y1,z1], // Bottom Face - Start at min corner
+            [x1,y1,z2], 
+            [x2,y1,z2],
+            [x2,y1,z1],
+
+            [x1,y2,z1], // Top face - start of min corner but max height
+            [x1,y2,z2],
+            [x2,y2,z2], // max corner
+            [x2,y2,z1],
+        ];
+        return new AABBCorners( rtn );
+    }
+}
+
+class AABBCorners{
+    // Bot  Top  :: CCW
+    // 0-3  4-7
+    // | |  | |
+    // 1-2  5-6
+    points = [];
+    constructor( points ){ this.points = points; }
+
+    applyQuat( q ){
+        const c = this.getCenter();
+        const v = [0,0,0];
+        for( const p of this.points ){
+            vSub( p, c, v );
+            qTransform( q, v, v );
+            vAdd( v, c, p );
+            // Debug.pnt.add( p, 0xffffff, 2 );
+        }
+        return this;
+    }
+
+    scale( s ){
+        const c = this.getCenter();
+        for( const p of this.points ){
+            p[0] = ( p[0] - c[0] ) * s + c[0];
+            p[1] = ( p[1] - c[1] ) * s + c[1];
+            p[2] = ( p[2] - c[2] ) * s + c[2];
+        }
+        return this;
+    }
+
+    getCenter(){
+        const div = 1 / this.points.length;
+        let x = 0;
+        let y = 0;
+        let z = 0;
+
+        for( const p of this.points ){
+            x += p[0];
+            y += p[1];
+            z += p[2];
+        }
+
+        return [ x * div, y * div, z * div ]
+    }
+
+    getSize(){
+        // Points can be any orientation, compute the distance between
+        // certain points to get the width, height and depth of the box
+        const a = this.points[0];
+        const b = this.points[1];
+        const c = this.points[2];
+        const d = this.points[5];
+
+        return [
+            Math.sqrt( (b[0]-c[0])**2 + (b[1]-c[1])**2 + (b[2]-c[2])**2 ),
+            Math.sqrt( (b[0]-d[0])**2 + (b[1]-d[1])**2 + (b[2]-d[2])**2 ),
+            Math.sqrt( (b[0]-a[0])**2 + (b[1]-a[1])**2 + (b[2]-a[2])**2 ),
+        ];
+    }
+
+    debug( c=0xffffff ){
+        const p = this.points;
+        for( let i=0; i < 4; i++ ){
+            const ni = (i + 1) % 4;
+            Debug.ln
+                .add( p[i], p[ni], c )      // bottom
+                .add( p[i+4], p[ni+4], c )  // top
+                .add( p[i], p[i+4], c );    // sides
+        }
+        return this;
+    }
+}
+
+// #endregion
+
+// #region HELPERS
+
+class CanvasPointerHandlers{
+    // #region MAIN
+    _pointerId     = 0;         // Pointer ID to continue receiving events when mouse leaves canvas or window
+    _initCoord     = [ 0, 0 ];  // mouse XY position on mouse down
+    _prevCoord     = [ 0, 0 ];  // mouse XY position on last move
+    _canvas        = null;
+
+    onPointerUp    = null;
+    onPointerDown  = null;
+    onPointerMove  = null;
+    onPointerWheel = null;
+
+    constructor( canvas ){ this._canvas = canvas; }
+    // #endregion
+
+    // #region HELPERS
+    /** Compute mouse XY position over the canvas */
+    mouseCoord( e, out=[0,0] ){
+        // need canvas sceen location & size
+        const rect = this._canvas.getBoundingClientRect();
+        out[ 0 ]   = e.clientX - rect.x;
+        out[ 1 ]   = e.clientY - rect.y;
+        return out;
+    }
+    // #endregion
+
+    // #region EVENT HANDLERS
+    _onWheel = e => {
+        e.preventDefault();
+        e.stopPropagation();
+        if( this.onPointerWheel ) this.onPointerWheel( e, e.deltaX, e.deltaY );
+    };
+
+    _onPointerDown = e => {
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this._pointerId = e.pointerId;
+
+        this.mouseCoord( e, this._initCoord );
+        this._prevCoord[0] = this._initCoord[0];
+        this._prevCoord[1] = this._initCoord[1];
+
+        if( this.onPointerDown && !this.onPointerDown( e, this._initCoord ) ) return;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        e.preventDefault();
+        e.stopPropagation();
+        this._canvas.addEventListener( 'pointermove', this._onPointerMove, true );
+        this._canvas.addEventListener( 'pointerup',   this._onPointerUp,   true );
+    };
+
+    _onPointerUp = e => {
+        this._canvas.releasePointerCapture( this._pointerId );
+        this._canvas.removeEventListener( 'pointermove', this._onPointerMove, true );
+        this._canvas.removeEventListener( 'pointerup',   this._onPointerUp,   true );
+
+        if( this.onPointerUp ) this.onPointerUp( e );
+    };
+
+    _onPointerMove = e => {
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        e.preventDefault();
+        e.stopPropagation();
+        this._canvas.setPointerCapture( this._pointerId ); // Keep receiving events
+        
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Figure out the current position, change since initial position & velocity of from previous pos.
+        const coord = this.mouseCoord( e );
+        const delta = [ coord[ 0 ] - this._initCoord[ 0 ], coord[ 1 ] - this._initCoord[ 1 ] ];
+        const vel   = [ coord[ 0 ] - this._prevCoord[ 0 ], coord[ 1 ] - this._prevCoord[ 1 ] ];
+
+        this._prevCoord[0] = coord[0];
+        this._prevCoord[1] = coord[1];
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if( this.onPointerMove ) this.onPointerMove( e, coord, delta, vel, this._initCoord );
+    };
+
+    _onContextMenu = e => {
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+    };
+    // #endregion
+
+    // #region CONTROL LISTENERS
+    enable(){
+        this._canvas.addEventListener( 'wheel',       this._onWheel,       true );
+        this._canvas.addEventListener( 'pointerdown', this._onPointerDown, true );
+        this._canvas.addEventListener( 'contextmenu', this._onContextMenu, true );
+        // this._canvas.addEventListener( 'pointermove', (e)=>{console.log( e )}, true );
+        return this;
+    }
+
+    disable(){
+        if( this._pointerId ) this._canvas.releasePointerCapture( this._pointerId );
+
+        this._canvas.removeEventListener( 'wheel',       this._onWheel,       true );
+        this._canvas.removeEventListener( 'pointerdown', this._onPointerDown, true );
+        this._canvas.removeEventListener( 'pointermove', this._onPointerMove, true );
+        this._canvas.removeEventListener( 'pointerup',   this._onPointerUp,   true );
+        this._canvas.removeEventListener( 'contextmenu', this._onContextMenu, true );
+        return this;
+    }
+    // #endregion
+}
+
+// #endregion
+
+// #region Cursor
+
+export default function cursorMesh( props ){
+    props = Object.assign( { size:2, w:0, h:0, y:0 }, props );
+    const opts = { factor:0.12 };
+
+    const sphere = new THREE.Mesh(
+        new THREE.SphereGeometry( 0.2, 12, 12 ),
+        new CursorBallMaterial( opts ),
+    );
+
+    const geo  = new THREE.PlaneGeometry( props.w || props.size, props.h || props.size );
+    geo.rotateX( -Math.PI * 0.5 );
+
+    const mat       = new CursorMaterial( opts );
+    const mesh      = new THREE.Mesh( geo, mat );
+    mesh.add( sphere );
+
+    mesh.setFactor  = ( n )=>{ 
+        mat.uniforms.factor.value = n;
+        sphere.material.uniforms.factor.value = n;
+    };
+    mesh.getFactor  = ()=>{ return mat.uniforms.factor.value; };
+
+    return mesh;
+}
+
+class CursorMaterial extends THREE.RawShaderMaterial{
+    constructor( props={} ){
+        super();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Merge custom props with default options
+        const opts = Object.assign({
+            factor : 0.1,
+        }, props );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.name               = 'CustomMaterial';
+        this.glslVersion        = THREE.GLSL3;
+        this.forceSinglePass    = true;
+        this.side               = THREE.DoubleSide;
+        this.transparent        = true;
+        // this.depthTest          = true;
+        
+        // this.alphaToCoverage    = true;
+        // this.lights             = true;
+
+        this.uniforms           = {
+            factor     : { value: opts.factor },
+        };
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.vertexShader = `
+        in vec3 position;
+        in vec3 normal;
+        in vec2 uv;
+        
+        uniform float factor;
+        uniform mat4 modelMatrix;
+        uniform mat4 viewMatrix;
+        uniform mat4 projectionMatrix;
+        uniform vec3 cameraPosition;
+
+        out vec2 fragUV;
+        out vec3 fragLPos;
+        out vec3 fragWPos;
+
+        // #####################################################################
+
+        void main(){
+            vec3 pos        = position * ( length( cameraPosition - modelMatrix[3].xyz ) * factor );
+            vec4 wPos       = modelMatrix * vec4( pos, 1.0 );
+            
+            fragUV          = uv;
+            fragWPos        = wPos.xyz;
+            fragLPos        = position;
+
+            gl_Position     = projectionMatrix * viewMatrix * wPos;
+
+            // gl_PointSize    = 1.0 * ( 20.0 / -vPos.z ); // vPos = viewMatrix * wPos
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        in  vec2 fragUV;
+        in  vec3 fragLPos;
+        in  vec3 fragWPos;
+
+        out vec4 outColor;
+
+        // #####################################################################
+
+        float coord_len   = 0.0;  // Localspace Coord Length
+        float coord_dxdy  = 0.0;
+
+        float circle( float radius ){
+            return smoothstep( radius + coord_dxdy, radius - coord_dxdy, coord_len );
+        }
+
+        float ring( float outer, float inner ){
+            return  smoothstep( inner - coord_dxdy, inner + coord_dxdy, coord_len ) -
+                    smoothstep( outer - coord_dxdy, outer + coord_dxdy, coord_len );
+        }
+
+        float sdTriangleIsosceles( in vec2 p, in vec2 q ){
+            p.x = abs(p.x);
+            vec2  a = p - q*clamp( dot(p,q)/dot(q,q), 0.0, 1.0 );
+            vec2  b = p - q*vec2( clamp( p.x/q.x, 0.0, 1.0 ), 1.0 );
+            float s = -sign( q.y );
+            vec2  d = min( vec2( dot(a,a), s*(p.x*q.y-p.y*q.x) ),
+                        vec2( dot(b,b), s*(p.y-q.y)  ));
+            return -sqrt(d.x)*sign(d.y);
+        }
+
+        float triangle( float xSize, float ySize, float xOffset, float yOffset ){
+            vec2 coord = vec2( fragLPos.x, -fragLPos.z ); // render SDF object with a 180 degree rotation
+            coord.x += xOffset;
+            coord.y += yOffset;
+
+            float d = sdTriangleIsosceles( coord, vec2( xSize, ySize ) );
+            return 1.0 - smoothstep( 0.0-coord_dxdy, 0.0+coord_dxdy, d ); // Smooth & Invert Mask
+        }
+
+        // #####################################################################
+
+        void main(){
+            coord_len   = dot( fragLPos.xz, fragLPos.xz );          // Coord Local Space Length
+            coord_dxdy  = fwidth( coord_len );                      // Pixel Width in relation to coord_len
+
+            float alpha = 0.0; //circle( 0.03 );                           // Inner Dot
+            alpha = max( alpha, ring( 0.95, 0.8 ) );                // Outer Ring
+            alpha = max( alpha, ring( 0.5, 0.46 ) );                // Inner Ring
+
+            // Forward Triange with its bottom clipped using circle mask
+            float innerRingMask = 1.0 - step( coord_len, 0.48 );
+            alpha = max( alpha, triangle( 0.2, 0.2, 0.0, 0.85 ) * innerRingMask );
+
+            float c = ( gl_FrontFacing )? 1.0 : 0.5;
+            outColor = vec4( c, c, c, alpha );
+        }`;
+    }
+
+    // #region SETTERS
+    // setFactor( v ){ this.uniforms.factor.value = v; return this; }
+    // #endregion
+}
+
+class CursorBallMaterial extends THREE.RawShaderMaterial{
+    constructor( props={} ){
+        super();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Merge custom props with default options
+        const opts = Object.assign({
+            factor : 0.1,
+        }, props );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.name               = 'CursorBallMaterial';
+        this.glslVersion        = THREE.GLSL3;
+        // this.forceSinglePass    = true;
+        // this.side               = THREE.DoubleSide;
+        // this.transparent        = true;
+        // this.depthTest          = true;
+        
+        // this.alphaToCoverage    = true;
+        // this.lights             = true;
+
+        this.uniforms           = {
+            factor     : { value: opts.factor },
+        };
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.vertexShader = `
+        in vec3 position;
+        in vec3 normal;
+        in vec2 uv;
+        
+        uniform float factor;
+        uniform mat4 modelMatrix;
+        uniform mat4 viewMatrix;
+        uniform mat4 projectionMatrix;
+        uniform vec3 cameraPosition;
+
+        // #####################################################################
+
+        void main(){
+            vec3 pos        = position * ( length( cameraPosition - modelMatrix[3].xyz ) * factor );
+            vec4 wPos       = modelMatrix * vec4( pos, 1.0 );
+            gl_Position     = projectionMatrix * viewMatrix * wPos;
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        out vec4 outColor;
+        // #####################################################################
+
+        void main(){
+            outColor = vec4( 1.0, 1.0, 1.0, 1.0 );
+        }`;
+    }
+
+    // #region SETTERS
+    // setFactor( v ){ this.uniforms.factor.value = v; return this; }
+    // #endregion
+}
+
+// #endregion
+</script></body></html>
