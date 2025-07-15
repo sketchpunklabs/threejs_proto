@@ -9,3 +9,11 @@
 - https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/controls/TransformControls.js
 - https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/loaders/GLTFLoader.js
 - https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/utils/BufferGeometryUtils.js
+
+
+
+### Tweakplane
+https://cdn.jsdelivr.net/npm/tweakpane-plugin-inputs/dist/tweakpane-plugin-inputs.min.js
+or https://github.com/tallneil/tweakpane-plugin-inputs/tree/main/dist
+
+https://cdn.jsdelivr.net/npm/@tweakpane/plugin-camerakit/+esm

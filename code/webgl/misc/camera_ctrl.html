@@ -3,7 +3,8 @@
 <body><script src="../../../import-map.js"></script><script type="module">
 // #region IMPORTS
 import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
-import facedCube           	from '@lib/meshes/FacedCube.js';
+import GamepadInput from '@lib/input/GamepadInput.js';
+import facedCube    from '@lib/meshes/FacedCube.js';
 
 import { Pane } from '@tp/tweakpane/tweakpane-4.0.4.min.js';
 // #endregion
@@ -12,7 +13,14 @@ import { Pane } from '@tp/tweakpane/tweakpane-4.0.4.min.js';
 let App   = useDarkScene( useThreeWebGL2() );
 let Debug = {};
 let Ref   = {
-    fov     : 45,
+    gamepad     : new GamepadInput(),
+    spaceMouse  : false,
+
+    fov         : 45,
+    Twist       : 'Horizontal Orbit',
+    Pull        : 'Vertical Orbit',
+    Pan         : 'XZ Movement',
+    TiltY       : 'Zooming',
 };
 
 window.addEventListener( 'load', async ()=>{
@@ -33,9 +41,18 @@ window.addEventListener( 'load', async ()=>{
     App.scene.add( Ref.cube );
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    App.renderLoop();
+    App.createRenderLoop( null, onPostRender ).start();
     buildUI();
 });
+
+Ref.gamepad.onControlReady = ( profile )=>{
+    // console.log( 'GAMEPAD Profile', profile );
+    if( profile.key === 'SpaceMouse Compact' ) Ref.spaceMouse = true;
+};
+
+function onPostRender(){
+    if( Ref.spaceMouse ) spaceMousePolling();
+}
 
 async function buildUI(){    
     appendGithubLink( false );
@@ -64,6 +81,13 @@ async function buildUI(){
     } );
 
     f.addBinding( Ref, 'fov', { min:1, max:90, step:1, label:'FoV' } ).on( 'change', e=>{ Ref.ctrl.setFov( e.value ) });
+
+    const f2 = p.addFolder({ title: 'Info', expanded: true });
+    f2.addBinding( Ref, 'Twist', { readonly: true } );
+    f2.addBinding( Ref, 'Pull',  { label:'Push/Pull', readonly: true } );
+    f2.addBinding( Ref, 'Pan',   { readonly: true } );
+    f2.addBinding( Ref, 'TiltY', { readonly: true } );
+
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     Ref.pane = p;
 }
@@ -181,26 +205,8 @@ class Orbit{
     // #endregion
 
     // #region POINTER CONTROLS
-    onPointerWheel = ( e, dx, dy )=>{
-        const scl  = this.zoomScale;
-
-        if( !this.camera.isOrthographicCamera ){
-            const tick = Math.sign( dy );
-            const pos  = this.cameraPos;
-            const d    = Math.sqrt(
-                (pos[0] - this.targetPos[0])**2 +
-                (pos[1] - this.targetPos[1])**2 +
-                (pos[2] - this.targetPos[2])**2
-            );
-            
-            // Zoom In : dist * scl,  Zoom out : dist / scl
-            this.setTargetDistance( ( tick === -1 )? d * scl : d / scl );
-        }else{
-            const c =  this.camera;
-            const z = ( dy < 0 )? c.zoom / scl : c.zoom * scl;
-            c.zoom = Math.max( 0.000001, z );
-            c.updateProjectionMatrix();
-        }
+    onPointerWheel = ( e, dx, dy )=>{ 
+        this.zoomStep( this.zoomScale * Math.sign(dy) );
     };
 
     onPointerDown = ( e, coord )=>{
@@ -256,6 +262,28 @@ class Orbit{
         return this;
     };
     
+    zoomStep( t ){
+        if( !this.camera.isOrthographicCamera ){
+            const tick = Math.sign( t );
+            const scl  = Math.abs( t );
+            const pos  = this.cameraPos;
+            const d    = Math.sqrt(
+                (pos[0] - this.targetPos[0])**2 +
+                (pos[1] - this.targetPos[1])**2 +
+                (pos[2] - this.targetPos[2])**2
+            );
+            
+            // Zoom In : dist * scl,  Zoom out : dist / scl
+            this.setTargetDistance( ( tick === -1 )? d * scl : d / scl );
+        }else{
+            const c     =  this.camera;
+            const scl   = Math.abs( t );
+            const z     = ( t < 0 )? c.zoom / scl : c.zoom * scl;
+            c.zoom = Math.max( 0.000001, z );
+            c.updateProjectionMatrix();
+        }
+    }
+
     stepScreenPan( dx, dy, startPos=this.targetPos.slice() ){
         let x = 0;
         let y = 0;
@@ -269,6 +297,35 @@ class Orbit{
         }
 
         const pos = CameraMath.screenPanStep( startPos, this.cameraRot, x, y );
+        this.setTarget( pos );
+        return this;
+    }
+
+    stepPanXZ( dx, dz ){
+        let x = 0;
+        let z = 0;
+        if( !this.camera.isOrthographicCamera ){
+            const scl = this.getProjDistScale();
+            x         = dx * scl;
+            z         = dz * scl;
+        }else{
+            x = dx * this.orthoWScale;
+            z = dz * this.orthoHScale;
+        }
+
+        const pos = CameraMath.panStepXZ( this.targetPos, this.cameraRot, x, z );
+        this.setTarget( pos );
+        return this;
+    }
+
+    stepPanY( dy ){
+        const y = ( !this.camera.isOrthographicCamera )
+            ? dy * this.getProjDistScale()
+            : dy * this.orthoHScale();
+
+        const pos = this.targetPos.slice();
+        pos[1]   += y;
+
         this.setTarget( pos );
         return this;
     }
@@ -302,7 +359,7 @@ class Orbit{
         
         return this;
     }
-    
+
     roundAxes(){
         const dir = vSub( this.cameraPos, this.targetPos );
         // vNorm( dir, dir )''
@@ -330,7 +387,7 @@ class Orbit{
 // #region MATH
 
 import {
-    vSub, vNorm, vCross, vLen, vDist, 
+    vSub, vNorm, vCross, vLen, vDist, vDot,
     qNorm, qFromAxes, qTransform,
 } from '@lib/maths/maths.js';
 
@@ -390,7 +447,7 @@ class CameraMath{
 
     // #endregion
 
-    // #region SCREEN PANNING
+    // #region PANNING
 
     /** Move camera based on view's UP and RIGHT Axis */
     static screenPanStep( cPos, cRot, xSteps, ySteps ){    
@@ -419,6 +476,27 @@ class CameraMath{
         up[2]  *= ySteps;
 
         return [ rit, up ];
+    }
+
+    static panStepXZ( cPos, cRot, xSteps, zSteps ){    
+        const rit = [0, 0, 0];
+        const fwd = qTransform( cRot, [0,0,-1] ); // Rotation Forward Axis
+    
+        if( Math.abs( vDot( fwd, [0,1,0] ) ) < 0.9999 ){
+            vCross( fwd, [0,1,0], rit ); // Right axis clamped to XZ plane
+            vCross( [0,1,0], rit, fwd ); // Clamp forward so it XZ plane
+        } else {
+            // Over at the poles, just compute the UP and Right axes of the camera's rotation
+            qTransform( cRot, [0,1,0], fwd );
+            qTransform( cRot, [1,0,0], rit );
+        }
+    
+        // Scale directions & add starting position
+        return [
+            cPos[0] + fwd[0] * zSteps + rit[0] * xSteps,
+            cPos[1] + fwd[1] * zSteps + rit[1] * xSteps,
+            cPos[2] + fwd[2] * zSteps + rit[2] * xSteps,
+        ];
     }
 
     // #endregion
@@ -956,7 +1034,7 @@ class CanvasPointerHandlers{
 
 export default function cursorMesh( props ){
     props = Object.assign( { size:2, w:0, h:0, y:0 }, props );
-    const opts = { factor:0.12 };
+    const opts = { factor:0.11 };
 
     const sphere = new THREE.Mesh(
         new THREE.SphereGeometry( 0.2, 12, 12 ),
@@ -1159,4 +1237,76 @@ class CursorBallMaterial extends THREE.RawShaderMaterial{
 }
 
 // #endregion
+
+// #region SPACE MOUSE
+
+const DEAD_ZONE     = 0.2;
+const ORBIT_STEPX   = 20;
+const ORBIT_STEPY   = 5;
+const PAN_STEP      = 70;
+const PAN_STEPY     = 10;
+
+export function smoothStep( v ){ 
+    return v * v * ( 3 - 2 * v ); // https://en.wikipedia.org/wiki/Smoothstep
+}
+
+function spaceMousePolling(){
+    Ref.gamepad.poll();
+    const dat = Ref.gamepad.items[0];
+    let isPanning = false;
+    let axis;
+    let t;
+
+    const fnSmooth = ( axis )=>{
+        const t = axis.getDeadZoneT( DEAD_ZONE );
+        return smoothStep( Math.abs(t) ) * Math.sign( t );
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // PAN X - PAN LEFT & RIGHT ON X AXIS
+    axis = dat.mapAxes.get( 'panX' );
+    if( axis.active && Math.abs( axis.value ) >= DEAD_ZONE ){
+        Ref.ctrl.stepPanXZ( fnSmooth( axis ) * PAN_STEP, 0 );
+        isPanning = true;
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // PAN Y - PAN FORWARD & REVERSE ON Z AXIS
+    axis = dat.mapAxes.get( 'panY' );
+    if( axis.active && Math.abs( axis.value ) >= DEAD_ZONE ){
+        Ref.ctrl.stepPanXZ( 0, fnSmooth( axis ) * -PAN_STEP );
+        isPanning = true;
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    if( !isPanning ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // TILT Y - 
+        axis = dat.mapAxes.get( 'tiltY' );
+        if( axis.active && Math.abs( axis.value ) >= DEAD_ZONE ){
+            // Ref.ctrl.stepPanY( fnSmooth( axis ) * PAN_STEPY );
+
+            const t = fnSmooth( axis );
+            Ref.ctrl.zoomStep( 0.9999 * (1-t) + 0.9 * t );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // TWIST : ORBIT HORIZONTALLY
+        axis = dat.mapAxes.get( 'twist' );
+        if( axis.active && Math.abs( axis.value ) >= DEAD_ZONE ){
+            Ref.ctrl.stepOrbit( fnSmooth( axis ) * ORBIT_STEPX, 0 );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // TWIST : ORBIT VERTICALLY
+        axis = dat.mapAxes.get( 'pull' );
+        if( axis.active && Math.abs( axis.value ) >= DEAD_ZONE ){
+            Ref.ctrl.stepOrbit( 0, fnSmooth( axis ) * -ORBIT_STEPY );
+        }
+    }
+
+
+}
+
+// #endregioin
 </script></body></html>
