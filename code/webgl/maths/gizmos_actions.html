@@ -42,10 +42,12 @@ window.addEventListener( 'load', async ()=>{
     Ref.act = new ActionManager( App.scene, App.camera, App.renderer, App.camCtrl )
         .addAction( 'lineMove', new LineMoveAction() )
         .addAction( 'planeMove', new PlaneMoveAction() )
+        .addAction( 'axisRot', new AxisRotationAction() )
     ;
 
-    startLineMove();
+    // startLineMove();
     // startPlaneMove();
+    startAxisRot();
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // App.createRenderLoop( onPreRender ).start();
@@ -66,6 +68,7 @@ async function buildUI(){
     const f = p.addFolder({ title: 'Actions', expanded: true });
     f.addButton({ title: 'Line Move' }).on( 'click', startLineMove );
     f.addButton({ title: 'Plane Move' }).on( 'click', startPlaneMove );
+    f.addButton({ title: 'Axis Rotation' }).on( 'click', startAxisRot );
 
     // const actions = [ {t:'LineRay', v:'lineRay'}, {t:'misc', v:'misc'}, ];
     // f.addBinding( Ref, 'action', {
@@ -131,8 +134,8 @@ function startPlaneMove(){
         90 * ( Math.random() * 2 - 1 ),
     );
 
-    // // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    // // Compute start and end pos of a segment
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Compute start and end pos of a segment
     const pos   = new Vec3( Ref.cube.position.toArray() );
     const fwd   = new Vec3().fromQuat( q ).norm();
     const rit   = new Vec3().fromCross( [0,1,0], fwd ); //.norm();
@@ -152,6 +155,32 @@ function startPlaneMove(){
     };
 
     Ref.act.useAction( 'planeMove', new PlaneMovePreview(), Ref.cube, props );
+}
+
+function  startAxisRot(){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Random rotation
+    const q = new Quat().fromPolar(
+        180 * ( Math.random() * 2 - 1 ),
+        90  * ( Math.random() * 2 - 1 ),
+    );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Compute start and end pos of a segment
+    const pos   = new Vec3( Ref.cube.position.toArray() );
+    const fwd   = new Vec3().fromQuat( q ).norm();
+    const rit   = new Vec3().fromCross( [0,1,0], fwd ); //.norm();
+    const up    = new Vec3().fromCross( fwd, rit ).norm();
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const props = {
+        initQuat : Ref.cube.quaternion.toArray(),
+        origin   : pos,
+        fwdDir   : fwd,
+        upDir    : up,
+    };
+
+    Ref.act.useAction( 'axisRot', new AxisRotationPreview(), Ref.cube, props );
 }
 
 // #endregion
@@ -194,9 +223,12 @@ class ActionManager{
     }
     // #endregion
 
-    // #region SETERS / GETTERS
+    // #region SETTERS / GETTERS
     getObjectPos(){ return this.object ? this.object.position.toArray() : [0,0,0]; }
     setObjectPos( v ){ if( this.object ) this.object.position.fromArray( v ); }
+
+    getObjectRot(){ return this.object ? this.object.quaternion.toArray() : [0,0,0,1]; }
+    setObjectRot( v ){ if( this.object ) this.object.quaternion.fromArray( v ); }
     // #endregion
 
     // #region EVENT HANDLERS & METHODS
@@ -593,6 +625,73 @@ class PlaneMoveAction{
 // https://github.com/sketchpunklabs/gizmos/blob/main/src/actions/PlaneMovement.ts
 // https://github.com/sketchpunklabs/gizmos/blob/main/src/gizmos/RotationGizmoV2.ts
 
+// Use plane movement to compute angle rotation
+class AxisRotationAction{
+    hitRange    = 3;
+    fwdDir      = new Vec3( 0, 0, 0 );  // Axis for rotation
+    upDir       = new Vec3( 0, 0, 0 );  // Direction that marks ZERO degrees
+    ritDir      = new Vec3( 0, 0, 0 );  // Direction helps determine angle sign ( + or - )
+    origin      = new Vec3( 0, 0, 0 );  // Rotation point
+    
+    rad         = 0;
+    pos         = new Vec3( 0, 0, 0 );  // Object's position / rotation point / plane origin
+    rot         = new Quat();           // Raw rotation not applied
+    initQuat    = new Quat();           // Initial rotation to be modified
+    outQuat     = new Quat();           // Final Rotation 
+    
+    constructor(){}
+
+    init( props ){
+        this.fwdDir.copy( props.fwdDir );
+        this.upDir.copy( props.upDir );
+        this.ritDir.fromCross( this.upDir, this.fwdDir );
+
+        this.origin.copy( props.origin );
+        this.initQuat.copy( props.initQuat );
+    }
+
+    unload( mgt ){}
+
+    onDown( mgt, e ){
+        const ray = mgt.getRayFromEvent( e );
+        const v   = new Vec3();
+        
+        if( intersectPlane( ray, this.origin, this.fwdDir, this.pos ) ){
+            if( Vec3.dist( this.pos, this.origin ) <= this.hitRange ){
+                this.#calcAngle();
+                mgt.setObjectRot( this.outQuat );
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    onMove( mgt, e ){
+        const ray = mgt.getRayFromEvent( e );
+        if( intersectPlane( ray, this.origin, this.fwdDir, this.pos ) ){
+            this.#calcAngle();
+            mgt.setObjectRot( this.outQuat );
+            return true;
+        }
+        return false;
+    }
+
+    onUp( mgt, e ){
+        this.initQuat.copy( this.outQuat );
+        return true;
+    }
+
+    #calcAngle(){
+        const delta = new Vec3().fromSub( this.pos, this.origin ).norm();
+        const sign  = Math.sign( -Vec3.dot( delta, this.ritDir ) );
+        this.rad    = Vec3.angle( delta, this.upDir ) * sign;
+        
+        this.rot.fromAxisAngle( this.fwdDir, this.rad );
+        this.outQuat.fromMul( this.rot, this.initQuat );
+    }
+}
+
 // #endregion 
 
 // #region PREVIEWS / RENDERERS
@@ -623,6 +722,8 @@ class LineMovePreview{
         if( mgt.dragging ) pnt.add( act.initPos, 0x00ffff );
 
         ln.add( act.startPos, act.endPos, 0x00ff00, 0xff0000 );
+
+        pnt._updateGeometry();
     }
 }
 
@@ -668,6 +769,7 @@ class PlaneMovePreview{
         if( this.mesh ){
             mgt.scene.remove( this.mesh );
             this.mesh.geometry.dispose();
+            this.mesh.material.dispose();
             this.mesh = null;
         }
         return true;
@@ -837,9 +939,280 @@ class CircleGridMaterial extends THREE.RawShaderMaterial{
     }
 }
 
+
+class AxisRotationPreview{
+    mesh    = null;
+    action  = null;
+    constructor(){}
+
+    init( mgt, action ){
+        this.action = action;
+
+        if( !this.mesh ){
+            this.mesh = AngleViewMaterial.createMesh();
+            this.mesh.scale.setScalar( 4.5 );
+            mgt.scene.add( this.mesh );
+        }
+
+        const q = new Quat().fromLook( action.fwdDir, action.upDir ).norm();
+        this.mesh.quaternion.fromArray( q );
+        this.mesh.position.fromArray( action.origin );
+        this.mesh.visible = true;
+
+        console.log( 'AxisRotPreview.init' );
+
+        return this;
+    }
+
+    dispose( mgt ){
+        // TODO - Adding and removing the preview mesh
+        // when switching actions might not be the best
+        // way to handle it. Depending on the App, cacheing
+        // the object is a good idea.
+        if( this.mesh ){
+            mgt.scene.remove( this.mesh );
+            this.mesh.geometry.dispose();
+            this.mesh.material.dispose();
+            this.mesh = null;
+        }
+        return true;
+    }
+
+    render( mgt ){
+        const act = this.action;
+
+        if( mgt.dragging ){
+            this.mesh.material.setArc( act.rad );
+        }else{
+            this.mesh.material.setArc( 0 );
+        }  
+    }
+}
+
+class AngleViewMaterial extends THREE.RawShaderMaterial{    
+    static createMesh(){
+        return new THREE.Mesh(
+            new THREE.PlaneGeometry( 1, 1 ), 
+            new AngleViewMaterial()
+        );
+    }
+
+    constructor(){
+        super();
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.name           = 'AngleViewMaterials';
+        this.glslVersion    = THREE.GLSL3;
+        this.depthTest      = true;
+        this.transparent    = true;
+        this.side           = THREE.DoubleSide;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.uniforms = { 
+            radArc    : { type :'float', value: -315 * Math.PI / 180 },
+            radOffset : { type :'float', value: 0 * Math.PI / 180 },
+            radLine   : { type :'float', value: 0 * Math.PI / 180 },
+            radLineOn : { type :'float', value: 0 },
+        };
+
+        // this.setRange( -190, 60 );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.vertexShader = `
+        in	vec3    position;
+        in  vec3    normal;
+        in	vec2    uv;
+        
+        uniform     mat4    modelMatrix;
+        uniform     mat4    viewMatrix;
+        uniform     mat4    projectionMatrix;
+
+        out vec3    fragWPos;  // World Space Position
+        out vec3    fragNorm;
+        out vec2    fragUV;
+        
+        // ################################################################
+
+        void main(){
+            vec4 wPos 	        = modelMatrix * vec4( position, 1.0 );  // World Space
+            vec4 vPos           = viewMatrix * wPos;               // View Space
+            
+            fragUV              = uv;
+            fragWPos            = wPos.xyz;
+            fragNorm            = ( modelMatrix * vec4( normal, 0.0 ) ).xyz;
+
+            gl_Position			= projectionMatrix * vPos;
+        }`;
+
+        this.fragmentShader  = `precision mediump float;
+        in  vec3    fragWPos;
+        in  vec3    fragNorm;
+        in  vec2    fragUV;
+        out vec4    outColor;
+
+        uniform float radArc;
+        uniform float radOffset;
+        uniform float radLine;
+        uniform float radLineOn;
+
+        // ################################################################
+
+        float ring( vec2 coord, float outer, float inner ){ 
+            float radius = dot( coord, coord );
+            float dxdy   = fwidth( radius );
+            return  smoothstep( inner - dxdy, inner + dxdy, radius ) - 
+                    smoothstep( outer - dxdy, outer + dxdy, radius );
+        }
+
+        float circle( vec2 coord, float outer ){ 
+            float radius = dot( coord, coord );
+            float dxdy   = fwidth( radius );
+            return 1.0 - smoothstep( outer - dxdy, outer + dxdy, radius );
+        }
+
+        // https://www.shadertoy.com/view/XtXyDn
+        float arc( vec2 uv, vec2 up, float angle, float radius, float thick ){
+            float hAngle = angle * 0.5;
+
+            // vector from the circle origin to the middle of the arc
+            float c  = cos( hAngle );
+            
+            // smoothing perpendicular to the arc
+            float d1 = abs( length( uv ) - radius ) - thick;
+            float w1 = 1.5 * fwidth( d1 ); // proportional to how much d1 change between pixels
+            float s1 = smoothstep( w1 * 0.5, -w1 * 0.5, d1 ); 
+
+            // smoothing along the arc
+            float d2 = dot( up, normalize( uv ) ) - c;
+            float w2 = 1.5 * fwidth( d2 ); // proportional to how much d2 changes between pixels
+            float s2 = smoothstep( w2 * 0.5, -w2 * 0.5, d2 ); 
+
+            // mix perpendicular and parallel smoothing
+            return s1 * ( 1.0 - s2 );
+        }
+
+        float sdOrientedBox( in vec2 p, in vec2 a, in vec2 b, float th ){
+            float l = length(b-a);
+            vec2  d = (b-a)/l;
+            vec2  q = (p-(a+b)*0.5);
+                q = mat2(d.x,-d.y,d.y,d.x)*q;
+                q = abs(q)-vec2(l,th)*0.5;
+            return length(max(q,0.0)) + min(max(q.x,q.y),0.0);    
+        }
+
+        float sdTriangleIsosceles( in vec2 p, in vec2 q ){
+            p.x = abs(p.x);
+            vec2  a = p - q*clamp( dot(p,q)/dot(q,q), 0.0, 1.0 );
+            vec2  b = p - q*vec2( clamp( p.x/q.x, 0.0, 1.0 ), 1.0 );
+            float s = -sign( q.y );
+            vec2  d = min( vec2( dot(a,a), s*(p.x*q.y-p.y*q.x) ),
+                           vec2( dot(b,b), s*(p.y-q.y) ) );
+            return -sqrt(d.x) * sign(d.y);
+        }
+
+        float triangleMask( vec2 uv, vec2 size, vec2 offset ){
+            // Transform the UV, Flip 180d & Move
+            vec2 coord = uv * vec2( 1.0, -1.0 ) + offset;
+
+            // Get distance from shape
+            float dist = sdTriangleIsosceles( coord, size );
+            return 1.0 - smoothstep( 0.0, 0.01, dist ); // Smooth & Invert Mask
+        }
+
+        // ################################################################
+
+        void main(){
+            outColor = vec4( 0.0, 0.0, 0.0, 1.0 );
+
+            vec2 uvn    = fragUV * 2.0 - 1.0;  // Remap 0:1 to -1:1
+            float mask  = 0.0;
+            float upRad = radians( 90.0 );     // Starting radians to make UP zero degrees
+            
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // ARC
+
+            float maskArc = 0.0;
+
+            if( radArc != 0.0 ){
+                float arcRadius   = 0.56;
+                float arcThick    = 0.18;
+                float arcCenter   = upRad + radOffset + radArc * 0.5;
+                vec2 arcCenterDir = vec2( cos( arcCenter ), sin( arcCenter ) );
+                      maskArc     = arc( uvn, arcCenterDir, radArc, arcRadius, arcThick );
+            }
+
+            // outColor.rgb = vec3( maskArc );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // RING
+            float maskRing =  ring( uvn, 0.78, 0.67 );
+            // outColor.rgb = vec3( maskRing );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // CIRCLE
+            float maskCircle = circle( uvn, 0.01 );
+            // outColor.rgb     = vec3( maskCircle );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // TRIANGLE
+            float maskTri = triangleMask( uvn, vec2(0.2,0.13), vec2(0.0,0.98) );
+            // outColor.rgb = vec3( maskTri );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // LINE
+            float maskLineCut = 1.0;
+            float maskLine    = 0.0;
+
+            if( radLineOn != 0.0 ){
+                float lRadius = 0.6;
+                vec2 end      = vec2( cos( upRad + radLine ) * lRadius, sin( upRad + radLine ) * lRadius );
+
+                float distLen     = sdOrientedBox( uvn, vec2(0.0), end, 0.03 );
+                      maskLine    = smoothstep( 0.03, 0.02, distLen );
+                      maskLineCut = smoothstep( 0.08, 0.09, distLen );
+            }
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // MERGE MASKS
+            mask = max( maskTri, maskRing );
+            mask = max( mask, maskArc * maskLineCut );
+            if( radLineOn != 0.0 ){ mask = max( mask, maskLine ); }
+            mask = max( mask, maskCircle );
+            outColor = vec4( mask );
+        }`;
+    }
+
+    setRange( dMin, dMax ){
+        const nMin = normAngle( dMin );
+        const nMax = normAngle( dMax );
+        
+        if( nMin <= nMax ){
+            this.uniforms.radArc.value    = ( nMax - nMin ) * TO_RAD;
+            this.uniforms.radOffset.value =  nMin * TO_RAD;
+        }else{
+            this.uniforms.radArc.value    = (( 180 - nMin ) + ( nMax - (-180) )) * TO_RAD;
+            this.uniforms.radOffset.value = nMin * TO_RAD;
+        }
+    }
+
+    setArc( v, offset=0 ){
+        this.uniforms.radArc.value    = v;
+        this.uniforms.radOffset.value = offset;
+    }
+}
+
 // #endregion
 
 // #region MATHS
+
+const TO_RAD = Math.PI / 180;
+const TO_DEG = 180 / Math.PI;
+
+function normAngle( a ){
+    const x = a % 360;
+    if( x > 180 )  return x - 360;
+    if( x < -180 ) return x + 360;
+    return x;
+}
 
 class Vec3 extends Array{
     constructor( v=null ){
@@ -1018,6 +1391,28 @@ class Vec3 extends Array{
         out[ 2 ] = ax * by - ay * bx;
         return out;
     }
+
+    static angle( a, b ){
+        //acos(dot(a,b)/(len(a)*len(b))) 
+        // const theta = this.dot( a, b ) / ( Math.sqrt( Vec3.lenSqr(a) * Vec3.lenSqr(b) ) );
+        // return Math.acos( Math.max( -1, Math.min( 1, theta ) ) ); // clamp ( t, -1, 1 )
+
+        // atan2(len(cross(a,b)),dot(a,b))
+        const d = this.dot( a, b ),
+              c = this.cross( a, b );
+        return Math.atan2( Vec3.len(c), d );
+
+        // This also works, but requires more LEN / SQRT Calls
+        // 2 * atan2( ( u * v.len - v * u.len ).len, ( u * v.len + v * u.len ).len );
+
+        //https://math.stackexchange.com/questions/1143354/numerically-stable-method-for-angle-between-3d-vectors/1782769
+        // θ=2 atan2(|| ||v||u−||u||v ||, || ||v||u+||u||v ||)
+
+        //let cosine = this.dot( a, b );
+        //if(cosine > 1.0) return 0;
+        //else if(cosine < -1.0) return Math.PI;
+        //else return Math.acos( cosine / ( Math.sqrt( a.lenSqr * b.lenSqr() ) ) );
+    }
     // #endregion
 }
 
@@ -1100,6 +1495,17 @@ class Quat extends Array{
     // #endregion
 
     // #region FROM OPS
+    fromMul( a, b ){
+        const ax = a[0], ay = a[1], az = a[2], aw = a[3],
+              bx = b[0], by = b[1], bz = b[2], bw = b[3];
+
+        this[ 0 ] = ax * bw + aw * bx + ay * bz - az * by;
+        this[ 1 ] = ay * bw + aw * by + az * bx - ax * bz;
+        this[ 2 ] = az * bw + aw * bz + ax * by - ay * bx;
+        this[ 3 ] = aw * bw - ax * bx - ay * by - az * bz;
+        return this;
+    }
+
     fromPolar( lon, lat, up=null ){
         lat = Math.max( Math.min( lat, 89.999999 ), -89.999999 ); // Clamp lat, going to 90+ makes things spring around.
 
@@ -1116,7 +1522,7 @@ class Quat extends Array{
         return this;
     }
 
-    fromLook( dir, up = [0,1,0] ){
+    fromLookOLD( dir, up = [0,1,0] ){
         // Ported to JS from C# example at https://pastebin.com/ubATCxJY
         // TODO, if Dir and Up are equal, a roll happends. Need to find a way to fix this.
         const zAxis	= new Vec3( dir ).norm();                       // Forward
@@ -1165,6 +1571,60 @@ class Quat extends Array{
         this[ 1 ] = y;
         this[ 2 ] = z;
         this[ 3 ] = w;
+        return this;
+    }
+
+    fromLook( fwd, up=[0,1,0] ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Orthogonal axes to make a mat3x3
+        const zAxis	= new Vec3( fwd );
+        const xAxis = new Vec3().fromCross( up, zAxis ).norm() // Right
+
+        // Z & UP are parallel
+        if( xAxis.lenSqr === 0 ){
+            if( Math.abs( up[2] ) === 1 ) zAxis[0] += 0.0001;  // shift x when Fwd or Bak
+            else                          zAxis[2] += 0.0001;  // shift z
+
+            zAxis.norm();                        // ReNormalize
+            xAxis.fromCross( up, zAxis ).norm(); // Redo Right
+        }
+        
+        const yAxis = new Vec3().fromCross( zAxis, xAxis ).norm(); // Up
+        const m     = [...xAxis, ...yAxis, ...zAxis];
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Mat3 to Quat
+        // Algorithm in Ken Shoemake's article in 1987 SIGGRAPH course notes
+        // article "Quat Calculus and Fast Animation".
+        let fRoot;
+        const fTrace = m[0] + m[4] + m[8]; // Diagonal axis
+
+        if( fTrace > 0.0 ){
+            // |w| > 1/2, may as well choose w > 1/2
+            fRoot	= Math.sqrt( fTrace + 1.0 );  // 2w
+            this[3]	= 0.5 * fRoot;
+            
+            fRoot	= 0.5 / fRoot;  // 1/(4w)
+            this[0]	= (m[5]-m[7])*fRoot;
+            this[1]	= (m[6]-m[2])*fRoot;
+            this[2]	= (m[1]-m[3])*fRoot;
+        }else{
+            // |w| <= 1/2
+            let i = 0;
+            if ( m[4] > m[0] )		i = 1;
+            if ( m[8] > m[i*3+i] )	i = 2;
+            
+            const j = (i+1) % 3;
+            const k = (i+2) % 3;
+
+            fRoot	    = Math.sqrt( m[i*3+i] - m[j*3+j] - m[k*3+k] + 1.0);
+            this[ i ]	= 0.5 * fRoot;
+            fRoot	    = 0.5 / fRoot;
+            this[ 3 ]	= ( m[j*3+k] - m[k*3+j] ) * fRoot;
+            this[ j ]	= ( m[j*3+i] + m[i*3+j] ) * fRoot;
+            this[ k ]	= ( m[k*3+i] + m[i*3+k] ) * fRoot;
+        }
+
         return this;
     }
 
