@@ -1,0 +1,66 @@
+    export interface Viewport extends Size {
+        /** The initial pixel ratio */
+        initialDpr: number
+        /** Current pixel ratio */
+        dpr: number
+        /** size.width / viewport.width */
+        factor: number
+        /** Camera distance */
+        distance: number
+        /** Camera aspect ratio: width / height */
+        aspect: number
+    }
+      
+    const { width, height, top, left } = size
+    const aspect = width / height
+    if ((target as THREE.Vector3).isVector3) 
+        tempTarget.copy(target as THREE.Vector3)
+    else 
+        tempTarget.set(...(target as Parameters<THREE.Vector3['set']>))
+    
+    const distance = camera.getWorldPosition(position).distanceTo(tempTarget)
+    if (isOrthographicCamera(camera)) {
+        return { 
+            width: width / camera.zoom, 
+            height: height / camera.zoom, 
+            top, left, factor: 1, distance, aspect
+        }
+    } else {
+        const fov = (camera.fov * Math.PI) / 180 // convert vertical fov to radians
+        const h = 2 * Math.tan(fov / 2) * distance // visible height
+        const w = h * (width / height)
+        return { width: w, height: h, top, left, factor: width / w, distance, aspect }
+    }
+
+    onResize(){
+        // Resize camera and renderer on changes to size and pixelratio
+        if (size.width !== oldSize.width || size.height !== oldSize.height || viewport.dpr !== oldDpr) {
+            oldSize = size
+            oldDpr = viewport.dpr
+
+            // Update camera & renderer
+            updateCamera(camera, size)
+            if (viewport.dpr > 0) gl.setPixelRatio( viewport.dpr )
+
+            const updateStyle = typeof HTMLCanvasElement !== 'undefined' && gl.domElement instanceof HTMLCanvasElement
+            gl.setSize(size.width, size.height, updateStyle)
+        }
+    }
+
+	this.setSize = function ( width, height, updateStyle = true ) {
+        _width = width;
+        _height = height;
+
+        canvas.width  = Math.floor( width * _pixelRatio );
+        canvas.height = Math.floor( height * _pixelRatio );
+
+        if ( updateStyle === true ) {
+            canvas.style.width = width + 'px';
+            canvas.style.height = height + 'px';
+        }
+
+        this.setViewport( 0, 0, width, height );
+    }
+
+    NOTES: 
+    - dbr is applied to canvas size BUT not its style size and viewport size

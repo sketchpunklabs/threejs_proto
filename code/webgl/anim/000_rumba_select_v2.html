@@ -1,0 +1,399 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import useTransformControl from '@lib/useTransformControl.js';
+import { GLTFLoader } from 'three/GLTFLoader.js';
+
+import { Ray, from3JSScreenProjection, nearSegment, NearSegmentResult, nearPoint, NearPointResult } from '@lib/maths/ray.js';
+import { vSub, qInvert, qMul, qTransform } from '@lib/maths/maths.js';
+
+import { Pane } from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    dev     : false,
+
+    gizmo   : useTransformControl( App ).useAxes().toRotate().hide(),
+
+    boneIdx : -1,
+    pRotInv : [0,0,0,1],
+    pPos    : [0,0,0],
+
+    R_click     : 'Right click to close gizmo',
+    Shift_Click : 'Select Bone',
+};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 30, 2.5, [0,0.8,0] );
+    Debug   = await useVisualDebug( App );
+    Ref.mod = sharedMatMod();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const tf = await new GLTFLoader().loadAsync( '../../../res/models/inklinggirl/inkling_girl.gltf' );
+
+    if( Ref.dev ){
+        const o = firstFind( tf.scene, o=> (o.name === 'Splat_Body') );
+        Ref.skel = o.children[0].skeleton;
+        
+        App.scene.add( o, o.children[0].skeleton.bones[0] );
+        
+        Ref.mod.modify( o.children[1].material );
+        Ref.mod.modify( o.children[0].material );
+
+        tagChildren( o.children[0].skeleton.bones[3], {isHead:true} );
+
+        // Add 3js's skeleton helper to the scene
+        // App.scene.add( new THREE.SkeletonHelper( o.children[0].skeleton.bones[0]  ) );
+    }else{
+        App.scene.add( tf.scene );
+
+        for( let i of traverseFind( tf.scene, o => (o.type === 'SkinnedMesh') ) ){
+            Ref.mod.modify( i.material );
+            if( !Ref.skel ) Ref.skel = i.skeleton;
+        }
+
+        tagChildren( Ref.skel.bones[3], {isHead:true} );
+    }
+
+
+    
+
+    // debugSkeleton( o.children[0].skeleton );
+
+    // console.log( o.children[0].skeleton.bones );
+
+    // Lo {isObject3D: true, uuid: '75e1b7f0-5e1d-40e9-a7d1-25adef1e6333', name: 'Head'
+
+    // const o = firstFind( tf.scene, o=> (o.type === 'SkinnedMesh') );
+    // console.log( o );
+    // const ary = findAll( tf.scene, o=> (o.type === 'SkinnedMesh') );
+
+    // 5 is jaw
+
+    // let cnt = 0;
+    // for( let i of traverseFind( tf.scene, o=> (o.type === 'SkinnedMesh') ) ){
+    //     // console.log( i.geometry.boundingBox.min, i.geometry.boundingBox.max );
+        
+    //     // if( i.geometry.boundingBox.max.y > 0.9 ){
+    //     console.log( i.name );
+    //     // Debug.ln.box( 
+    //     //     i.geometry.boundingBox.min.toArray(), 
+    //     //     i.geometry.boundingBox.max.toArray(), 
+    //     //     0x00ff00
+    //     // )
+
+    //     if( i.name === 'Mesh_geo' ) i.visible = false;
+    //     if( i.name === 'Mesh003' ) i.visible = false;
+    //     if( i.name === 'Mesh003_1' ) i.visible = false;
+        
+
+    //     // }
+    //     cnt++;
+    // }
+
+    // console.log( 'Count', cnt );
+    // 103
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+    buildUI();
+});
+
+window.addEventListener( 'pointerdown', e=>{
+    if( e.button == 2 ){
+        Ref.boneIdx = -1;
+        Ref.gizmo.hide();
+        return;
+    }
+
+    if( !e.shiftKey ) return;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Compute the Ray and visually draw a line
+    const ray = from3JSScreenProjection( new Ray(), e.layerX, e.layerY, App );
+    // Debug.ln.reset().add( ray.posStart, ray.posEnd, 0x00ffff );
+    // Debug.pnt.reset();
+
+    const idx = intersectSkeleton( ray, Ref.skel );
+    Ref.mod.boneIdx.value = idx;
+
+    if( idx !== -1 ){
+        const v     = new THREE.Vector3();
+        const q     = new THREE.Quaternion();
+        const b     = Ref.skel.bones[ idx ];
+        const rot   = b.getWorldQuaternion( q ).toArray();
+        const pos   = b.getWorldPosition( v ).toArray();
+
+        // const rot   = b.quaternion.toArray();
+
+        Ref.boneIdx = idx;
+        Ref.pRotInv = qInvert( b.parent.getWorldQuaternion( q ).toArray() );
+        Ref.pPos    = b.parent.getWorldPosition( v ).toArray();
+
+        Ref.gizmo.toLocal().show( pos, rot );
+    }else{
+        Ref.boneIdx = -1;
+        Ref.gizmo.hide();
+    }
+} );
+
+window.addEventListener( 'pointermove', e=>{
+    if( !Ref.skel || Ref.boneIdx !== -1 ) return;
+
+    const ray = from3JSScreenProjection( new Ray(), e.layerX, e.layerY, App );
+    Ref.mod.boneIdx.value = intersectSkeleton( ray, Ref.skel );
+});
+
+async function buildUI(){
+    appendGithubLink( false );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const p = new Pane( {  } );
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const f2 = p.addFolder({ title: 'Gizmo', expanded: true });
+    f2.addButton({ title: 'Gizmo Rotate' }).on( 'click', ()=>{ Ref.gizmo.toRotate() });
+    f2.addButton({ title: 'Gizmo Translate' }).on( 'click', ()=>{ Ref.gizmo.toTranslate() });
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const f1 = p.addFolder({ title: 'Info', expanded: true });
+    f1.addBinding( Ref, 'R_click', { readonly: true, }); // TEXT
+    f1.addBinding( Ref, 'Shift_Click', { readonly: true, }); // TEXT
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.pane = p;
+}
+
+// #endregion
+
+// #region GIZMO
+// Ref.gizmo.onStart = ()=>{ console.log( 'GIZMO START' ) };
+// Ref.gizmo.onStop = ()=>{ console.log( 'GIZMO STOP' ) };
+
+Ref.gizmo.onMove = p=>{
+    // Move position to local spacxe
+    // (worldPos - ParentWorldPos) * Invert( ParentWordRot) * InverT( ParentWorldScl )
+    const v = vSub( p, Ref.pPos );
+    qTransform( Ref.pRotInv, v, v );    
+
+    Ref.skel.bones[ Ref.boneIdx ].position.fromArray( v );
+};
+
+Ref.gizmo.onRotate = q=>{
+    const rot = qMul( Ref.pRotInv, q ); // To Local Space
+    Ref.skel.bones[ Ref.boneIdx ].quaternion.fromArray( rot );
+};
+// #endregion
+
+// #region HELPERS
+function firstFind( root, fn ) {
+  if( fn( root ) ) return root;
+
+  const stack = [ ...root.children ];
+  let o;
+
+  while( stack.length > 0 ){
+    if( fn( (o = stack.pop() )) )   return o;
+    else                            stack.push( ...o.children );
+  }
+
+  return null;
+}
+
+function findAll( root, fn ) {
+  const rtn     = [];
+  const stack   = [ root ];  
+  let o;
+
+  while( stack.length > 0 ){
+    if( fn( (o = stack.pop() )) ) rtn.push( o );
+    stack.push( ...o.children );
+  }
+
+  return rtn;
+}
+
+function* traverseFind( root, fn ) {
+  const stack = [ root ];  
+  let o;
+
+  while( stack.length > 0 ){
+    if( fn( (o = stack.pop() )) ){
+        yield o;
+    }
+    stack.push( ...o.children );
+  }
+}
+
+function debugSkeleton( sk ){
+    const x = new THREE.Vector3();
+    const y = new THREE.Vector3();
+    const leafLen = 0.08;
+    let wp;
+    let wc;
+    let p;
+
+    for( let i=0; i < sk.bones.length; i++ ){
+        p = sk.bones[ i ];
+        // if( i !== 5 ) continue;
+        
+        wp = p.getWorldPosition( x ).toArray();
+        Debug.pnt.add( wp, 0x00ff00, 0.6 );
+
+        // if( p.children.length ){
+        //     for( const c of p.children ){
+        //         wc = c.getWorldPosition( y ).toArray();
+        //         Debug.ln.add( wp, wc, 0x00ffff );
+        //     }
+        // }else{
+        //     p.parent.getWorldPosition( y );
+        //     wc = y.subVectors( x, y )
+        //         .normalize()
+        //         .multiplyScalar( leafLen )
+        //         .add( x )
+        //         .toArray();
+
+        //     Debug.ln.add( wp, wc, 0x00ffff );
+        // }
+    }
+}
+
+function tagChildren( p, d ){
+    const stack = [ ...p.children ];
+
+    while( stack.length > 0 ){
+        const o = stack.pop();
+        o.userData = { ...o.userData, ...d };
+        stack.push( ...o.children );
+    }
+}
+// #endregion
+
+// #region MATERIALS
+function sharedMatMod(){
+    const boneIdx = { value: -1 };
+    const minWgt  = { value: 0.10 };
+    const compile = ( sh )=>{
+        sh.uniforms.boneIdx = boneIdx;
+        sh.uniforms.minWgt  = minWgt;
+
+        const vert = sh.vertexShader.replace(
+            `#include <skinning_vertex>`,
+            `#include <skinning_vertex>
+            showHilite = hasInfluence( skinIndex, skinWeight, boneIdx, minWgt );\n`
+        );
+
+        const frag = sh.fragmentShader.replace(
+            `#include <dithering_fragment>`,
+            `#include <dithering_fragment>
+            if( showHilite > 0.1 ) gl_FragColor = mix( gl_FragColor, vec4(0.0, 1.0, 1.0, 1.0), 0.4 * ( showHilite * showHilite ) );\n`
+        );
+
+        sh.vertexShader = `
+            uniform int   boneIdx;
+            uniform float minWgt;
+            varying float showHilite;
+            float hasInfluence( vec4 indices, vec4 wgts, int idx, float wMin ){
+                ivec4 i = ivec4( indices );
+                if( i.x == idx && wgts.x >= wMin ) return 1.0;
+                if( i.y == idx && wgts.y >= wMin ) return 1.0;
+                if( i.z == idx && wgts.z >= wMin ) return 1.0;
+                if( i.w == idx && wgts.w >= wMin ) return 1.0;
+                return 0.0;
+            }
+            ${vert}
+        `;
+
+        sh.fragmentShader = `
+            varying float showHilite;
+            ${frag}
+        `;
+    };
+
+    return {
+        boneIdx, minWgt,
+        modify: m => m.onBeforeCompile = compile,
+    };
+}
+// #endregion
+
+function intersectSkeleton( ray, skel ){
+    const pRadius    = 0.05;
+    const sRadius    = 0.1;
+    const sRadiusSq  = sRadius * sRadius;
+    
+    const sResult   = new NearSegmentResult();
+    const pResult   = new NearPointResult();
+
+    const x         = new THREE.Vector3();
+    const y         = new THREE.Vector3();
+    const leaf      = 0.08;
+    let p;
+    let wp;
+    let wc;
+    let near; 
+
+    let hitIdx      = -1;
+    let hitNear     = Infinity;
+    let hitPos;
+
+    const chkPoint = ( p, i ) => {
+        near = nearPoint( ray, p, pRadius, pResult );
+        if( near !== null ){
+            if( pResult.distance < hitNear ){
+                hitNear = pResult.distance;
+                hitPos  = wp.slice();
+                hitIdx  = i;
+            }
+        }
+    };
+
+    const chkLine = ( wp, wc, i ) => {
+        near = nearSegment( ray, wp, wc, sResult );
+        if( near ){
+            if( sResult.distanceSq <= sRadiusSq ){
+                if( sResult.distance < hitNear ){
+                    hitNear = sResult.distance;
+                    hitPos  = sResult.segPosition.slice();
+                    hitIdx  = i;
+                }
+            }
+        }
+    };
+
+    for( let i=0; i < skel.bones.length; i++ ){
+        p  = skel.bones[i];
+        wp = p.getWorldPosition( x ).toArray();
+        // Debug.pnt.add( wp, 0x00ff00, 0.9 );
+
+        if( p.userData.isHead ){
+            chkPoint( wp, i );
+        }else{
+
+            if( p.children.length > 0 ){
+                for( const c of p.children ){
+                    wc = c.getWorldPosition( y ).toArray();
+                    chkLine( wp, wc, i );
+                }
+            }else{
+                p.parent.getWorldPosition( y );
+                wc = y.subVectors( x, y ).normalize().multiplyScalar( leaf ).add( x ).toArray();
+                chkLine( wp, wc, i );
+            }
+
+        }
+    }
+
+    // if( hitIdx !== -1 ) console.log( 'Hit', hitIdx, skel.bones[ hitIdx ].name );
+
+    return hitIdx;
+}
+
+</script></body></html>
