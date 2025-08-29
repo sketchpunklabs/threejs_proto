@@ -1,0 +1,1039 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import { GLTFLoader } from 'three/GLTFLoader.js';
+import { firstFind, cloneSkeleton }  from '@lib/util.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 20, 2, [0,1.0,0] );
+    Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const tf = await new GLTFLoader().loadAsync( '../../../res/models/nabba.gltf' );
+    const o  = firstFind( tf.scene, o=> (o.type === 'SkinnedMesh') );
+    
+    // o.material.color.set( '#ffffff' );
+    Ref.tpose = cloneSkeleton( o.skeleton ); // Cache TPose for IK Solvers to use
+    Ref.pose  = o.skeleton;
+    Ref.char  = o;
+
+    App.scene.add( o, o.skeleton.bones[0] );
+    // App.scene.add( new THREE.SkeletonHelper( o.skeleton.bones[0] ) );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Set up an IK Set
+    const ik = new IKSet( limbCompose );
+    ik.chain.setBones( [ 'UpperArm_L', 'ForeArm_L', 'Hand_L' ], Ref.tpose, [1,0,0], [0,0,-1] );
+
+    // Set initial target data
+    const pos = ik.chain.getEffectorPos( Ref.pose );
+    ik.target
+        .setPos( pos )
+        .setPoleDir( [0,0,-1] );
+
+    // Test Things
+    // ik.target.resolve( ik.chain, Ref.tpose, Ref.pose );
+    // Debug.pnt.add( ik.target.pos, 0x00ff00, 1 );
+    // Debug.pnt.add( ik.target.origin, 0xff0000, 1 );
+
+    // Aim Test
+    // ik.target.setPos( [ pos[0], pos[1]-0.2, pos[2] ] );
+    // ik.target.setPoleDir( [0,-1,0] );
+    // ik.updatePose( Ref.tpose, Ref.pose );
+
+    // Bend Test
+    ik.target.setPos( [ pos[0]-0.1, pos[1]-0.2, pos[2] ] );
+    // ik.target.setPos( [ pos[0]+0.5, pos[1]-0.2, pos[2]+1.0 ] );
+    ik.target.setPoleDir( [0,-1,0] );
+    ik.updatePose( Ref.tpose, Ref.pose );
+
+    // Save
+    Ref.arm_l = ik;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+    appendGithubLink( false );
+});
+
+function onPreRender( dt, et ){}
+// #endregion
+
+// #region SOLVERS
+
+function aimSolver( target, chain, tpose, pose ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // NOTE: A resolved target should have the WS transform of the root
+    // bone and its parent. No need to recompute a common bit of info
+    // in the solver itself anymore.
+    const lnk  = chain.links[0];
+    const tDir = new Vec3();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Swing Rotation
+    tDir.fromQuat( target.rRot, lnk.swing );
+    const rot = new Quat()
+        .fromSwing( tDir, target.swing )   // Create Swing Rotation
+        .mul( target.rRot );               // Apply swing to current bone rotation
+
+    // const v = new Vec3().fromQuat( rot, lnk.swing );
+    // Debug.ln.add( target.origin, v.add( target.origin ), 0x00ff00 );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Twist Rotation
+    tDir.fromQuat( rot, lnk.twist );
+    if( Vec3.dot( target.twist, tDir ) < 0.999999 ){
+        const twistReset = new Quat()
+            .fromSwing( tDir, target.twist )
+            .dotNegate( rot );
+
+        rot.pmul( twistReset );
+    }
+
+    // const v = new Vec3().fromQuat( rot, lnk.twist );
+    // Debug.ln.add( target.origin, v.add( target.origin ), 0x00ff00 );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Finalize
+    rot.pmulInvert( target.pRot );
+    pose.bones[ lnk.index ].quaternion.fromArray( rot ); // Save to pose
+}
+
+function lawcos_sss( aLen, bLen, cLen ){
+    // Law of Cosines - SSS : cos(C) = (a^2 + b^2 - c^2) / 2ab
+    // The Angle between A and B with C being the opposite length of the angle.
+    const v = ( aLen**2 + bLen**2 - cLen**2 ) / ( 2 * aLen * bLen );
+    return Math.acos( Math.min( 1, Math.max( -1, v ) ) );  // Clamp to prevent NaN Errors
+}
+
+function triSolver( target, chain, tpose, pose ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // NOTE: Target already constaint the distance between the target and root bone.
+    // This value can be used as the 3rd side of the triangle with the two bone lengths
+    // being used as the 1st & 2nd side of the triangle for computing all the angles
+
+    // NOTE: Also, aimSolver should be run before this solver. That means the pose bone for
+    // the root should have already been modified to point the bone at the target. We can save
+    // one "getWorldRotation" call by taking the target's pworld.rot with root.local.rot
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const lnk0  = chain.links[ 0 ];
+    const lnk1  = chain.links[ 1 ];
+    let bone    = pose.bones[ lnk0.index ];
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // FIRST BONE
+    const rot       = new Quat().fromMul( target.pRot, bone.quaternion.toArray() ); // aimSolved WS Rotation of Bone 1
+    const bendAxis  = new Vec3().fromQuat( rot, lnk0.ortho );
+    let rad         = lawcos_sss( lnk0.len, target.dist, lnk1.len );
+
+    rot .pmulAxisAngle( bendAxis, -rad )    // Apply Bending Rotation
+        .pmulInvert( target.pRot );         // To Localspace
+
+    bone.quaternion.fromArray( rot );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // SECOND BONE
+    // Need to rotate from Right to Left, So take the angle and subtract it from 180 to rotate from
+    // the other direction. Ex. L->R 70 degrees == R->L 110 degrees
+    bone        = pose.bones[ lnk1.pindex ];
+    const q3    = new THREE.Quaternion();
+    const pRot  = bone.getWorldQuaternion( q3 ).toArray();                  // Need parent ws rotation
+    rad	        = Math.PI - lawcos_sss( lnk0.len, lnk1.len, target.dist );  // Bone's Angle
+
+    const bindRot = tpose.bones[ lnk1.index ].quaternion.toArray();
+    rot
+        .fromMul( pRot, bindRot )           // Create unmodified ws rotation for bone 2
+        .pmulAxisAngle( bendAxis, rad )     // Apply Bending Rotation
+        .pmulInvert( pRot );                // To Localspace
+    
+    pose.bones[ lnk1.index ].quaternion.fromArray( rot );
+}
+
+function limbCompose( target, chain, tpose, pose, props={} ){
+    // Align the the root bone to the target direction
+    aimSolver( target, chain, tpose, pose );
+
+    // If the target is to far away, straighten the limb
+    // Else bend the mid joint using the idea of triangles
+    if( target.dist >= chain.len ) chain.resetPose( tpose, pose, 0, 1 );
+    else                           triSolver( target, chain, tpose, pose );
+}
+
+// #endregion
+
+// #region IK BITS
+
+class IKLink{
+    index  = -1;
+    pindex = -1;
+    len    = 0;
+
+    swing  = new Vec3( [0,1,0] );
+    twist  = new Vec3( [0,0,1] );
+    ortho  = new Vec3( [-1,0,0] );
+
+    constructor(){}
+
+    // q is WorldSpace rotation, function will invert it to compute inv direction
+    setDir( q, swing=[0,1,0], twist=[0,0,1] ){
+        const inv = new Quat( q ).invert();
+        this.swing.fromQuat( inv, swing ).norm();
+        this.twist.fromQuat( inv, twist ).norm();
+        this.ortho.fromCross( this.twist, this.swing ).norm();
+        return this;
+    }
+
+    static fromName( name, pose, swing=[0,1,0], twist=[0,0,1] ){
+        const lnk = new IKLink();
+        lnk.index = pose.bones.findIndex( o=>o.name === name );
+
+        const q   = new THREE.Quaternion();
+        const b   = pose.bones[ lnk.index ];
+        if( b.parent.isBone ) lnk.pindex = pose.bones.indexOf( b.parent );
+
+        b.getWorldQuaternion( q );
+        lnk.setDir( q.toArray(), swing, twist );
+
+        return lnk;
+    }
+}
+
+class IKChain{
+    links = [];
+    len   = 0;
+    constructor(){}
+
+    setBones( bName, tpose, swing, twist ){
+        for( const [i,name] of bName.entries() ){
+            this.links.push( IKLink.fromName( name, tpose, swing, twist ) );
+        }
+
+        this.computeLengths( tpose );
+        return this;
+    }
+
+    computeLengths( pose ){
+        const v = new THREE.Vector3();
+
+        let l;
+        let c;
+        let p = pose.bones[ this.links[0].index ]
+            .getWorldPosition( v )
+            .toArray();
+
+        for( let i=1; i < this.links.length; i++ ){
+            c = pose.bones[ this.links[i].index ]
+                .getWorldPosition( v )
+                .toArray();
+
+            l                   = Vec3.dist( c, p );
+            this.len           += i;
+            this.links[i-1].len = l; 
+            p                   = c;
+        }
+
+        return this;
+    }
+
+    resetPose( tpose, pose, i, ii ){
+        let lnk, t, p;
+        for( let j=i; j <= ii; j++ ){
+            lnk = this.links[ j ];
+            t   = tpose.bones[ lnk.index ];
+            p   = pose.bones[ lnk.index ];
+
+            p.quaternion.copy( t.quaternion );
+        }
+        return this;
+    }
+
+    getEffectorPos( pose ){
+        const v3 = new THREE.Vector3();
+        const b  = pose.bones[ this.effectIdx ];
+        return b.getWorldPosition( v3 ).toArray();
+    }
+
+    get parentIdx(){ return this.links[0].pindex; }
+    get rootIdx(){ return this.links[0].index };
+    get effectIdx(){ return this.links.at(-1).index };
+}
+
+class IKTarget{
+    // #region MAIN
+    sMode  = 0; // Swing Mode
+    tMode  = 0; // Twist Mode
+
+    origin = new Vec3();    // Origin point for target
+    pos    = new Vec3();    // Target Point
+    dist   = 0;
+
+    swing  = new Vec3();    // Direction torward target
+    twist  = new Vec3();    // Direction of the twist
+    ortho  = new Vec3();    // Ortho of Swing & Twist
+
+    pRot   = new Quat();
+    rRot   = new Quat();
+
+    constructor(){}
+    // #endregion
+
+    // #region SETTER
+    setPos( v ){ this.pos.copy( v  ); this.sMode=0; return this; }
+
+    setDir( v, dist=1 ){ this.swing.copy(v).norm(); this.dist = dist; this.sMode=1; return this; }
+
+    setPoleDir( v ){ this.twist.copy( v ).norm(); return this; }
+    // #endregion
+
+    // #region METHODS
+    resolve( chain, tpose, pose ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Get origin data
+        const v3 = new THREE.Vector3();
+        const q3 = new THREE.Quaternion();
+        let b;
+        
+        // Get the Worldspace position of the chain's root
+        b = pose.bones[ chain.rootIdx ];
+        b.getWorldPosition( v3 );
+        this.origin.copy( v3.toArray() );
+
+        // Get parent rotation of the root in the current pose
+        b = pose.bones[ chain.parentIdx ];
+        this.pRot.copy( b.getWorldQuaternion( q3 ).toArray() );
+        
+        // Move the tpose local rotation to worlspace
+        b = tpose.bones[ chain.rootIdx ];
+        this.rRot.copy( b.quaternion.toArray() ).pmul( this.pRot );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Setup Target Position / Swing Direction
+        if( this.sMode === 0 ){
+            // From Position
+            this.swing.fromSub( this.pos, this.origin );
+            this.dist = this.swing.len;
+            this.swing.norm();
+        }else{
+            // From Direction
+            this.pos
+                .fromScale( this.swing, this.dist )
+                .add( this.origin );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Make directions orthogonal
+        const axes = Vec3.look( this.swing, this.twist );
+        this.swing.copy( axes[2] );
+        this.twist.copy( axes[1] );
+        this.ortho.copy( axes[0] );
+    }
+    // #endregion
+}
+
+class IKSet{
+    // #region MAIN
+    chain  = new IKChain();
+    target = new IKTarget();
+    solver = null;
+    constructor( solver ){
+        this.solver = solver;
+    }
+    // #endregion
+
+    updatePose( tpose, pose ){
+        this.target.resolve( this.chain, tpose, pose );
+        this.solver( this.target, this.chain, tpose, pose );
+
+
+        Debug.pnt.add( this.target.pos, 0x00ff00, 1 );
+        Debug.pnt.add( this.target.origin, 0xff0000, 1 );
+    }
+}
+
+// #endregion
+
+// #region MATHS
+
+const TO_RAD = Math.PI / 180;
+const TO_DEG = 180 / Math.PI;
+
+function normAngle( a ){
+    const x = a % 360;
+    if( x > 180 )  return x - 360;
+    if( x < -180 ) return x + 360;
+    return x;
+}
+
+class Vec3 extends Array{
+    constructor( v=null ){
+        super( 3 );
+        if( v?.length === 3 ) this.copy( v );
+        else                  this.zero();
+    }
+
+    // #region SETTERS
+    zero(){
+        this[0] = 0;
+        this[1] = 0;
+        this[2] = 0;
+        return this;
+    }
+
+    copy( v ){
+        this[0] = v[0];
+        this[1] = v[1];
+        this[2] = v[2];
+        return this;
+    }
+
+    xyz( x, y, z ){
+        this[0] = x;
+        this[1] = y;
+        this[2] = z;
+        return this;
+    }
+    // #endregion
+
+    // #region GETTERS
+    get len(){ return Math.sqrt( this[ 0 ]**2 + this[ 1 ]**2 + this[ 2 ]**2 ); }
+    get lenSqr(){ return  this[ 0 ]**2 + this[ 1 ]**2 + this[ 2 ]**2; }
+
+    clone(){ return new Vec3( this ); }
+    // #endregion
+
+    // #region FROM OPS
+    fromAdd( a, b ){
+        this[ 0 ] = a[ 0 ] + b[ 0 ];
+        this[ 1 ] = a[ 1 ] + b[ 1 ];
+        this[ 2 ] = a[ 2 ] + b[ 2 ];
+        return this;
+    }
+
+    fromSub( a, b ){
+        this[ 0 ] = a[ 0 ] - b[ 0 ];
+        this[ 1 ] = a[ 1 ] - b[ 1 ];
+        this[ 2 ] = a[ 2 ] - b[ 2 ];
+        return this;
+    }
+
+    fromScale( v, s ){
+        this[ 0 ] = v[0] * s;
+        this[ 1 ] = v[1] * s;
+        this[ 2 ] = v[2] * s;
+        return this;
+    }
+
+    fromNorm( v ){
+        let mag = Math.sqrt( v[ 0 ]**2 + v[ 1 ]**2 + v[ 2 ]**2 );
+        if( mag == 0 ) return this;
+
+        mag       = 1 / mag;
+        this[ 0 ] = v[ 0 ] * mag;
+        this[ 1 ] = v[ 1 ] * mag;
+        this[ 2 ] = v[ 2 ] * mag;
+        return this;
+    }
+
+    fromCross( a, b ){
+        const ax = a[0], ay = a[1], az = a[2],
+              bx = b[0], by = b[1], bz = b[2];
+
+        this[ 0 ] = ay * bz - az * by;
+        this[ 1 ] = az * bx - ax * bz;
+        this[ 2 ] = ax * by - ay * bx;
+        return this;
+    }
+
+    fromQuat( q, v=[0,0,1] ){
+        const qx = q[0], qy = q[1], qz = q[2], qw = q[3],
+              vx = v[0], vy = v[1], vz = v[2],
+              x1 = qy * vz - qz * vy,
+              y1 = qz * vx - qx * vz,
+              z1 = qx * vy - qy * vx,
+              x2 = qw * x1 + qy * z1 - qz * y1,
+              y2 = qw * y1 + qz * x1 - qx * z1,
+              z2 = qw * z1 + qx * y1 - qy * x1;
+        this[ 0 ] = vx + 2 * x2;
+        this[ 1 ] = vy + 2 * y2;
+        this[ 2 ] = vz + 2 * z2;
+        return this;
+    }
+    // #endregion
+
+    // #region OPERATORS
+    add( a ){
+        this[ 0 ] += a[ 0 ];
+        this[ 1 ] += a[ 1 ];
+        this[ 2 ] += a[ 2 ];
+        return this;
+    }
+
+    sub( v ){
+        this[ 0 ] -= v[ 0 ];
+        this[ 1 ] -= v[ 1 ];
+        this[ 2 ] -= v[ 2 ];
+        return this;
+    }
+
+    mul( v ){
+        this[ 0 ] *= v[ 0 ];
+        this[ 1 ] *= v[ 1 ];
+        this[ 2 ] *= v[ 2 ];
+        return this;
+    }
+
+    scale( v ){
+        this[ 0 ] *= v;
+        this[ 1 ] *= v;
+        this[ 2 ] *= v;
+        return this;
+    }
+
+    invScale( v ){
+        this[ 0 ] /= v;
+        this[ 1 ] /= v;
+        this[ 2 ] /= v;
+        return this;
+    }
+
+    scaleThenAdd( s, v ){
+        this[ 0 ] += v[0] * s;
+        this[ 1 ] += v[1] * s;
+        this[ 2 ] += v[2] * s;
+        return this;
+    }
+
+    cross( b ){
+        const ax = this[0], ay = this[1], az = this[2],
+              bx = b[0],    by = b[1],    bz = b[2];
+
+        this[ 0 ] = ay * bz - az * by;
+        this[ 1 ] = az * bx - ax * bz;
+        this[ 2 ] = ax * by - ay * bx;
+        return this;
+    }
+    
+    norm(){
+        let mag = Math.sqrt( this[0]**2 + this[1]**2 + this[2]**2 );
+        if( mag != 0 ){
+            mag        = 1 / mag;
+            this[ 0 ] *= mag;
+            this[ 1 ] *= mag;
+            this[ 2 ] *= mag;
+        }
+        return this;
+    }
+
+    negate(){
+        this[ 0 ] = -this[ 0 ];
+        this[ 1 ] = -this[ 1 ];
+        this[ 2 ] = -this[ 2 ];
+        return this;
+    }
+    // #endregion
+
+    // #region STATIC OPS
+    static len( a ){ return Math.sqrt( a[ 0 ]**2 + a[ 1 ]**2 + a[ 2 ]** 2 ); }
+    static lenSqr( a ){ return a[ 0 ]**2 + a[ 1 ]**2 + a[ 2 ]** 2; }
+
+    static dist( a, b ){ return Math.sqrt( (a[ 0 ]-b[ 0 ]) ** 2 + (a[ 1 ]-b[ 1 ]) ** 2 + (a[ 2 ]-b[ 2 ]) ** 2 ); }
+    static distSqr( a, b ){ return (a[ 0 ]-b[ 0 ]) ** 2 + (a[ 1 ]-b[ 1 ]) ** 2 + (a[ 2 ]-b[ 2 ]) ** 2; }
+
+    static dot( a, b ) { return a[ 0 ] * b[ 0 ] + a[ 1 ] * b[ 1 ] + a[ 2 ] * b[ 2 ]; }
+    static cross( a, b, out=new Vec3() ){
+        const ax = a[0], ay = a[1], az = a[2],
+              bx = b[0], by = b[1], bz = b[2];
+
+        out[ 0 ] = ay * bz - az * by;
+        out[ 1 ] = az * bx - ax * bz;
+        out[ 2 ] = ax * by - ay * bx;
+        return out;
+    }
+
+    static angle( a, b ){
+        //acos(dot(a,b)/(len(a)*len(b))) 
+        // const theta = this.dot( a, b ) / ( Math.sqrt( Vec3.lenSqr(a) * Vec3.lenSqr(b) ) );
+        // return Math.acos( Math.max( -1, Math.min( 1, theta ) ) ); // clamp ( t, -1, 1 )
+
+        // atan2(len(cross(a,b)),dot(a,b))
+        const d = this.dot( a, b ),
+              c = this.cross( a, b );
+        return Math.atan2( Vec3.len(c), d );
+
+        // This also works, but requires more LEN / SQRT Calls
+        // 2 * atan2( ( u * v.len - v * u.len ).len, ( u * v.len + v * u.len ).len );
+
+        //https://math.stackexchange.com/questions/1143354/numerically-stable-method-for-angle-between-3d-vectors/1782769
+        // θ=2 atan2(|| ||v||u−||u||v ||, || ||v||u+||u||v ||)
+
+        //let cosine = this.dot( a, b );
+        //if(cosine > 1.0) return 0;
+        //else if(cosine < -1.0) return Math.PI;
+        //else return Math.acos( cosine / ( Math.sqrt( a.lenSqr * b.lenSqr() ) ) );
+    }
+    
+    static look( fwd, up=[0,1,0] ){
+        const zAxis	= new Vec3( fwd );
+        const xAxis = new Vec3().fromCross( up, zAxis ).norm() // Right
+
+        // Z & UP are parallel
+        if( xAxis.lenSqr === 0 ){
+            if( Math.abs( up[2] ) === 1 ) zAxis[0] += 0.0001;  // shift x when Fwd or Bak
+            else                          zAxis[2] += 0.0001;  // shift z
+
+            zAxis.norm();                        // ReNormalize
+            xAxis.fromCross( up, zAxis ).norm(); // Redo Right
+        }
+        
+        const yAxis = new Vec3().fromCross( zAxis, xAxis ).norm(); // Up
+        return [ xAxis, yAxis, zAxis ];
+    }
+
+    // #endregion
+}
+
+class Quat extends Array{
+    constructor( v=null ){
+        super( 4 );
+        if( v?.length === 4 ) this.copy( v );
+        else                  this.identity();
+    }
+
+    // #region SETTERS
+    identity(){
+        this[0] = 0;
+        this[1] = 0;
+        this[2] = 0;
+        this[3] = 1;
+        return this;
+    }
+
+    copy( v ){
+        this[0] = v[0];
+        this[1] = v[1];
+        this[2] = v[2];
+        this[3] = v[3];
+        return this;
+    }
+    // #endregion
+
+    // #region OPERATIONS
+    /** Multiple Quaternion onto this Quaternion */
+    mul( q ){
+        const ax = this[0], ay = this[1], az = this[2], aw = this[3],
+              bx = q[0],    by = q[1],    bz = q[2],    bw = q[3];
+        this[ 0 ] = ax * bw + aw * bx + ay * bz - az * by;
+        this[ 1 ] = ay * bw + aw * by + az * bx - ax * bz;
+        this[ 2 ] = az * bw + aw * bz + ax * by - ay * bx;
+        this[ 3 ] = aw * bw - ax * bx - ay * by - az * bz;
+        return this;
+    }
+
+    /** PreMultiple Quaternions onto this Quaternion */
+    pmul( q ){
+        const ax = q[0],    ay  = q[1],     az = q[2],    aw = q[3],
+              bx = this[0], by  = this[1],  bz = this[2], bw = this[3];
+        this[ 0 ] = ax * bw + aw * bx + ay * bz - az * by;
+        this[ 1 ] = ay * bw + aw * by + az * bx - ax * bz;
+        this[ 2 ] = az * bw + aw * bz + ax * by - ay * bx;
+        this[ 3 ] = aw * bw - ax * bx - ay * by - az * bz;
+        return this;
+    }
+
+    norm(){
+        let len =  this[0]**2 + this[1]**2 + this[2]**2 + this[3]**2;
+        if( len > 0 ){
+            len = 1 / Math.sqrt( len );
+            this[ 0 ] *= len;
+            this[ 1 ] *= len;
+            this[ 2 ] *= len;
+            this[ 3 ] *= len;
+        }
+        return this;
+    }
+
+    invert(){
+        const a0  = this[ 0 ],
+              a1  = this[ 1 ],
+              a2  = this[ 2 ],
+              a3  = this[ 3 ],
+              dot = a0*a0 + a1*a1 + a2*a2 + a3*a3;
+        
+        if(dot == 0){ this[0] = this[1] = this[2] = this[3] = 0; return this }
+
+        const invDot = 1.0 / dot; // let invDot = dot ? 1.0/dot : 0;
+        this[ 0 ]    = -a0 * invDot;
+        this[ 1 ]    = -a1 * invDot;
+        this[ 2 ]    = -a2 * invDot;
+        this[ 3 ]    =  a3 * invDot;
+        return this;
+    }
+    // #endregion
+
+    // #region SPECIAL OPERATORS
+    /** Inverts the quaternion passed in, then pre multiplies to this quaternion. */
+    pmulInvert( q ){
+        //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // q.invert()
+        let ax = q[ 0 ],	
+            ay = q[ 1 ],
+            az = q[ 2 ],
+            aw = q[ 3 ];
+
+        const dot = ax*ax + ay*ay + az*az + aw*aw;
+
+        if( dot === 0 ){
+            ax = ay = az = aw = 0;
+        }else{
+            const dot_inv = 1.0 / dot;
+            ax = -ax * dot_inv;
+            ay = -ay * dot_inv;
+            az = -az * dot_inv;
+            aw =  aw * dot_inv;
+        }
+
+        //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Quat.mul( a, b );
+        const bx = this[ 0 ],	
+              by = this[ 1 ],
+              bz = this[ 2 ],
+              bw = this[ 3 ];
+        this[ 0 ] = ax * bw + aw * bx + ay * bz - az * by;
+        this[ 1 ] = ay * bw + aw * by + az * bx - ax * bz;
+        this[ 2 ] = az * bw + aw * bz + ax * by - ay * bx;
+        this[ 3 ] = aw * bw - ax * bx - ay * by - az * bz;
+        return this;
+    }
+
+
+    pmulAxisAngle( axis, rad ){
+        //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Quat.AxisAngle()
+        const half = rad * 0.5;
+        const s    = Math.sin( half );
+        const ax   = axis[ 0 ] * s;
+        const ay   = axis[ 1 ] * s;
+        const az   = axis[ 2 ] * s;
+        const aw   = Math.cos( half );
+
+        //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Quat.mul( a, b );
+        const bx = this[ 0 ],	
+              by = this[ 1 ],
+              bz = this[ 2 ],
+              bw = this[ 3 ];
+        this[ 0 ] = ax * bw + aw * bx + ay * bz - az * by;
+        this[ 1 ] = ay * bw + aw * by + az * bx - ax * bz;
+        this[ 2 ] = az * bw + aw * bz + ax * by - ay * bx;
+        this[ 3 ] = aw * bw - ax * bx - ay * by - az * bz;
+        return this;
+    }
+
+    dotNegate( chk ){
+        // quat.dot
+        const dot = this[0] * chk[0] + 
+                    this[1] * chk[1] + 
+                    this[2] * chk[2] + 
+                    this[3] * chk[3];
+
+        if( dot < 0 ){
+            // quat.negate
+            this[0] = -this[0];
+            this[1] = -this[1];
+            this[2] = -this[2];
+            this[3] = -this[3];
+        }
+        
+        return this;
+    }
+    // #endregion
+
+    // #region FROM OPS
+    fromMul( a, b ){
+        const ax = a[0], ay = a[1], az = a[2], aw = a[3],
+              bx = b[0], by = b[1], bz = b[2], bw = b[3];
+
+        this[ 0 ] = ax * bw + aw * bx + ay * bz - az * by;
+        this[ 1 ] = ay * bw + aw * by + az * bx - ax * bz;
+        this[ 2 ] = az * bw + aw * bz + ax * by - ay * bx;
+        this[ 3 ] = aw * bw - ax * bx - ay * by - az * bz;
+        return this;
+    }
+
+    fromInvert( q ){
+        const a0  = q[ 0 ],
+              a1  = q[ 1 ],
+              a2  = q[ 2 ],
+              a3  = q[ 3 ],
+              dot = a0*a0 + a1*a1 + a2*a2 + a3*a3;
+        
+        if(dot == 0){ this[0] = this[1] = this[2] = this[3] = 0; return this }
+
+        const invDot = 1.0 / dot; // let invDot = dot ? 1.0/dot : 0;
+        this[ 0 ]    = -a0 * invDot;
+        this[ 1 ]    = -a1 * invDot;
+        this[ 2 ]    = -a2 * invDot;
+        this[ 3 ]    =  a3 * invDot;
+        return this;
+    }
+
+    fromPolar( lon, lat, up=null ){
+        lat = Math.max( Math.min( lat, 89.999999 ), -89.999999 ); // Clamp lat, going to 90+ makes things spring around.
+
+        const phi   = ( 90 - lat ) * 0.01745329251, // PI / 180
+              theta = lon * 0.01745329251,
+              phi_s	= Math.sin( phi ),
+              v    = [
+                -( phi_s * Math.sin( theta ) ),
+                Math.cos( phi ),
+                phi_s * Math.cos( theta )
+            ];
+
+        this.fromLook( v, up || [0,1,0] );
+        return this;
+    }
+
+    fromLookOLD( dir, up = [0,1,0] ){
+        // Ported to JS from C# example at https://pastebin.com/ubATCxJY
+        // TODO, if Dir and Up are equal, a roll happends. Need to find a way to fix this.
+        const zAxis	= new Vec3( dir ).norm();                       // Forward
+        const xAxis = new Vec3().fromCross( up, zAxis ).norm();     // Right
+        const yAxis = new Vec3().fromCross( zAxis, xAxis ).norm();  // Up
+
+        // fromAxis - Mat3 to Quat
+        const m00 = xAxis[0], m01 = xAxis[1], m02 = xAxis[2],
+              m10 = yAxis[0], m11 = yAxis[1], m12 = yAxis[2],
+              m20 = zAxis[0], m21 = zAxis[1], m22 = zAxis[2],
+              t   = m00 + m11 + m22;
+
+        let x, y, z, w, s;
+
+        if(t > 0.0){
+            s = Math.sqrt(t + 1.0);
+            w = s * 0.5 ; // |w| >= 0.5
+            s = 0.5 / s;
+            x = (m12 - m21) * s;
+            y = (m20 - m02) * s;
+            z = (m01 - m10) * s;
+        }else if((m00 >= m11) && (m00 >= m22)){
+            s = Math.sqrt(1.0 + m00 - m11 - m22);
+            x = 0.5 * s;// |x| >= 0.5
+            s = 0.5 / s;
+            y = (m01 + m10) * s;
+            z = (m02 + m20) * s;
+            w = (m12 - m21) * s;
+        }else if(m11 > m22){
+            s = Math.sqrt(1.0 + m11 - m00 - m22);
+            y = 0.5 * s; // |y| >= 0.5
+            s = 0.5 / s;
+            x = (m10 + m01) * s;
+            z = (m21 + m12) * s;
+            w = (m20 - m02) * s;
+        }else{
+            s = Math.sqrt(1.0 + m22 - m00 - m11);
+            z = 0.5 * s; // |z| >= 0.5
+            s = 0.5 / s;
+            x = (m20 + m02) * s;
+            y = (m21 + m12) * s;
+            w = (m01 - m10) * s;
+        }
+
+        this[ 0 ] = x;
+        this[ 1 ] = y;
+        this[ 2 ] = z;
+        this[ 3 ] = w;
+        return this;
+    }
+
+    fromLook( fwd, up=[0,1,0] ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Orthogonal axes to make a mat3x3
+        const zAxis	= new Vec3( fwd );
+        const xAxis = new Vec3().fromCross( up, zAxis ).norm() // Right
+
+        // Z & UP are parallel
+        if( xAxis.lenSqr === 0 ){
+            if( Math.abs( up[2] ) === 1 ) zAxis[0] += 0.0001;  // shift x when Fwd or Bak
+            else                          zAxis[2] += 0.0001;  // shift z
+
+            zAxis.norm();                        // ReNormalize
+            xAxis.fromCross( up, zAxis ).norm(); // Redo Right
+        }
+        
+        const yAxis = new Vec3().fromCross( zAxis, xAxis ).norm(); // Up
+        const m     = [...xAxis, ...yAxis, ...zAxis];
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Mat3 to Quat
+        // Algorithm in Ken Shoemake's article in 1987 SIGGRAPH course notes
+        // article "Quat Calculus and Fast Animation".
+        let fRoot;
+        const fTrace = m[0] + m[4] + m[8]; // Diagonal axis
+
+        if( fTrace > 0.0 ){
+            // |w| > 1/2, may as well choose w > 1/2
+            fRoot	= Math.sqrt( fTrace + 1.0 );  // 2w
+            this[3]	= 0.5 * fRoot;
+            
+            fRoot	= 0.5 / fRoot;  // 1/(4w)
+            this[0]	= (m[5]-m[7])*fRoot;
+            this[1]	= (m[6]-m[2])*fRoot;
+            this[2]	= (m[1]-m[3])*fRoot;
+        }else{
+            // |w| <= 1/2
+            let i = 0;
+            if ( m[4] > m[0] )		i = 1;
+            if ( m[8] > m[i*3+i] )	i = 2;
+            
+            const j = (i+1) % 3;
+            const k = (i+2) % 3;
+
+            fRoot	    = Math.sqrt( m[i*3+i] - m[j*3+j] - m[k*3+k] + 1.0);
+            this[ i ]	= 0.5 * fRoot;
+            fRoot	    = 0.5 / fRoot;
+            this[ 3 ]	= ( m[j*3+k] - m[k*3+j] ) * fRoot;
+            this[ j ]	= ( m[j*3+i] + m[i*3+j] ) * fRoot;
+            this[ k ]	= ( m[k*3+i] + m[i*3+k] ) * fRoot;
+        }
+
+        return this;
+    }
+
+    /** Using unit vectors, Shortest swing rotation from Direction A to Direction B  */
+    fromSwing( a, b ){
+        // http://physicsforgames.blogspot.com/2010/03/Quat-tricks.html
+        const dot = Vec3.dot( a, b );
+
+        if( dot < -0.999999 ){ // 180 opposites
+            const tmp = new Vec3().fromCross( [-1,0,0], a );
+
+            if( tmp.len < 0.000001 ) tmp.fromCross( [0,1,0], a );
+            this.fromAxisAngle( tmp.norm(), Math.PI );
+
+        }else if( dot > 0.999999 ){ // Same Direction
+            this[ 0 ] = 0;
+            this[ 1 ] = 0;
+            this[ 2 ] = 0;
+            this[ 3 ] = 1;
+
+        }else{
+            const v   = Vec3.cross( a, b, [0,0,0] );
+            this[ 0 ] = v[ 0 ];
+            this[ 1 ] = v[ 1 ];
+            this[ 2 ] = v[ 2 ];
+            this[ 3 ] = 1 + dot;
+            this.norm();
+        }
+
+        return this;
+    }
+
+    /** Axis must be normlized, Angle in Radians  */
+    fromAxisAngle( axis, rad ){ 
+        const half = rad * 0.5;
+        const s    = Math.sin( half );
+        this[ 0 ]  = axis[ 0 ] * s;
+        this[ 1 ]  = axis[ 1 ] * s;
+        this[ 2 ]  = axis[ 2 ] * s;
+        this[ 3 ]  = Math.cos( half );
+        return this;
+    }
+
+    fromAxes( xAxis, yAxis, zAxis ){
+        const m00 = xAxis[0], m01 = xAxis[1], m02 = xAxis[2],
+              m10 = yAxis[0], m11 = yAxis[1], m12 = yAxis[2],
+              m20 = zAxis[0], m21 = zAxis[1], m22 = zAxis[2],
+              t = m00 + m11 + m22;
+        let x, y, z, w, s;
+
+        if(t > 0.0){
+            s = Math.sqrt(t + 1.0);
+            w = s * 0.5 ; // |w| >= 0.5
+            s = 0.5 / s;
+            x = (m12 - m21) * s;
+            y = (m20 - m02) * s;
+            z = (m01 - m10) * s;
+        }else if((m00 >= m11) && (m00 >= m22)){
+            s = Math.sqrt(1.0 + m00 - m11 - m22);
+            x = 0.5 * s;// |x| >= 0.5
+            s = 0.5 / s;
+            y = (m01 + m10) * s;
+            z = (m02 + m20) * s;
+            w = (m12 - m21) * s;
+        }else if(m11 > m22){
+            s = Math.sqrt(1.0 + m11 - m00 - m22);
+            y = 0.5 * s; // |y| >= 0.5
+            s = 0.5 / s;
+            x = (m10 + m01) * s;
+            z = (m21 + m12) * s;
+            w = (m20 - m02) * s;
+        }else{
+            s = Math.sqrt(1.0 + m22 - m00 - m11);
+            z = 0.5 * s; // |z| >= 0.5
+            s = 0.5 / s;
+            x = (m20 + m02) * s;
+            y = (m21 + m12) * s;
+            w = (m01 - m10) * s;
+        }
+
+        this[ 0 ] = x;
+        this[ 1 ] = y;
+        this[ 2 ] = z;
+        this[ 3 ] = w;
+        return this;
+    }
+    // #endregion
+
+    // #region CONVERT
+    fromMat3( m ){
+        // https://github.com/toji/gl-matrix/blob/master/src/gl-matrix/quat.js#L305
+        // Algorithm in Ken Shoemake's article in 1987 SIGGRAPH course notes
+        // article "Quat Calculus and Fast Animation".
+        let fRoot;
+        const fTrace = m[0] + m[4] + m[8];
+
+        if( fTrace > 0.0 ){
+            // |w| > 1/2, may as well choose w > 1/2
+            fRoot	= Math.sqrt( fTrace + 1.0 );  // 2w
+            this[3]	= 0.5 * fRoot;
+            
+            fRoot	= 0.5 / fRoot;  // 1/(4w)
+            this[0]	= (m[5]-m[7])*fRoot;
+            this[1]	= (m[6]-m[2])*fRoot;
+            this[2]	= (m[1]-m[3])*fRoot;
+        }else{
+            // |w| <= 1/2
+            let i = 0;
+
+            if ( m[4] > m[0] )		i = 1;
+            if ( m[8] > m[i*3+i] )	i = 2;
+            
+            const j = (i+1) % 3;
+            const k = (i+2) % 3;
+
+            fRoot	= Math.sqrt( m[i*3+i] - m[j*3+j] - m[k*3+k] + 1.0);
+            this[ i ]	= 0.5 * fRoot;
+
+            fRoot	= 0.5 / fRoot;
+            this[ 3 ]	= ( m[j*3+k] - m[k*3+j] ) * fRoot;
+            this[ j ]	= ( m[j*3+i] + m[i*3+j] ) * fRoot;
+            this[ k ]	= ( m[k*3+i] + m[i*3+k] ) * fRoot;
+        }
+        return this;
+    }
+    // #endregion
+}
+
+// #endregion
+
+</script></body></html>
