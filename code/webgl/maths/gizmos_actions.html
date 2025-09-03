@@ -43,11 +43,13 @@ window.addEventListener( 'load', async ()=>{
         .addAction( 'lineMove', new LineMoveAction() )
         .addAction( 'planeMove', new PlaneMoveAction() )
         .addAction( 'axisRot', new AxisRotationAction() )
+        .addAction( 'arcBall', new ArcballRotationAction() )
     ;
 
     // startLineMove();
     // startPlaneMove();
-    startAxisRot();
+    // startAxisRot();
+    startArcball();
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // App.createRenderLoop( onPreRender ).start();
@@ -69,6 +71,7 @@ async function buildUI(){
     f.addButton({ title: 'Line Move' }).on( 'click', startLineMove );
     f.addButton({ title: 'Plane Move' }).on( 'click', startPlaneMove );
     f.addButton({ title: 'Axis Rotation' }).on( 'click', startAxisRot );
+    f.addButton({ title: 'Arcball Rotation' }).on( 'click', startArcball );
 
     // const actions = [ {t:'LineRay', v:'lineRay'}, {t:'misc', v:'misc'}, ];
     // f.addBinding( Ref, 'action', {
@@ -157,7 +160,7 @@ function startPlaneMove(){
     Ref.act.useAction( 'planeMove', new PlaneMovePreview(), Ref.cube, props );
 }
 
-function  startAxisRot(){
+function startAxisRot(){
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // Random rotation
     const q = new Quat().fromPolar(
@@ -181,6 +184,17 @@ function  startAxisRot(){
     };
 
     Ref.act.useAction( 'axisRot', new AxisRotationPreview(), Ref.cube, props );
+}
+
+function startArcball(){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const props = {
+        initQuat : Ref.cube.quaternion.toArray(),
+        origin   : Ref.cube.position.toArray(),
+        radius   : 1.5 + Math.random() * 2,
+    };
+
+    Ref.act.useAction( 'arcBall', new ArcBallPreview(), Ref.cube, props );
 }
 
 // #endregion
@@ -217,6 +231,9 @@ class ActionManager{
         this.camCtrl    = camCtrl;
         
         this.startEvents();
+
+        this.dynPoints.forDebugging();
+        this.dynLines.forDebugging();
 
         this.scene.add( this.dynLines );
         this.scene.add( this.dynPoints );
@@ -484,6 +501,30 @@ function nearSegment( ray, p0, p1, results=null){
     return [ tU, tV ]; // The Lerp T values for Segment & Ray
 }
 
+function nearPoint( ray, p, distLimit=0.1, result=null ){
+    /* closest_point_to_line3D
+    let dx	= bx - ax,
+        dy	= by - ay,
+        dz	= bz - az,
+        t	= ( (px-ax)*dx + (py-ay)*dy + (pz-az)*dz ) / ( dx*dx + dy*dy + dz*dz ) ; */
+    
+    const v = new Vec3( p ).sub( ray.posStart ).mul( ray.vecLength );
+    const t = ( v[0] + v[1] + v[2] ) / Vec3.lenSqr( ray.vecLength );
+
+    if( t < 0 || t > 1 ) return null;                       // Over / Under shoots the Ray Segment
+    const lenSqr = Vec3.distSqr( ray.posAt( t, v ), p );    // Distance from point to nearest point on ray.
+
+    if( lenSqr <= (distLimit*distLimit) ){
+        if( result ){
+            result[ 0 ] = v[0];
+            result[ 1 ] = v[1];
+            result[ 2 ] = v[2];
+        }
+        return t;
+    }
+
+    return null;
+}
 
 function intersectPlane( ray, planePos, planeNorm, hitPos=null ){
     // ((planePos - rayOrigin) dot planeNorm) / ( rayVecLen dot planeNorm )
@@ -502,6 +543,66 @@ function intersectPlane( ray, planePos, planeNorm, hitPos=null ){
     if( hitPos && t >= 0 ) ray.posAt( t, hitPos );
 
     return ( t >= 0 )? t : null;
+}
+
+
+class RaySphereResult{
+    tMin        = 0;        // 0 > 1
+    tMax        = 0;        // 0 > 1
+    posEntry    = [0,0,0];
+    posExit     = [0,0,0];
+}
+
+// This function is the better Sphere intersection BUT its for an infinite ray
+// So the T value is creates is for the Ray.Dir instead of Ray.vec_len
+function intersectSphere( ray, origin, radius, results = null ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const radiusSq      = radius * radius;
+    const rayToCenter   = new Vec3( origin ).sub( ray.posStart );
+    const tProj         = Vec3.dot( rayToCenter, ray.direction ); // Project the length to the center onto the Ray
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Get length of projection point to center and check if its within the sphere
+    // Opposite^2 = hyptenuse^2 - adjacent^2
+    const oppLenSq = Vec3.lenSqr( rayToCenter ) - ( tProj * tProj );
+    if( oppLenSq > radiusSq ) return false;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    if( results ){
+        // -----------------------------
+        // if a parallel ray right on the radius, exit & entry is the same
+        if( oppLenSq == radiusSq ){
+            results.tMin = tProj;
+            results.tMax = tProj;
+
+            ray.directionAt( tProj, results.posEntry );
+
+            results.posExit[ 0 ] = results.posEntry[ 0 ];
+            results.posExit[ 1 ] = results.posEntry[ 1 ];
+            results.posExit[ 2 ] = results.posEntry[ 2 ];
+            return true;
+        }
+
+        // -----------------------------
+        // Separate positions for entry and exit
+        const oLen  = Math.sqrt( radiusSq - oppLenSq ); // Opposite = sqrt( hyptenuse^2 - adjacent^2 )
+        const t0    = tProj - oLen;
+        const t1    = tProj + oLen;
+
+        // Swap
+        if( t1 < t0 ){
+            results.tMin = t1; 
+            results.tMax = t0; 
+        }else{
+            results.tMin = t0; 
+            results.tMax = t1; 
+        }
+
+        ray.directionAt( t0, results.posEntry );
+        ray.directionAt( t1, results.posExit );
+    }
+
+    return true;
 }
 
 // #endregion
@@ -692,6 +793,75 @@ class AxisRotationAction{
     }
 }
 
+
+class ArcballRotationAction{
+    radius   = 1;
+    origin   = new Vec3( 0, 0, 0 );
+    ipos     = new Vec3( 0, 0, 0 );
+    hpos     = new Vec3( 0, 0, 0 );
+
+    rot      = new Quat();
+    initQuat = new Quat();
+    outQuat  = new Quat();
+
+    result   = new RaySphereResult();
+    
+    constructor(){}
+
+    init( props ){
+        this.radius = props.radius;
+        this.origin.copy( props.origin );
+        this.initQuat.copy( props.initQuat );
+    }
+
+    unload( mgt ){}
+
+    onDown( mgt, e ){
+        const ray = mgt.getRayFromEvent( e );
+
+        const isHit = this.testHit( ray, this.ipos );
+        if( isHit ) this.hpos.copy( this.ipos );
+        return  isHit;
+    }
+
+    onMove( mgt, e ){
+        const ray = mgt.getRayFromEvent( e );
+
+        if( this.testHit( ray, this.hpos ) ){
+            this.calc();
+            mgt.setObjectRot( this.outQuat );
+            return true;
+        }
+
+        return false;
+    }
+
+    onUp( mgt, e ){
+        this.initQuat.copy( this.outQuat );
+        return true;
+    }
+
+    calc(){
+        const a = new Vec3( this.ipos ).sub( this.origin ).norm();
+        const b = new Vec3( this.hpos ).sub( this.origin ).norm();
+
+        this.rot.fromSwing( a, b )
+            .dotNegate( this.initQuat );
+        this.outQuat.fromMul( this.rot, this.initQuat );
+    }
+
+    testHit( ray, v ){
+        let isHit = intersectSphere( ray, this.origin, this.radius, this.result );
+
+        if( isHit ) v.copy( this.result.posEntry );
+        else if( nearPoint( ray, this.origin, this.radius + 1.5, v ) !== null ){
+            isHit = true;
+            v.sub( this.origin ).norm().scale( this.radius ).add( this.origin );
+        }
+
+        return isHit;
+    }
+}
 // #endregion 
 
 // #region PREVIEWS / RENDERERS
@@ -726,6 +896,84 @@ class LineMovePreview{
         pnt._updateGeometry();
     }
 }
+
+// Visualize Line Move Action
+class ArcBallPreview{
+    action = null;
+    mesh   = null;
+    constructor(){}
+
+    init( mgt, action ){
+        this.action = action;
+        
+        if( !this.mesh ){
+            this.mesh = new THREE.Mesh( 
+                new THREE.SphereGeometry( 1, 12, 12 ), 
+                new THREE.MeshBasicMaterial( { color: 0xffff00, opacity:0.05, transparent:true } )
+            );
+            mgt.scene.add( this.mesh );
+        }
+
+        this.mesh.scale.setScalar( action.radius );
+        return this;
+    }
+
+    dispose( mgt ){
+        mgt.dynPoints.reset();
+        mgt.dynLines.reset();
+
+        if( this.mesh ){
+            mgt.scene.remove( this.mesh );
+            this.mesh.geometry.dispose();
+            this.mesh.material.dispose();
+            this.mesh = null;
+        }
+
+        return true;
+    }
+
+    render( mgt ){
+        const act = this.action;
+        const pnt = mgt.dynPoints.reset();
+        const ln  = mgt.dynLines.reset();
+
+        this.mesh.position.fromArray( act.origin );
+        pnt.add( act.origin, 0xffff00, 4 );
+        
+        if( mgt.dragging ){
+            pnt.add( act.ipos, 0x00ffff, 4, 1 );
+            pnt.add( act.hpos, 0xff00ff, 4, 1 );
+
+            ln.add( act.origin, act.ipos, 0xffff00, 0x00ffff );
+            ln.add( act.origin, act.hpos, 0xffff00, 0xff00ff );
+
+            const a    = new Vec3( act.ipos ).sub( act.origin ).norm();
+            const b    = new Vec3( act.hpos ).sub( act.origin ).norm();
+            const prev = new Vec3( act.ipos );
+            const v    = new Vec3();
+            
+            for( let i=1; i <= 10; i++ ){
+                v.fromLerp( a, b, i / 10 )
+                    .norm()
+                    .scale( act.radius )
+                    .add( act.origin );
+
+                ln.add( prev, v, 0xffa000 );
+                prev.copy( v );
+            }
+        }
+
+        // pnt.add( act.startPos, 0x00ff00 );
+        // pnt.add( act.endPos, 0xff0000 );
+        // if( mgt.dragging ) pnt.add( act.initPos, 0x00ffff );
+
+        // ln.add( act.startPos, act.endPos, 0x00ff00, 0xff0000 );
+
+        pnt._updateGeometry();
+        ln._updateGeometry();
+    }
+}
+
 
 // Visualize Plane Move Action
 class PlaneMovePreview{
@@ -762,6 +1010,8 @@ class PlaneMovePreview{
     }
 
     dispose( mgt ){
+
+        
         // TODO - Adding and removing the preview mesh
         // when switching actions might not be the best
         // way to handle it. Depending on the App, cacheing
@@ -1307,6 +1557,14 @@ class Vec3 extends Array{
         this[ 2 ] = vz + 2 * z2;
         return this;
     }
+    
+    fromLerp( a, b, t ){
+        const ti  = 1 - t;
+        this[ 0 ] = a[ 0 ] * ti + b[ 0 ] * t;
+        this[ 1 ] = a[ 1 ] * ti + b[ 1 ] * t;
+        this[ 2 ] = a[ 2 ] * ti + b[ 2 ] * t;
+        return this;
+    }
     // #endregion
 
     // #region OPERATORS
@@ -1321,6 +1579,13 @@ class Vec3 extends Array{
         this[ 0 ] -= v[ 0 ];
         this[ 1 ] -= v[ 1 ];
         this[ 2 ] -= v[ 2 ];
+        return this;
+    }
+
+    mul( v ){
+        this[ 0 ] *= v[ 0 ];
+        this[ 1 ] *= v[ 1 ];
+        this[ 2 ] *= v[ 2 ];
         return this;
     }
 
@@ -1492,6 +1757,24 @@ class Quat extends Array{
         this[ 3 ]    =  a3 * invDot;
         return this;
     }
+    
+    dotNegate( chk ){
+        // quat.dot
+        const dot = this[0] * chk[0] + 
+                    this[1] * chk[1] + 
+                    this[2] * chk[2] + 
+                    this[3] * chk[3];
+
+        if( dot < 0 ){
+            // quat.negate
+            this[0] = -this[0];
+            this[1] = -this[1];
+            this[2] = -this[2];
+            this[3] = -this[3];
+        }
+        
+        return this;
+    }
     // #endregion
 
     // #region FROM OPS
@@ -1638,6 +1921,35 @@ class Quat extends Array{
         this[ 3 ]  = Math.cos( half );
         return this;
     }
+    
+    fromSwing( a, b ){
+        // http://physicsforgames.blogspot.com/2010/03/Quat-tricks.html
+        const dot = Vec3.dot( a, b );
+
+        if( dot < -0.999999 ){ // 180 opposites
+            const tmp = new Vec3().fromCross( [-1,0,0], a );
+
+            if( tmp.len < 0.000001 ) tmp.fromCross( [0,1,0], a );
+            this.fromAxisAngle( tmp.norm(), Math.PI );
+
+        }else if( dot > 0.999999 ){ // Same Direction
+            this[ 0 ] = 0;
+            this[ 1 ] = 0;
+            this[ 2 ] = 0;
+            this[ 3 ] = 1;
+
+        }else{
+            const v   = Vec3.cross( a, b, [0,0,0] );
+            this[ 0 ] = v[ 0 ];
+            this[ 1 ] = v[ 1 ];
+            this[ 2 ] = v[ 2 ];
+            this[ 3 ] = 1 + dot;
+            this.norm();
+        }
+
+        return this;
+    }
+    
     // #endregion
 
     // #region CONVERT
