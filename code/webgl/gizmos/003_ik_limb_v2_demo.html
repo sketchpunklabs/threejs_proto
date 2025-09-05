@@ -1,0 +1,2597 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import { GLTFLoader } from 'three/GLTFLoader.js';
+import { firstFind, cloneSkeleton, geoBuffer }  from '@lib/util.js';
+
+import DynLineMesh      from '@lib/meshes/DynLineMesh.js';
+import ShapePointsMesh  from '@lib/meshes/ShapePointsMesh.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 45, 40, 2.3, [0,1.0,0] );
+    Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const tf = await new GLTFLoader().loadAsync( '../../../res/models/nabba.gltf' );
+    const o  = firstFind( tf.scene, o=> (o.type === 'SkinnedMesh') );
+    
+    // o.material.color.set( '#ffffff' );
+    Ref.tpose = cloneSkeleton( o.skeleton ); // Cache TPose for IK Solvers to use
+    Ref.pose  = o.skeleton;
+    Ref.char  = o;
+
+    App.scene.add( o, o.skeleton.bones[0] );
+    // App.scene.add( new THREE.SkeletonHelper( o.skeleton.bones[0] ) );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Set up an IK Set
+    const ik = new IKSet( limbCompose );
+    ik.chain.setBones( [ 'UpperArm_L', 'ForeArm_L', 'Hand_L' ], Ref.tpose, [1,0,0], [0,0,-1] );
+
+    // Set initial target data
+    const pos = ik.chain.getEffectorPos( Ref.pose );
+    ik.target
+        .setPos( pos )
+        .setPoleDir( [0,0,-1] );
+
+    // Test Things
+    // ik.target.resolve( ik.chain, Ref.tpose, Ref.pose );
+    // Debug.pnt.add( ik.target.pos, 0x00ff00, 1 );
+    // Debug.pnt.add( ik.target.origin, 0xff0000, 1 );
+
+    // Aim Test
+    // ik.target.setPos( [ pos[0], pos[1]-0.2, pos[2] ] );
+    // ik.target.setPoleDir( [0,-1,0] );
+    // ik.updatePose( Ref.tpose, Ref.pose );
+
+    // Bend Test
+    // ik.target.setPos( [ pos[0]-0.1, pos[1]-0.2, pos[2] ] );
+    // ik.target.setPos( [ pos[0]+0.5, pos[1]-0.2, pos[2]+1.0 ] );
+    // ik.target.setPoleDir( [0,-1,0] );
+    // ik.updatePose( Ref.tpose, Ref.pose );
+
+    // ik.target.setPos( [0.3071027494997408, 1.1854118512051817, -0.06825839543053824]  );
+    // ik.target.setPoleDir( [0.0007465125940727124, 7.724184880597562e-7, -0.9999997213591365] );
+    // ik.updatePose( Ref.tpose, Ref.pose );
+
+    // Save
+    Ref.arm_l = ik;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.gsys = new GizmoSystem( App.scene, App.renderer, App.camera, App.camCtrl );
+    Ref.gsys.startEvents();
+    Ref.gsys.on( 'input', onGizmoInput );
+
+    Ref.gsys.showGizmo( IKLimbGizmo, { 
+        origin  : getWorldPos( 'UpperArm_L', Ref.pose ), 
+        target  : pos, 
+        up      : [0,0,-1],
+    });
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+    appendGithubLink( false );
+});
+
+function onPreRender( dt, et ){}
+
+function onGizmoInput( e ){
+    const o = e.detail;
+
+    // Debug.ln.reset();
+    // Debug.pnt.reset();
+    // console.log( o.targetPos, o.poleDir );
+
+    Ref.arm_l.target
+        .setPos( o.targetPos )
+        .setPoleDir( o.poleDir );
+
+    Ref.arm_l.updatePose( Ref.tpose, Ref.pose );
+}
+// #endregion
+
+// #region HELPERS
+
+function getWorldPos( name, pose ){
+    const b = pose.bones.find( o=>o.name === name );
+    if( !b ) return [0,0,0];
+
+    const v3 = new THREE.Vector3();
+    return b.getWorldPosition( v3 ).toArray()
+}
+
+// #endregion
+
+// ###########################################################
+
+// #region SOLVERS
+
+function aimSolver( target, chain, tpose, pose ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // NOTE: A resolved target should have the WS transform of the root
+    // bone and its parent. No need to recompute a common bit of info
+    // in the solver itself anymore.
+    const lnk  = chain.links[0];
+    const tDir = new Vec3();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Swing Rotation
+    tDir.fromQuat( target.rRot, lnk.swing );
+    const rot = new Quat()
+        .fromSwing( tDir, target.swing )   // Create Swing Rotation
+        .mul( target.rRot );               // Apply swing to current bone rotation
+
+    // const v = new Vec3().fromQuat( rot, lnk.swing );
+    // Debug.ln.add( target.origin, v.add( target.origin ), 0x00ff00 );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Twist Rotation
+    tDir.fromQuat( rot, lnk.twist );
+    if( Vec3.dot( target.twist, tDir ) < 0.999999 ){
+        const twistReset = new Quat()
+            .fromSwing( tDir, target.twist )
+            .dotNegate( rot );
+
+        rot.pmul( twistReset );
+    }
+
+    // const v = new Vec3().fromQuat( rot, lnk.twist );
+    // Debug.ln.add( target.origin, v.add( target.origin ), 0x00ff00 );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Finalize
+    rot.pmulInvert( target.pRot );
+    pose.bones[ lnk.index ].quaternion.fromArray( rot ); // Save to pose
+}
+
+function lawcos_sss( aLen, bLen, cLen ){
+    // Law of Cosines - SSS : cos(C) = (a^2 + b^2 - c^2) / 2ab
+    // The Angle between A and B with C being the opposite length of the angle.
+    const v = ( aLen**2 + bLen**2 - cLen**2 ) / ( 2 * aLen * bLen );
+    return Math.acos( Math.min( 1, Math.max( -1, v ) ) );  // Clamp to prevent NaN Errors
+}
+
+function triSolver( target, chain, tpose, pose ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // NOTE: Target already constaint the distance between the target and root bone.
+    // This value can be used as the 3rd side of the triangle with the two bone lengths
+    // being used as the 1st & 2nd side of the triangle for computing all the angles
+
+    // NOTE: Also, aimSolver should be run before this solver. That means the pose bone for
+    // the root should have already been modified to point the bone at the target. We can save
+    // one "getWorldRotation" call by taking the target's pworld.rot with root.local.rot
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const lnk0  = chain.links[ 0 ];
+    const lnk1  = chain.links[ 1 ];
+    let bone    = pose.bones[ lnk0.index ];
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // FIRST BONE
+    const rot       = new Quat().fromMul( target.pRot, bone.quaternion.toArray() ); // aimSolved WS Rotation of Bone 1
+    const bendAxis  = new Vec3().fromQuat( rot, lnk0.ortho );
+    let rad         = lawcos_sss( lnk0.len, target.dist, lnk1.len );
+
+    rot .pmulAxisAngle( bendAxis, -rad )    // Apply Bending Rotation
+        .pmulInvert( target.pRot );         // To Localspace
+
+    bone.quaternion.fromArray( rot );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // SECOND BONE
+    // Need to rotate from Right to Left, So take the angle and subtract it from 180 to rotate from
+    // the other direction. Ex. L->R 70 degrees == R->L 110 degrees
+    bone        = pose.bones[ lnk1.pindex ];
+    const q3    = new THREE.Quaternion();
+    const pRot  = bone.getWorldQuaternion( q3 ).toArray();                  // Need parent ws rotation
+    rad	        = Math.PI - lawcos_sss( lnk0.len, lnk1.len, target.dist );  // Bone's Angle
+
+    const bindRot = tpose.bones[ lnk1.index ].quaternion.toArray();
+    rot
+        .fromMul( pRot, bindRot )           // Create unmodified ws rotation for bone 2
+        .pmulAxisAngle( bendAxis, rad )     // Apply Bending Rotation
+        .pmulInvert( pRot );                // To Localspace
+    
+    pose.bones[ lnk1.index ].quaternion.fromArray( rot );
+}
+
+function limbCompose( target, chain, tpose, pose, props={} ){
+    // Align the the root bone to the target direction
+    aimSolver( target, chain, tpose, pose );
+
+    // If the target is to far away, straighten the limb
+    // Else bend the mid joint using the idea of triangles
+    if( target.dist >= chain.len ) chain.resetPose( tpose, pose, 0, 1 );
+    else                           triSolver( target, chain, tpose, pose );
+}
+
+// #endregion
+
+// #region IK BITS
+
+class IKLink{
+    index  = -1;
+    pindex = -1;
+    len    = 0;
+
+    swing  = new Vec3( [0,1,0] );
+    twist  = new Vec3( [0,0,1] );
+    ortho  = new Vec3( [-1,0,0] );
+
+    constructor(){}
+
+    // q is WorldSpace rotation, function will invert it to compute inv direction
+    setDir( q, swing=[0,1,0], twist=[0,0,1] ){
+        const inv = new Quat( q ).invert();
+        this.swing.fromQuat( inv, swing ).norm();
+        this.twist.fromQuat( inv, twist ).norm();
+        this.ortho.fromCross( this.twist, this.swing ).norm();
+        return this;
+    }
+
+    static fromName( name, pose, swing=[0,1,0], twist=[0,0,1] ){
+        const lnk = new IKLink();
+        lnk.index = pose.bones.findIndex( o=>o.name === name );
+
+        const q   = new THREE.Quaternion();
+        const b   = pose.bones[ lnk.index ];
+        if( b.parent.isBone ) lnk.pindex = pose.bones.indexOf( b.parent );
+
+        b.getWorldQuaternion( q );
+        lnk.setDir( q.toArray(), swing, twist );
+
+        return lnk;
+    }
+}
+
+class IKChain{
+    links = [];
+    len   = 0;
+    constructor(){}
+
+    setBones( bName, tpose, swing, twist ){
+        for( const [i,name] of bName.entries() ){
+            this.links.push( IKLink.fromName( name, tpose, swing, twist ) );
+        }
+
+        this.computeLengths( tpose );
+        return this;
+    }
+
+    computeLengths( pose ){
+        const v = new THREE.Vector3();
+
+        let l;
+        let c;
+        let p = pose.bones[ this.links[0].index ]
+            .getWorldPosition( v )
+            .toArray();
+
+        for( let i=1; i < this.links.length; i++ ){
+            c = pose.bones[ this.links[i].index ]
+                .getWorldPosition( v )
+                .toArray();
+
+            l                   = Vec3.dist( c, p );
+            this.len           += i;
+            this.links[i-1].len = l; 
+            p                   = c;
+        }
+
+        return this;
+    }
+
+    resetPose( tpose, pose, i, ii ){
+        let lnk, t, p;
+        for( let j=i; j <= ii; j++ ){
+            lnk = this.links[ j ];
+            t   = tpose.bones[ lnk.index ];
+            p   = pose.bones[ lnk.index ];
+
+            p.quaternion.copy( t.quaternion );
+        }
+        return this;
+    }
+
+    getEffectorPos( pose ){
+        const v3 = new THREE.Vector3();
+        const b  = pose.bones[ this.effectIdx ];
+        return b.getWorldPosition( v3 ).toArray();
+    }
+
+    get parentIdx(){ return this.links[0].pindex; }
+    get rootIdx(){ return this.links[0].index };
+    get effectIdx(){ return this.links.at(-1).index };
+}
+
+class IKTarget{
+    // #region MAIN
+    sMode  = 0; // Swing Mode
+    tMode  = 0; // Twist Mode
+
+    origin = new Vec3();    // Origin point for target
+    pos    = new Vec3();    // Target Point
+    dist   = 0;
+
+    swing  = new Vec3();    // Direction torward target
+    twist  = new Vec3();    // Direction of the twist
+    ortho  = new Vec3();    // Ortho of Swing & Twist
+
+    pRot   = new Quat();
+    rRot   = new Quat();
+
+    constructor(){}
+    // #endregion
+
+    // #region SETTER
+    setPos( v ){ this.pos.copy( v  ); this.sMode=0; return this; }
+
+    setDir( v, dist=1 ){ this.swing.copy(v).norm(); this.dist = dist; this.sMode=1; return this; }
+
+    setPoleDir( v ){ this.twist.copy( v ).norm(); return this; }
+    // #endregion
+
+    // #region METHODS
+    resolve( chain, tpose, pose ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Get origin data
+        const v3 = new THREE.Vector3();
+        const q3 = new THREE.Quaternion();
+        let b;
+        
+        // Get the Worldspace position of the chain's root
+        b = pose.bones[ chain.rootIdx ];
+        b.getWorldPosition( v3 );
+        this.origin.copy( v3.toArray() );
+
+        // Get parent rotation of the root in the current pose
+        b = pose.bones[ chain.parentIdx ];
+        this.pRot.copy( b.getWorldQuaternion( q3 ).toArray() );
+        
+        // Move the tpose local rotation to worlspace
+        b = tpose.bones[ chain.rootIdx ];
+        this.rRot.copy( b.quaternion.toArray() ).pmul( this.pRot );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Setup Target Position / Swing Direction
+        if( this.sMode === 0 ){
+            // From Position
+            this.swing.fromSub( this.pos, this.origin );
+            this.dist = this.swing.len;
+            this.swing.norm();
+        }else{
+            // From Direction
+            this.pos
+                .fromScale( this.swing, this.dist )
+                .add( this.origin );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Make directions orthogonal
+        const axes = Vec3.look( this.swing, this.twist );
+        this.swing.copy( axes[2] );
+        this.twist.copy( axes[1] );
+        this.ortho.copy( axes[0] );
+    }
+    // #endregion
+}
+
+class IKSet{
+    // #region MAIN
+    chain  = new IKChain();
+    target = new IKTarget();
+    solver = null;
+    constructor( solver ){
+        this.solver = solver;
+    }
+    // #endregion
+
+    updatePose( tpose, pose ){
+        this.target.resolve( this.chain, tpose, pose );
+        this.solver( this.target, this.chain, tpose, pose );
+        // Debug.pnt.add( this.target.pos, 0x00ff00, 1 );
+        // Debug.pnt.add( this.target.origin, 0xff0000, 1 );
+    }
+}
+
+// #endregion
+
+// #region MATHS
+
+const TO_RAD = Math.PI / 180;
+const TO_DEG = 180 / Math.PI;
+
+function normAngle( a ){
+    const x = a % 360;
+    if( x > 180 )  return x - 360;
+    if( x < -180 ) return x + 360;
+    return x;
+}
+
+class Vec3 extends Array{
+    constructor( v=null ){
+        super( 3 );
+        if( v?.length === 3 ) this.copy( v );
+        else                  this.zero();
+    }
+
+    // #region SETTERS
+    zero(){
+        this[0] = 0;
+        this[1] = 0;
+        this[2] = 0;
+        return this;
+    }
+
+    copy( v ){
+        this[0] = v[0];
+        this[1] = v[1];
+        this[2] = v[2];
+        return this;
+    }
+
+    xyz( x, y, z ){
+        this[0] = x;
+        this[1] = y;
+        this[2] = z;
+        return this;
+    }
+    // #endregion
+
+    // #region GETTERS
+    get len(){ return Math.sqrt( this[ 0 ]**2 + this[ 1 ]**2 + this[ 2 ]**2 ); }
+    get lenSqr(){ return  this[ 0 ]**2 + this[ 1 ]**2 + this[ 2 ]**2; }
+
+    clone(){ return new Vec3( this ); }
+    // #endregion
+
+    // #region FROM OPS
+    fromAdd( a, b ){
+        this[ 0 ] = a[ 0 ] + b[ 0 ];
+        this[ 1 ] = a[ 1 ] + b[ 1 ];
+        this[ 2 ] = a[ 2 ] + b[ 2 ];
+        return this;
+    }
+
+    fromSub( a, b ){
+        this[ 0 ] = a[ 0 ] - b[ 0 ];
+        this[ 1 ] = a[ 1 ] - b[ 1 ];
+        this[ 2 ] = a[ 2 ] - b[ 2 ];
+        return this;
+    }
+
+    fromScale( v, s ){
+        this[ 0 ] = v[0] * s;
+        this[ 1 ] = v[1] * s;
+        this[ 2 ] = v[2] * s;
+        return this;
+    }
+
+    fromNorm( v ){
+        let mag = Math.sqrt( v[ 0 ]**2 + v[ 1 ]**2 + v[ 2 ]**2 );
+        if( mag == 0 ) return this;
+
+        mag       = 1 / mag;
+        this[ 0 ] = v[ 0 ] * mag;
+        this[ 1 ] = v[ 1 ] * mag;
+        this[ 2 ] = v[ 2 ] * mag;
+        return this;
+    }
+
+    fromCross( a, b ){
+        const ax = a[0], ay = a[1], az = a[2],
+              bx = b[0], by = b[1], bz = b[2];
+
+        this[ 0 ] = ay * bz - az * by;
+        this[ 1 ] = az * bx - ax * bz;
+        this[ 2 ] = ax * by - ay * bx;
+        return this;
+    }
+
+    fromQuat( q, v=[0,0,1] ){
+        const qx = q[0], qy = q[1], qz = q[2], qw = q[3],
+              vx = v[0], vy = v[1], vz = v[2],
+              x1 = qy * vz - qz * vy,
+              y1 = qz * vx - qx * vz,
+              z1 = qx * vy - qy * vx,
+              x2 = qw * x1 + qy * z1 - qz * y1,
+              y2 = qw * y1 + qz * x1 - qx * z1,
+              z2 = qw * z1 + qx * y1 - qy * x1;
+        this[ 0 ] = vx + 2 * x2;
+        this[ 1 ] = vy + 2 * y2;
+        this[ 2 ] = vz + 2 * z2;
+        return this;
+    }
+
+    fromLerp( a, b, t ){
+        const ti  = 1 - t;
+        this[ 0 ] = a[ 0 ] * ti + b[ 0 ] * t;
+        this[ 1 ] = a[ 1 ] * ti + b[ 1 ] * t;
+        this[ 2 ] = a[ 2 ] * ti + b[ 2 ] * t;
+        return this;
+    }
+    // #endregion
+
+    // #region OPERATORS
+    add( a ){
+        this[ 0 ] += a[ 0 ];
+        this[ 1 ] += a[ 1 ];
+        this[ 2 ] += a[ 2 ];
+        return this;
+    }
+
+    sub( v ){
+        this[ 0 ] -= v[ 0 ];
+        this[ 1 ] -= v[ 1 ];
+        this[ 2 ] -= v[ 2 ];
+        return this;
+    }
+
+    mul( v ){
+        this[ 0 ] *= v[ 0 ];
+        this[ 1 ] *= v[ 1 ];
+        this[ 2 ] *= v[ 2 ];
+        return this;
+    }
+
+    scale( v ){
+        this[ 0 ] *= v;
+        this[ 1 ] *= v;
+        this[ 2 ] *= v;
+        return this;
+    }
+
+    invScale( v ){
+        this[ 0 ] /= v;
+        this[ 1 ] /= v;
+        this[ 2 ] /= v;
+        return this;
+    }
+
+    scaleThenAdd( s, v ){
+        this[ 0 ] += v[0] * s;
+        this[ 1 ] += v[1] * s;
+        this[ 2 ] += v[2] * s;
+        return this;
+    }
+
+    cross( b ){
+        const ax = this[0], ay = this[1], az = this[2],
+              bx = b[0],    by = b[1],    bz = b[2];
+
+        this[ 0 ] = ay * bz - az * by;
+        this[ 1 ] = az * bx - ax * bz;
+        this[ 2 ] = ax * by - ay * bx;
+        return this;
+    }
+    
+    norm(){
+        let mag = Math.sqrt( this[0]**2 + this[1]**2 + this[2]**2 );
+        if( mag != 0 ){
+            mag        = 1 / mag;
+            this[ 0 ] *= mag;
+            this[ 1 ] *= mag;
+            this[ 2 ] *= mag;
+        }
+        return this;
+    }
+
+    negate(){
+        this[ 0 ] = -this[ 0 ];
+        this[ 1 ] = -this[ 1 ];
+        this[ 2 ] = -this[ 2 ];
+        return this;
+    }
+    // #endregion
+
+    // #region STATIC OPS
+    static len( a ){ return Math.sqrt( a[ 0 ]**2 + a[ 1 ]**2 + a[ 2 ]** 2 ); }
+    static lenSqr( a ){ return a[ 0 ]**2 + a[ 1 ]**2 + a[ 2 ]** 2; }
+
+    static dist( a, b ){ return Math.sqrt( (a[ 0 ]-b[ 0 ]) ** 2 + (a[ 1 ]-b[ 1 ]) ** 2 + (a[ 2 ]-b[ 2 ]) ** 2 ); }
+    static distSqr( a, b ){ return (a[ 0 ]-b[ 0 ]) ** 2 + (a[ 1 ]-b[ 1 ]) ** 2 + (a[ 2 ]-b[ 2 ]) ** 2; }
+
+    static dot( a, b ) { return a[ 0 ] * b[ 0 ] + a[ 1 ] * b[ 1 ] + a[ 2 ] * b[ 2 ]; }
+    static cross( a, b, out=new Vec3() ){
+        const ax = a[0], ay = a[1], az = a[2],
+              bx = b[0], by = b[1], bz = b[2];
+
+        out[ 0 ] = ay * bz - az * by;
+        out[ 1 ] = az * bx - ax * bz;
+        out[ 2 ] = ax * by - ay * bx;
+        return out;
+    }
+
+    static angle( a, b ){
+        //acos(dot(a,b)/(len(a)*len(b))) 
+        // const theta = this.dot( a, b ) / ( Math.sqrt( Vec3.lenSqr(a) * Vec3.lenSqr(b) ) );
+        // return Math.acos( Math.max( -1, Math.min( 1, theta ) ) ); // clamp ( t, -1, 1 )
+
+        // atan2(len(cross(a,b)),dot(a,b))
+        const d = this.dot( a, b ),
+              c = this.cross( a, b );
+        return Math.atan2( Vec3.len(c), d );
+
+        // This also works, but requires more LEN / SQRT Calls
+        // 2 * atan2( ( u * v.len - v * u.len ).len, ( u * v.len + v * u.len ).len );
+
+        //https://math.stackexchange.com/questions/1143354/numerically-stable-method-for-angle-between-3d-vectors/1782769
+        // θ=2 atan2(|| ||v||u−||u||v ||, || ||v||u+||u||v ||)
+
+        //let cosine = this.dot( a, b );
+        //if(cosine > 1.0) return 0;
+        //else if(cosine < -1.0) return Math.PI;
+        //else return Math.acos( cosine / ( Math.sqrt( a.lenSqr * b.lenSqr() ) ) );
+    }
+    
+    static look( fwd, up=[0,1,0] ){
+        const zAxis	= new Vec3( fwd );
+        const xAxis = new Vec3().fromCross( up, zAxis ).norm() // Right
+
+        // Z & UP are parallel
+        if( xAxis.lenSqr === 0 ){
+            if( Math.abs( up[2] ) === 1 ) zAxis[0] += 0.0001;  // shift x when Fwd or Bak
+            else                          zAxis[2] += 0.0001;  // shift z
+
+            zAxis.norm();                        // ReNormalize
+            xAxis.fromCross( up, zAxis ).norm(); // Redo Right
+        }
+        
+        const yAxis = new Vec3().fromCross( zAxis, xAxis ).norm(); // Up
+        return [ xAxis, yAxis, zAxis ];
+    }
+
+    // #endregion
+}
+
+class Quat extends Array{
+    constructor( v=null ){
+        super( 4 );
+        if( v?.length === 4 ) this.copy( v );
+        else                  this.identity();
+    }
+
+    // #region SETTERS
+    identity(){
+        this[0] = 0;
+        this[1] = 0;
+        this[2] = 0;
+        this[3] = 1;
+        return this;
+    }
+
+    copy( v ){
+        this[0] = v[0];
+        this[1] = v[1];
+        this[2] = v[2];
+        this[3] = v[3];
+        return this;
+    }
+    // #endregion
+
+    // #region GETTERS
+    clone(){ return new Quat( this ); }
+    // #endregion
+
+    // #region OPERATIONS
+    /** Multiple Quaternion onto this Quaternion */
+    mul( q ){
+        const ax = this[0], ay = this[1], az = this[2], aw = this[3],
+              bx = q[0],    by = q[1],    bz = q[2],    bw = q[3];
+        this[ 0 ] = ax * bw + aw * bx + ay * bz - az * by;
+        this[ 1 ] = ay * bw + aw * by + az * bx - ax * bz;
+        this[ 2 ] = az * bw + aw * bz + ax * by - ay * bx;
+        this[ 3 ] = aw * bw - ax * bx - ay * by - az * bz;
+        return this;
+    }
+
+    /** PreMultiple Quaternions onto this Quaternion */
+    pmul( q ){
+        const ax = q[0],    ay  = q[1],     az = q[2],    aw = q[3],
+              bx = this[0], by  = this[1],  bz = this[2], bw = this[3];
+        this[ 0 ] = ax * bw + aw * bx + ay * bz - az * by;
+        this[ 1 ] = ay * bw + aw * by + az * bx - ax * bz;
+        this[ 2 ] = az * bw + aw * bz + ax * by - ay * bx;
+        this[ 3 ] = aw * bw - ax * bx - ay * by - az * bz;
+        return this;
+    }
+
+    norm(){
+        let len =  this[0]**2 + this[1]**2 + this[2]**2 + this[3]**2;
+        if( len > 0 ){
+            len = 1 / Math.sqrt( len );
+            this[ 0 ] *= len;
+            this[ 1 ] *= len;
+            this[ 2 ] *= len;
+            this[ 3 ] *= len;
+        }
+        return this;
+    }
+
+    invert(){
+        const a0  = this[ 0 ],
+              a1  = this[ 1 ],
+              a2  = this[ 2 ],
+              a3  = this[ 3 ],
+              dot = a0*a0 + a1*a1 + a2*a2 + a3*a3;
+        
+        if(dot == 0){ this[0] = this[1] = this[2] = this[3] = 0; return this }
+
+        const invDot = 1.0 / dot; // let invDot = dot ? 1.0/dot : 0;
+        this[ 0 ]    = -a0 * invDot;
+        this[ 1 ]    = -a1 * invDot;
+        this[ 2 ]    = -a2 * invDot;
+        this[ 3 ]    =  a3 * invDot;
+        return this;
+    }
+    // #endregion
+
+    // #region SPECIAL OPERATORS
+    /** Inverts the quaternion passed in, then pre multiplies to this quaternion. */
+    pmulInvert( q ){
+        //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // q.invert()
+        let ax = q[ 0 ],	
+            ay = q[ 1 ],
+            az = q[ 2 ],
+            aw = q[ 3 ];
+
+        const dot = ax*ax + ay*ay + az*az + aw*aw;
+
+        if( dot === 0 ){
+            ax = ay = az = aw = 0;
+        }else{
+            const dot_inv = 1.0 / dot;
+            ax = -ax * dot_inv;
+            ay = -ay * dot_inv;
+            az = -az * dot_inv;
+            aw =  aw * dot_inv;
+        }
+
+        //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Quat.mul( a, b );
+        const bx = this[ 0 ],	
+              by = this[ 1 ],
+              bz = this[ 2 ],
+              bw = this[ 3 ];
+        this[ 0 ] = ax * bw + aw * bx + ay * bz - az * by;
+        this[ 1 ] = ay * bw + aw * by + az * bx - ax * bz;
+        this[ 2 ] = az * bw + aw * bz + ax * by - ay * bx;
+        this[ 3 ] = aw * bw - ax * bx - ay * by - az * bz;
+        return this;
+    }
+
+
+    pmulAxisAngle( axis, rad ){
+        //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Quat.AxisAngle()
+        const half = rad * 0.5;
+        const s    = Math.sin( half );
+        const ax   = axis[ 0 ] * s;
+        const ay   = axis[ 1 ] * s;
+        const az   = axis[ 2 ] * s;
+        const aw   = Math.cos( half );
+
+        //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Quat.mul( a, b );
+        const bx = this[ 0 ],	
+              by = this[ 1 ],
+              bz = this[ 2 ],
+              bw = this[ 3 ];
+        this[ 0 ] = ax * bw + aw * bx + ay * bz - az * by;
+        this[ 1 ] = ay * bw + aw * by + az * bx - ax * bz;
+        this[ 2 ] = az * bw + aw * bz + ax * by - ay * bx;
+        this[ 3 ] = aw * bw - ax * bx - ay * by - az * bz;
+        return this;
+    }
+
+    dotNegate( chk ){
+        // quat.dot
+        const dot = this[0] * chk[0] + 
+                    this[1] * chk[1] + 
+                    this[2] * chk[2] + 
+                    this[3] * chk[3];
+
+        if( dot < 0 ){
+            // quat.negate
+            this[0] = -this[0];
+            this[1] = -this[1];
+            this[2] = -this[2];
+            this[3] = -this[3];
+        }
+        
+        return this;
+    }
+    // #endregion
+
+    // #region FROM OPS
+    fromMul( a, b ){
+        const ax = a[0], ay = a[1], az = a[2], aw = a[3],
+              bx = b[0], by = b[1], bz = b[2], bw = b[3];
+
+        this[ 0 ] = ax * bw + aw * bx + ay * bz - az * by;
+        this[ 1 ] = ay * bw + aw * by + az * bx - ax * bz;
+        this[ 2 ] = az * bw + aw * bz + ax * by - ay * bx;
+        this[ 3 ] = aw * bw - ax * bx - ay * by - az * bz;
+        return this;
+    }
+
+    fromInvert( q ){
+        const a0  = q[ 0 ],
+              a1  = q[ 1 ],
+              a2  = q[ 2 ],
+              a3  = q[ 3 ],
+              dot = a0*a0 + a1*a1 + a2*a2 + a3*a3;
+        
+        if(dot == 0){ this[0] = this[1] = this[2] = this[3] = 0; return this }
+
+        const invDot = 1.0 / dot; // let invDot = dot ? 1.0/dot : 0;
+        this[ 0 ]    = -a0 * invDot;
+        this[ 1 ]    = -a1 * invDot;
+        this[ 2 ]    = -a2 * invDot;
+        this[ 3 ]    =  a3 * invDot;
+        return this;
+    }
+
+    fromPolar( lon, lat, up=null ){
+        lat = Math.max( Math.min( lat, 89.999999 ), -89.999999 ); // Clamp lat, going to 90+ makes things spring around.
+
+        const phi   = ( 90 - lat ) * 0.01745329251, // PI / 180
+              theta = lon * 0.01745329251,
+              phi_s	= Math.sin( phi ),
+              v    = [
+                -( phi_s * Math.sin( theta ) ),
+                Math.cos( phi ),
+                phi_s * Math.cos( theta )
+            ];
+
+        this.fromLook( v, up || [0,1,0] );
+        return this;
+    }
+
+    fromLookOLD( dir, up = [0,1,0] ){
+        // Ported to JS from C# example at https://pastebin.com/ubATCxJY
+        // TODO, if Dir and Up are equal, a roll happends. Need to find a way to fix this.
+        const zAxis	= new Vec3( dir ).norm();                       // Forward
+        const xAxis = new Vec3().fromCross( up, zAxis ).norm();     // Right
+        const yAxis = new Vec3().fromCross( zAxis, xAxis ).norm();  // Up
+
+        // fromAxis - Mat3 to Quat
+        const m00 = xAxis[0], m01 = xAxis[1], m02 = xAxis[2],
+              m10 = yAxis[0], m11 = yAxis[1], m12 = yAxis[2],
+              m20 = zAxis[0], m21 = zAxis[1], m22 = zAxis[2],
+              t   = m00 + m11 + m22;
+
+        let x, y, z, w, s;
+
+        if(t > 0.0){
+            s = Math.sqrt(t + 1.0);
+            w = s * 0.5 ; // |w| >= 0.5
+            s = 0.5 / s;
+            x = (m12 - m21) * s;
+            y = (m20 - m02) * s;
+            z = (m01 - m10) * s;
+        }else if((m00 >= m11) && (m00 >= m22)){
+            s = Math.sqrt(1.0 + m00 - m11 - m22);
+            x = 0.5 * s;// |x| >= 0.5
+            s = 0.5 / s;
+            y = (m01 + m10) * s;
+            z = (m02 + m20) * s;
+            w = (m12 - m21) * s;
+        }else if(m11 > m22){
+            s = Math.sqrt(1.0 + m11 - m00 - m22);
+            y = 0.5 * s; // |y| >= 0.5
+            s = 0.5 / s;
+            x = (m10 + m01) * s;
+            z = (m21 + m12) * s;
+            w = (m20 - m02) * s;
+        }else{
+            s = Math.sqrt(1.0 + m22 - m00 - m11);
+            z = 0.5 * s; // |z| >= 0.5
+            s = 0.5 / s;
+            x = (m20 + m02) * s;
+            y = (m21 + m12) * s;
+            w = (m01 - m10) * s;
+        }
+
+        this[ 0 ] = x;
+        this[ 1 ] = y;
+        this[ 2 ] = z;
+        this[ 3 ] = w;
+        return this;
+    }
+
+    fromLook( fwd, up=[0,1,0] ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Orthogonal axes to make a mat3x3
+        const zAxis	= new Vec3( fwd );
+        const xAxis = new Vec3().fromCross( up, zAxis ).norm() // Right
+
+        // Z & UP are parallel
+        if( xAxis.lenSqr === 0 ){
+            if( Math.abs( up[2] ) === 1 ) zAxis[0] += 0.0001;  // shift x when Fwd or Bak
+            else                          zAxis[2] += 0.0001;  // shift z
+
+            zAxis.norm();                        // ReNormalize
+            xAxis.fromCross( up, zAxis ).norm(); // Redo Right
+        }
+        
+        const yAxis = new Vec3().fromCross( zAxis, xAxis ).norm(); // Up
+        const m     = [...xAxis, ...yAxis, ...zAxis];
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Mat3 to Quat
+        // Algorithm in Ken Shoemake's article in 1987 SIGGRAPH course notes
+        // article "Quat Calculus and Fast Animation".
+        let fRoot;
+        const fTrace = m[0] + m[4] + m[8]; // Diagonal axis
+
+        if( fTrace > 0.0 ){
+            // |w| > 1/2, may as well choose w > 1/2
+            fRoot	= Math.sqrt( fTrace + 1.0 );  // 2w
+            this[3]	= 0.5 * fRoot;
+            
+            fRoot	= 0.5 / fRoot;  // 1/(4w)
+            this[0]	= (m[5]-m[7])*fRoot;
+            this[1]	= (m[6]-m[2])*fRoot;
+            this[2]	= (m[1]-m[3])*fRoot;
+        }else{
+            // |w| <= 1/2
+            let i = 0;
+            if ( m[4] > m[0] )		i = 1;
+            if ( m[8] > m[i*3+i] )	i = 2;
+            
+            const j = (i+1) % 3;
+            const k = (i+2) % 3;
+
+            fRoot	    = Math.sqrt( m[i*3+i] - m[j*3+j] - m[k*3+k] + 1.0);
+            this[ i ]	= 0.5 * fRoot;
+            fRoot	    = 0.5 / fRoot;
+            this[ 3 ]	= ( m[j*3+k] - m[k*3+j] ) * fRoot;
+            this[ j ]	= ( m[j*3+i] + m[i*3+j] ) * fRoot;
+            this[ k ]	= ( m[k*3+i] + m[i*3+k] ) * fRoot;
+        }
+
+        return this;
+    }
+
+    /** Using unit vectors, Shortest swing rotation from Direction A to Direction B  */
+    fromSwing( a, b ){
+        // http://physicsforgames.blogspot.com/2010/03/Quat-tricks.html
+        const dot = Vec3.dot( a, b );
+
+        if( dot < -0.999999 ){ // 180 opposites
+            const tmp = new Vec3().fromCross( [-1,0,0], a );
+
+            if( tmp.len < 0.000001 ) tmp.fromCross( [0,1,0], a );
+            this.fromAxisAngle( tmp.norm(), Math.PI );
+
+        }else if( dot > 0.999999 ){ // Same Direction
+            this[ 0 ] = 0;
+            this[ 1 ] = 0;
+            this[ 2 ] = 0;
+            this[ 3 ] = 1;
+
+        }else{
+            const v   = Vec3.cross( a, b, [0,0,0] );
+            this[ 0 ] = v[ 0 ];
+            this[ 1 ] = v[ 1 ];
+            this[ 2 ] = v[ 2 ];
+            this[ 3 ] = 1 + dot;
+            this.norm();
+        }
+
+        return this;
+    }
+
+    /** Axis must be normlized, Angle in Radians  */
+    fromAxisAngle( axis, rad ){ 
+        const half = rad * 0.5;
+        const s    = Math.sin( half );
+        this[ 0 ]  = axis[ 0 ] * s;
+        this[ 1 ]  = axis[ 1 ] * s;
+        this[ 2 ]  = axis[ 2 ] * s;
+        this[ 3 ]  = Math.cos( half );
+        return this;
+    }
+
+    fromAxes( xAxis, yAxis, zAxis ){
+        const m00 = xAxis[0], m01 = xAxis[1], m02 = xAxis[2],
+              m10 = yAxis[0], m11 = yAxis[1], m12 = yAxis[2],
+              m20 = zAxis[0], m21 = zAxis[1], m22 = zAxis[2],
+              t = m00 + m11 + m22;
+        let x, y, z, w, s;
+
+        if(t > 0.0){
+            s = Math.sqrt(t + 1.0);
+            w = s * 0.5 ; // |w| >= 0.5
+            s = 0.5 / s;
+            x = (m12 - m21) * s;
+            y = (m20 - m02) * s;
+            z = (m01 - m10) * s;
+        }else if((m00 >= m11) && (m00 >= m22)){
+            s = Math.sqrt(1.0 + m00 - m11 - m22);
+            x = 0.5 * s;// |x| >= 0.5
+            s = 0.5 / s;
+            y = (m01 + m10) * s;
+            z = (m02 + m20) * s;
+            w = (m12 - m21) * s;
+        }else if(m11 > m22){
+            s = Math.sqrt(1.0 + m11 - m00 - m22);
+            y = 0.5 * s; // |y| >= 0.5
+            s = 0.5 / s;
+            x = (m10 + m01) * s;
+            z = (m21 + m12) * s;
+            w = (m20 - m02) * s;
+        }else{
+            s = Math.sqrt(1.0 + m22 - m00 - m11);
+            z = 0.5 * s; // |z| >= 0.5
+            s = 0.5 / s;
+            x = (m20 + m02) * s;
+            y = (m21 + m12) * s;
+            w = (m01 - m10) * s;
+        }
+
+        this[ 0 ] = x;
+        this[ 1 ] = y;
+        this[ 2 ] = z;
+        this[ 3 ] = w;
+        return this;
+    }
+    // #endregion
+
+    // #region CONVERT
+    fromMat3( m ){
+        // https://github.com/toji/gl-matrix/blob/master/src/gl-matrix/quat.js#L305
+        // Algorithm in Ken Shoemake's article in 1987 SIGGRAPH course notes
+        // article "Quat Calculus and Fast Animation".
+        let fRoot;
+        const fTrace = m[0] + m[4] + m[8];
+
+        if( fTrace > 0.0 ){
+            // |w| > 1/2, may as well choose w > 1/2
+            fRoot	= Math.sqrt( fTrace + 1.0 );  // 2w
+            this[3]	= 0.5 * fRoot;
+            
+            fRoot	= 0.5 / fRoot;  // 1/(4w)
+            this[0]	= (m[5]-m[7])*fRoot;
+            this[1]	= (m[6]-m[2])*fRoot;
+            this[2]	= (m[1]-m[3])*fRoot;
+        }else{
+            // |w| <= 1/2
+            let i = 0;
+
+            if ( m[4] > m[0] )		i = 1;
+            if ( m[8] > m[i*3+i] )	i = 2;
+            
+            const j = (i+1) % 3;
+            const k = (i+2) % 3;
+
+            fRoot	= Math.sqrt( m[i*3+i] - m[j*3+j] - m[k*3+k] + 1.0);
+            this[ i ]	= 0.5 * fRoot;
+
+            fRoot	= 0.5 / fRoot;
+            this[ 3 ]	= ( m[j*3+k] - m[k*3+j] ) * fRoot;
+            this[ j ]	= ( m[j*3+i] + m[i*3+j] ) * fRoot;
+            this[ k ]	= ( m[k*3+i] + m[i*3+k] ) * fRoot;
+        }
+        return this;
+    }
+    // #endregion
+}
+
+class Mat4 extends Array{
+    // #region CONSTRUCTOR
+    constructor(){ 
+        super(16);
+        this[0]  = 1;
+        this[1]  = 0;
+        this[2]  = 0;
+        this[3]  = 0;
+
+        this[4]  = 0;
+        this[5]  = 1;
+        this[6]  = 0;
+        this[7]  = 0;
+
+        this[8]  = 0;
+        this[9]  = 0;
+        this[10] = 1;
+        this[11] = 0;
+
+        this[12] = 0;
+        this[13] = 0;
+        this[14] = 0;
+        this[15] = 1;
+    }
+    // #endregion
+
+    // #region FROM OPS
+    fromInvert( mat ){
+        const a00 = mat[0],  a01 = mat[1],  a02 = mat[2],  a03 = mat[3],
+              a10 = mat[4],  a11 = mat[5],  a12 = mat[6],  a13 = mat[7],
+              a20 = mat[8],  a21 = mat[9],  a22 = mat[10], a23 = mat[11],
+              a30 = mat[12], a31 = mat[13], a32 = mat[14], a33 = mat[15],
+
+              b00 = a00 * a11 - a01 * a10,
+              b01 = a00 * a12 - a02 * a10,
+              b02 = a00 * a13 - a03 * a10,
+              b03 = a01 * a12 - a02 * a11,
+              b04 = a01 * a13 - a03 * a11,
+              b05 = a02 * a13 - a03 * a12,
+              b06 = a20 * a31 - a21 * a30,
+              b07 = a20 * a32 - a22 * a30,
+              b08 = a20 * a33 - a23 * a30,
+              b09 = a21 * a32 - a22 * a31,
+              b10 = a21 * a33 - a23 * a31,
+              b11 = a22 * a33 - a23 * a32;
+
+        let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06; // Calculate the determinant
+
+        if( !det ) return this;
+        det = 1.0 / det;
+
+        this[0]  = (a11 * b11 - a12 * b10 + a13 * b09) * det;
+        this[1]  = (a02 * b10 - a01 * b11 - a03 * b09) * det;
+        this[2]  = (a31 * b05 - a32 * b04 + a33 * b03) * det;
+        this[3]  = (a22 * b04 - a21 * b05 - a23 * b03) * det;
+        this[4]  = (a12 * b08 - a10 * b11 - a13 * b07) * det;
+        this[5]  = (a00 * b11 - a02 * b08 + a03 * b07) * det;
+        this[6]  = (a32 * b02 - a30 * b05 - a33 * b01) * det;
+        this[7]  = (a20 * b05 - a22 * b02 + a23 * b01) * det;
+        this[8]  = (a10 * b10 - a11 * b08 + a13 * b06) * det;
+        this[9]  = (a01 * b08 - a00 * b10 - a03 * b06) * det;
+        this[10] = (a30 * b04 - a31 * b02 + a33 * b00) * det;
+        this[11] = (a21 * b02 - a20 * b04 - a23 * b00) * det;
+        this[12] = (a11 * b07 - a10 * b09 - a12 * b06) * det;
+        this[13] = (a00 * b09 - a01 * b07 + a02 * b06) * det;
+        this[14] = (a31 * b01 - a30 * b03 - a32 * b00) * det;
+        this[15] = (a20 * b03 - a21 * b01 + a22 * b00) * det;
+
+        return this;
+    }
+    // #endregion
+
+    // #region OPERATIONS
+    mul( b ){ 
+        const   a00 = this[0],	a01 = this[1],	a02 = this[2],	a03 = this[3],
+                a10 = this[4],	a11 = this[5],	a12 = this[6],	a13 = this[7],
+                a20 = this[8],	a21 = this[9],	a22 = this[10],	a23 = this[11],
+                a30 = this[12],	a31 = this[13],	a32 = this[14],	a33 = this[15];
+
+        // Cache only the current line of the second matrix
+        let b0  = b[0], b1 = b[1], b2 = b[2], b3 = b[3];
+        this[0] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        this[1] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        this[2] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        this[3] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+
+        b0 = b[4]; b1 = b[5]; b2 = b[6]; b3 = b[7];
+        this[4] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        this[5] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        this[6] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        this[7] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+
+        b0 = b[8]; b1 = b[9]; b2 = b[10]; b3 = b[11];
+        this[8] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        this[9] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        this[10] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        this[11] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+
+        b0 = b[12]; b1 = b[13]; b2 = b[14]; b3 = b[15];
+        this[12] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        this[13] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        this[14] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        this[15] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+        return this;	
+    }
+
+    pmul( b ){ 
+        const   a00 = b[0],	 a01 = b[1],  a02 = b[2],  a03 = b[3],
+                a10 = b[4],  a11 = b[5],  a12 = b[6],  a13 = b[7],
+                a20 = b[8],  a21 = b[9],  a22 = b[10], a23 = b[11],
+                a30 = b[12], a31 = b[13], a32 = b[14], a33 = b[15];
+
+        // Cache only the current line of the second matrix
+        let b0  = this[0], b1 = this[1], b2 = this[2], b3 = this[3];
+        this[0] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        this[1] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        this[2] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        this[3] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+
+        b0 = this[4]; b1 = this[5]; b2 = this[6]; b3 = this[7];
+        this[4] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        this[5] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        this[6] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        this[7] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+
+        b0 = this[8]; b1 = this[9]; b2 = this[10]; b3 = this[11];
+        this[8]  = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        this[9]  = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        this[10] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        this[11] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+
+        b0 = this[12]; b1 = this[13]; b2 = this[14]; b3 = this[15];
+        this[12] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        this[13] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        this[14] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        this[15] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+        return this;	
+    }
+    // #endregion
+
+    // #region TRANSFORMS
+    transformVec3( v, out ){
+        const x = v[0], y = v[1], z = v[2];
+        out    = out || v;
+        out[0] = this[0] * x + this[4] * y + this[8]  * z + this[12];
+        out[1] = this[1] * x + this[5] * y + this[9]  * z + this[13];
+        out[2] = this[2] * x + this[6] * y + this[10] * z + this[14];
+        return out;
+    }
+        
+    transformVec4( v, out ){
+        const x = v[0], y = v[1], z = v[2], w = v[3];
+        out    = out || v;
+        out[0] = this[0] * x + this[4] * y + this[8]  * z + this[12] * w;
+        out[1] = this[1] * x + this[5] * y + this[9]  * z + this[13] * w;
+        out[2] = this[2] * x + this[6] * y + this[10] * z + this[14] * w;
+        out[3] = this[3] * x + this[7] * y + this[11] * z + this[15] * w;
+        return out;
+    }
+    // #endregion
+}
+
+// #endregion
+
+// ###########################################################
+
+// #region MANAGER
+
+class GizmoSystem{
+    // #region MAIN
+    container       = new THREE.Group();
+    renderer        = null;
+    camera          = null;
+    camCtrl         = null;
+    ray             = new Ray();
+    emitter         = new EventTarget();
+
+    activeAction    = null;
+    activeGizmo     = null;
+    actions         = {
+        line    : { obj: new LineMoveAction(),          preview: new LineMovePreview() },
+        axisRot : { obj: new AxisRotationAction(),      preview: new AxisRotationPreview() },
+        arcBall : { obj: new ArcBallRotationAction(),   preview: new ArcBallPreview() },
+    };
+
+    gizmoCache      = {};
+
+    pnt             = new ShapePointsMesh();
+    ln              = new DynLineMesh();
+
+    onInput         = null;
+    onChange        = null;
+
+    constructor( scene, renderer, camera, ctrl ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.renderer = renderer;
+        this.camera   = camera;
+        this.camCtrl  = ctrl;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.container.add( this.pnt, this.ln );
+        scene.add( this.container );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.ln.renderOrder  = 100;
+        this.ln.material.depthTest = false;
+
+        this.pnt.renderOrder = 101;
+        this.pnt.material.depthTest = false;
+    }
+    // #endregion
+
+    // #region MANAGE GIZMOS
+    showGizmo( cls, prop=null ){
+        const obj  = this.gizmoCache[ cls ] 
+                  ?? ( this.gizmoCache[ cls ] = new cls() );
+
+        this.hideGizmo();
+        this.activeGizmo = obj.load( this, prop ).show();
+        return this;        
+    }
+
+    hideGizmo(){
+        if( this.activeGizmo ){
+            this.activeGizmo.unload( this ).hide();
+            this.activeGizmo = null;
+        }
+        return this;
+    }
+
+    pushData( type, o ){ this.activeGizmo?.receiveData( this, type, o ); }
+    // #endregion
+
+    // #region EVENT HANDLERS
+    startEvents(){
+        const c = this.renderer.domElement;
+        c.addEventListener( 'pointerdown',   this.onPointerDown );
+        c.addEventListener( 'pointermove',   this.onPointerMove );
+        c.addEventListener( 'pointerup',     this.onPointerUp );
+        c.addEventListener( 'pointercancel', this.onPointerCancel );
+        return this;
+    }
+
+    disableEvents(){
+        const c = this.renderer.domElement;
+        c.removeEventListener( 'pointerdown',   this.onPointerDown );
+        c.removeEventListener( 'pointermove',   this.onPointerMove );
+        c.removeEventListener( 'pointerup',     this.onPointerUp );
+        c.removeEventListener( 'pointercancel', this.onPointerCancel );
+        return this;
+    }
+
+    onPointerDown = e=>{
+        if( !this.activeGizmo ) return;
+
+        const rtn = this.activeGizmo.onDown( this, this.getRayFromEvent( e ), e );
+
+        if( rtn ){
+            const act = this.actions[ rtn.action ];                
+            if( !act ){ console.log( 'Unknown Action Name', rtn.action ); return; }
+
+            act.obj.load( rtn );
+            act.preview.load( this, act.obj );
+
+            this.activeAction       = act;
+            this.camCtrl.enabled    = false;
+            this.renderer.domElement.setPointerCapture( e.pointerId );
+        }
+    }
+
+    onPointerMove = e=>{
+        if( this.activeAction ){
+            const isChg = this.activeAction.obj.onMove( this, this.getRayFromEvent( e ), e );
+            
+            if( isChg ){
+                this.activeAction.preview.render( this, this.activeAction.obj );
+            }
+        }else if( this.activeGizmo ){
+            this.activeGizmo.onHover( this, this.getRayFromEvent( e ), e );
+        }
+    }
+
+    onPointerUp = e=>{        
+        if( !this.activeAction ) return;
+            
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Finalize action
+        this.activeAction.obj.onUp( this, e );
+        const data = this.activeAction.obj.genData();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Cleanup
+        this.activeAction.preview.unload( this );
+        this.activeAction = null;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Reset things
+        this.camCtrl.enabled = true;
+        this.renderer.domElement.releasePointerCapture( e.pointerId );
+        this.activeGizmo?.onUp( this, data, e );
+    }
+
+    onPointerCancel = e=>{
+        console.log( 'PointerCancel' );
+        // if( this.dragging ){
+        //     this.dragging           = false;
+        //     this.camCtrl.enabled    = true;
+        //     this.renderer.domElement.releasePointerCapture( e.pointerId );
+        // }
+    }
+    // #endregion
+
+    // #region RAY CASTING
+    // Compute worldspace ray for actions to use
+    getRayFromEvent( e ){
+        const size      = new THREE.Vector2();
+        const proj      = this.camera.projectionMatrix.toArray();    // Need Projection Matrix
+        const camWorld  = this.camera.matrixWorld.toArray();         // World Space Transform of Camera
+        this.renderer.getSize( size );                               // Need Size of Canvas
+
+        // Setup Ray
+        return this.ray.fromScreenProjection( e.layerX, e.layerY, size.x, size.y, proj, camWorld );
+    }
+    // #endregion
+
+    // #region EVENTS
+    on( evtName, fn ){ this.emitter.addEventListener( evtName, fn ); return this; }
+    off( evtName, fn ){ this.emitter.removeEventListener( evtName, fn ); return this; }
+    once( evtName, fn ){ this.emitter.addEventListener( evtname, fn, { once:true } ); return this; }
+    emit( evtName, data ){
+        this.emitter.dispatchEvent( new CustomEvent( evtName, { detail:data, bubbles: false, cancelable:true, composed:false } ) );
+        return this;
+    }
+    // #endregion
+}
+
+// #endregion
+
+// #region ACTIONS
+
+class LineMoveAction{ 
+    hitRange = 0.3;         // Distance from segment to start dragging
+
+    startPos = new Vec3();  // Segment start postion
+    endPos   = new Vec3();  // Segment end position
+    initPos  = new Vec3();  // Initial position on mouse down
+    offset   = new Vec3();  // Offset between init pos * obj pos
+    pos      = new Vec3();  // current pos
+
+    results  = new NearSegmentResult(); 
+
+    constructor(){}
+
+    load( props ){
+        const opt = { offset: [0,0,0], ...props };
+
+        this.startPos.copy( opt.startPos );
+        this.endPos.copy( opt.endPos );
+        this.initPos.copy( opt.initPos );
+        this.pos.copy( opt.initPos );
+
+        this.offset.copy( opt.offset );
+        return this;
+    }
+
+    genData(){
+        return {
+            action  : 'line',
+            initPos : this.initPos.slice(),
+            pos     : this.pos.slice() 
+        };
+    }
+
+    onMove( sys, ray, e ){
+        if( nearSegment( ray, this.endPos, this.startPos, this.results ) ){            
+
+            this.pos.fromAdd( this.results.segPosition, this.offset );
+
+            sys.pushData( 'input', this.genData() );
+            return true;
+        }
+
+        return false;
+    }
+
+    onUp( sys, e ){ 
+        sys.pushData( 'change', this.genData() );
+        return true;
+    }
+}
+
+// Use plane movement to compute angle rotation
+class AxisRotationAction{
+    hitRange    = 3;
+    fwdDir      = new Vec3( 0, 0, 0 );  // Axis for rotation
+    upDir       = new Vec3( 0, 0, 0 );  // Direction that marks ZERO degrees
+    ritDir      = new Vec3( 0, 0, 0 );  // Direction helps determine angle sign ( + or - )
+    origin      = new Vec3( 0, 0, 0 );  // Object's position / rotation point / plane origin
+    orient      = new Quat();
+    
+    rad         = 0;
+    pos         = new Vec3( 0, 0, 0 );  // Rotation point
+    rot         = new Quat();           // Raw rotation not applied
+    initQuat    = new Quat();           // Initial rotation to be modified
+    outQuat     = new Quat();           // Final Rotation
+    
+    constructor(){}
+
+    genData(){
+        return {
+            initQuat  : this.initQuat.slice(),
+            incQuat   : this.rot.slice(),
+            finalQuat : this.outQuat.slice(),
+        };
+    }
+
+    load( props ){
+        this.fwdDir.copy( props.forward );
+        this.upDir.copy( props.up );
+        this.origin.copy( props.origin );
+        this.initQuat.copy( props.initQuat );
+
+        this.ritDir.fromCross( this.upDir, this.fwdDir );
+        this.orient.fromAxes( this.ritDir, this.upDir, this.fwdDir );
+    }
+
+    unload( sys ){}
+
+    onDown( sys, ray, e ){
+        const v   = new Vec3();
+        
+        if( intersectPlane( ray, this.origin, this.fwdDir, this.pos ) ){
+            if( Vec3.dist( this.pos, this.origin ) <= this.hitRange ){
+                this.#calcAngle();
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    onMove( sys, ray, e ){
+        if( intersectPlane( ray, this.origin, this.fwdDir, this.pos ) ){
+            this.#calcAngle();
+            sys.pushData( 'input',  this.genData() );
+            return true;
+        }
+        return false;
+    }
+
+    onUp( sys, e ){
+        sys.pushData( 'change', this.genData() );
+        return true;
+    }
+
+    #calcAngle(){
+        const delta = new Vec3().fromSub( this.pos, this.origin ).norm();
+        const sign  = Math.sign( -Vec3.dot( delta, this.ritDir ) );
+        this.rad    = Vec3.angle( delta, this.upDir ) * sign;
+        
+        this.rot.fromAxisAngle( this.fwdDir, this.rad );
+        this.outQuat.fromMul( this.rot, this.initQuat );
+    }
+}
+
+
+class ArcBallRotationAction{
+    radius   = 1;
+    origin   = new Vec3( 0, 0, 0 );
+    ipos     = new Vec3( 0, 0, 0 );
+    hpos     = new Vec3( 0, 0, 0 );
+
+    rot      = new Quat();
+    initQuat = new Quat();
+    outQuat  = new Quat();
+
+    sResult   = new RaySphereResult();
+    pResult  = new NearPointResult();
+
+    constructor(){}
+
+    genData(){        
+        return {
+            initQuat  : this.initQuat.slice(),
+            incQuat   : this.rot.slice(),
+            finalQuat : this.outQuat.slice(),
+        };
+ }
+
+    load( props ){
+        this.radius = props.radius ?? 1;
+        this.origin.copy( props.origin );
+        this.ipos.copy( props.initPos );
+        this.initQuat.copy( props.initQuat );
+    }
+
+    unload( sys ){}
+
+    onDown( sys, ray, e ){}
+
+    onMove( sys, ray, e ){
+        if( this.testHit( ray, this.hpos ) ){
+            this.calc();
+            sys.pushData( 'input',  this.genData() );
+            return true;
+        }
+
+        return false;
+    }
+
+    onUp( sys, ray, e ){
+        sys.pushData( 'change', this.genData() );
+    }
+
+    calc(){
+        const a = new Vec3( this.ipos ).sub( this.origin ).norm();
+        const b = new Vec3( this.hpos ).sub( this.origin ).norm();
+
+        this.rot.fromSwing( a, b )
+            .dotNegate( this.initQuat );
+        this.outQuat.fromMul( this.rot, this.initQuat );
+    }
+
+    testHit( ray, v ){
+        let isHit = intersectSphere( ray, this.origin, this.radius, this.sResult );
+
+        if( isHit ) v.copy( this.sResult.posEntry );
+        else if( nearPoint( ray, this.origin, this.radius + 1.5, this.pResult ) !== null ){
+            isHit = true;
+            v.fromSub( this.pResult.rayPosition, this.origin ).norm().scale( this.radius ).add( this.origin );
+        }
+
+        return isHit;
+    }
+}
+
+// #endregion
+
+// #region PREVIEWS / RENDERERS
+
+// Visualize Line Move Action
+class LineMovePreview{
+    // action = null;
+    constructor(){}
+
+    // load( sys, act ){ return this; }
+
+    load( sys, act ){}
+
+    unload( sys ){
+        sys.pnt.reset();
+        sys.ln.reset();
+    }
+
+    render( sys, act ){
+        const pnt = sys.pnt.reset();
+        const ln  = sys.ln.reset();
+        
+        pnt.add( act.startPos, 0x00ff00, 1, 1 );
+        pnt.add( act.endPos, 0xff0000, 1, 1 );
+
+        pnt.add( act.pos, 0x00ffff, 1, 1 );
+        pnt.add( act.initPos, 0x808080, 1, 1 );
+
+        ln.add( act.startPos, act.endPos, 0x606060 );
+
+        pnt._updateGeometry();
+    }
+}
+
+
+class ArcBallPreview{
+    mesh   = null;
+    constructor(){}
+
+    load( sys, act ){
+        if( !this.mesh ){
+            this.mesh = new THREE.Mesh( 
+                new THREE.SphereGeometry( 1, 12, 12 ), 
+                new THREE.MeshBasicMaterial( { color: 0xffff00, opacity:0.05, transparent:true } )
+            );
+            sys.container.add( this.mesh );
+        }
+
+        this.mesh.scale.setScalar( act.radius );
+        this.mesh.position.fromArray( act.origin );
+        this.mesh.visible = true;
+
+        // TEMP
+        this.render( sys, act );
+        
+        return this;
+    }
+
+    unload( sys ){
+        this.mesh.visible = false;
+    }
+
+    dispose( sys ){
+        // if( this.mesh ){
+        //     mgt.scene.remove( this.mesh );
+        //     this.mesh.geometry.dispose();
+        //     this.mesh.material.dispose();
+        //     this.mesh = null;
+        // }
+    }
+
+    render( sys, act ){
+        sys.pnt.reset()
+            .add( act.origin, 0xffffff, 1, 1 )
+            .add( act.ipos, 0xff0000, 1, 1 )
+            .add( act.hpos, 0x00ff00, 1, 1 )
+        ;
+
+        sys.ln.reset()
+            .add( act.origin, act.ipos, 0xffffff, 0xff0000 )
+            .add( act.origin, act.hpos, 0xffffff, 0x00ff00 )
+        ;
+
+        // Draw Arc
+        const a    = new Vec3( act.ipos ).sub( act.origin ).norm();
+        const b    = new Vec3( act.hpos ).sub( act.origin ).norm();
+        const prev = new Vec3( act.ipos );
+        const v    = new Vec3();
+                    
+        for( let i=1; i <= 10; i++ ){
+            v.fromLerp( a, b, i / 10 )
+                .norm()
+                .scale( act.radius )
+                .add( act.origin );
+
+            sys.ln.add( prev, v, 0xffa000 );
+            prev.copy( v );
+        }
+    
+        sys.pnt._updateGeometry();
+        sys.ln._updateGeometry();
+    }
+}
+
+
+class AxisRotationPreview{
+    mesh    = null;
+    constructor(){}
+
+    // init( mgt, action ){
+    //     // this.action = action;
+
+    //     // if( !this.mesh ){
+    //     //     this.mesh = AngleViewMaterial.createMesh();
+    //     //     this.mesh.scale.setScalar( 4.5 );
+    //     //     mgt.scene.add( this.mesh );
+    //     // }
+
+    //     // const q = new Quat().fromLook( action.fwdDir, action.upDir ).norm();
+    //     // this.mesh.quaternion.fromArray( q );
+    //     // this.mesh.position.fromArray( action.origin );
+    //     // this.mesh.visible = true;
+
+    //     // console.log( 'AxisRotPreview.init' );
+
+    //     return this;
+    // }
+
+    load( sys, act ){
+        if( !this.mesh ){
+            this.mesh = AngleViewMaterial.createMesh();
+            this.mesh.renderOrder = 99;
+            this.mesh.material.depthTest = false;
+            this.mesh.scale.setScalar( 0.5 );
+            sys.container.add( this.mesh );
+        }
+
+        this.mesh.position.fromArray( act.origin );
+        this.mesh.quaternion.fromArray( act.orient );
+        this.mesh.material.setArc( 0 );
+        this.mesh.visible = true;
+    }
+
+    unload( sys ){
+        this.mesh.visible = false;
+    }
+
+    dispose( sys ){
+        // if( this.mesh ){
+        //     mgt.scene.remove( this.mesh );
+        //     this.mesh.geometry.dispose();
+        //     this.mesh.material.dispose();
+        //     this.mesh = null;
+        // }
+    }
+
+
+    render( sys, act ){
+        this.mesh.material.setArc( act.rad );
+
+        sys.pnt.reset()
+            .add( act.pos, 0xffffff, 1, 1 );
+
+        sys.ln.reset()
+            .add( act.origin, act.pos, 0xffffff );
+    }
+}
+
+
+class AngleViewMaterial extends THREE.RawShaderMaterial{    
+    static createMesh(){
+        return new THREE.Mesh(
+            new THREE.PlaneGeometry( 1, 1 ), 
+            new AngleViewMaterial()
+        );
+    }
+
+    constructor(){
+        super();
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.name           = 'AngleViewMaterials';
+        this.glslVersion    = THREE.GLSL3;
+        this.depthTest      = true;
+        this.transparent    = true;
+        this.side           = THREE.DoubleSide;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.uniforms = { 
+            radArc    : { type :'float', value: -315 * Math.PI / 180 },
+            radOffset : { type :'float', value: 0 * Math.PI / 180 },
+            radLine   : { type :'float', value: 0 * Math.PI / 180 },
+            radLineOn : { type :'float', value: 0 },
+        };
+
+        // this.setRange( -190, 60 );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.vertexShader = `
+        in	vec3    position;
+        in  vec3    normal;
+        in	vec2    uv;
+        
+        uniform     mat4    modelMatrix;
+        uniform     mat4    viewMatrix;
+        uniform     mat4    projectionMatrix;
+
+        out vec3    fragWPos;  // World Space Position
+        out vec3    fragNorm;
+        out vec2    fragUV;
+        
+        // ################################################################
+
+        void main(){
+            vec4 wPos 	        = modelMatrix * vec4( position, 1.0 );  // World Space
+            vec4 vPos           = viewMatrix * wPos;               // View Space
+            
+            fragUV              = uv;
+            fragWPos            = wPos.xyz;
+            fragNorm            = ( modelMatrix * vec4( normal, 0.0 ) ).xyz;
+
+            gl_Position			= projectionMatrix * vPos;
+        }`;
+
+        this.fragmentShader  = `precision mediump float;
+        in  vec3    fragWPos;
+        in  vec3    fragNorm;
+        in  vec2    fragUV;
+        out vec4    outColor;
+
+        uniform float radArc;
+        uniform float radOffset;
+        uniform float radLine;
+        uniform float radLineOn;
+
+        // ################################################################
+
+        float ring( vec2 coord, float outer, float inner ){ 
+            float radius = dot( coord, coord );
+            float dxdy   = fwidth( radius );
+            return  smoothstep( inner - dxdy, inner + dxdy, radius ) - 
+                    smoothstep( outer - dxdy, outer + dxdy, radius );
+        }
+
+        float circle( vec2 coord, float outer ){ 
+            float radius = dot( coord, coord );
+            float dxdy   = fwidth( radius );
+            return 1.0 - smoothstep( outer - dxdy, outer + dxdy, radius );
+        }
+
+        // https://www.shadertoy.com/view/XtXyDn
+        float arc( vec2 uv, vec2 up, float angle, float radius, float thick ){
+            float hAngle = angle * 0.5;
+
+            // vector from the circle origin to the middle of the arc
+            float c  = cos( hAngle );
+            
+            // smoothing perpendicular to the arc
+            float d1 = abs( length( uv ) - radius ) - thick;
+            float w1 = 1.5 * fwidth( d1 ); // proportional to how much d1 change between pixels
+            float s1 = smoothstep( w1 * 0.5, -w1 * 0.5, d1 ); 
+
+            // smoothing along the arc
+            float d2 = dot( up, normalize( uv ) ) - c;
+            float w2 = 1.5 * fwidth( d2 ); // proportional to how much d2 changes between pixels
+            float s2 = smoothstep( w2 * 0.5, -w2 * 0.5, d2 ); 
+
+            // mix perpendicular and parallel smoothing
+            return s1 * ( 1.0 - s2 );
+        }
+
+        float sdOrientedBox( in vec2 p, in vec2 a, in vec2 b, float th ){
+            float l = length(b-a);
+            vec2  d = (b-a)/l;
+            vec2  q = (p-(a+b)*0.5);
+                q = mat2(d.x,-d.y,d.y,d.x)*q;
+                q = abs(q)-vec2(l,th)*0.5;
+            return length(max(q,0.0)) + min(max(q.x,q.y),0.0);    
+        }
+
+        float sdTriangleIsosceles( in vec2 p, in vec2 q ){
+            p.x = abs(p.x);
+            vec2  a = p - q*clamp( dot(p,q)/dot(q,q), 0.0, 1.0 );
+            vec2  b = p - q*vec2( clamp( p.x/q.x, 0.0, 1.0 ), 1.0 );
+            float s = -sign( q.y );
+            vec2  d = min( vec2( dot(a,a), s*(p.x*q.y-p.y*q.x) ),
+                           vec2( dot(b,b), s*(p.y-q.y) ) );
+            return -sqrt(d.x) * sign(d.y);
+        }
+
+        float triangleMask( vec2 uv, vec2 size, vec2 offset ){
+            // Transform the UV, Flip 180d & Move
+            vec2 coord = uv * vec2( 1.0, -1.0 ) + offset;
+
+            // Get distance from shape
+            float dist = sdTriangleIsosceles( coord, size );
+            return 1.0 - smoothstep( 0.0, 0.01, dist ); // Smooth & Invert Mask
+        }
+
+        // ################################################################
+
+        void main(){
+            outColor = vec4( 0.0, 0.0, 0.0, 1.0 );
+
+            vec2 uvn    = fragUV * 2.0 - 1.0;  // Remap 0:1 to -1:1
+            float mask  = 0.0;
+            float upRad = radians( 90.0 );     // Starting radians to make UP zero degrees
+            
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // ARC
+
+            float maskArc = 0.0;
+
+            if( radArc != 0.0 ){
+                float arcRadius   = 0.56;
+                float arcThick    = 0.18;
+                float arcCenter   = upRad + radOffset + radArc * 0.5;
+                vec2 arcCenterDir = vec2( cos( arcCenter ), sin( arcCenter ) );
+                      maskArc     = arc( uvn, arcCenterDir, radArc, arcRadius, arcThick );
+            }
+
+            // outColor.rgb = vec3( maskArc );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // RING
+            float maskRing =  ring( uvn, 0.78, 0.67 );
+            // outColor.rgb = vec3( maskRing );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // CIRCLE
+            float maskCircle = circle( uvn, 0.01 );
+            // outColor.rgb     = vec3( maskCircle );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // TRIANGLE
+            float maskTri = triangleMask( uvn, vec2(0.2,0.13), vec2(0.0,0.98) );
+            // outColor.rgb = vec3( maskTri );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // LINE
+            float maskLineCut = 1.0;
+            float maskLine    = 0.0;
+
+            if( radLineOn != 0.0 ){
+                float lRadius = 0.6;
+                vec2 end      = vec2( cos( upRad + radLine ) * lRadius, sin( upRad + radLine ) * lRadius );
+
+                float distLen     = sdOrientedBox( uvn, vec2(0.0), end, 0.03 );
+                      maskLine    = smoothstep( 0.03, 0.02, distLen );
+                      maskLineCut = smoothstep( 0.08, 0.09, distLen );
+            }
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // MERGE MASKS
+            mask = max( maskTri, maskRing );
+            mask = max( mask, maskArc * maskLineCut );
+            if( radLineOn != 0.0 ){ mask = max( mask, maskLine ); }
+            mask = max( mask, maskCircle );
+            outColor = vec4( mask );
+        }`;
+    }
+
+    setRange( dMin, dMax ){
+        const nMin = normAngle( dMin );
+        const nMax = normAngle( dMax );
+        
+        if( nMin <= nMax ){
+            this.uniforms.radArc.value    = ( nMax - nMin ) * TO_RAD;
+            this.uniforms.radOffset.value =  nMin * TO_RAD;
+        }else{
+            this.uniforms.radArc.value    = (( 180 - nMin ) + ( nMax - (-180) )) * TO_RAD;
+            this.uniforms.radOffset.value = nMin * TO_RAD;
+        }
+    }
+
+    setArc( v, offset=0 ){
+        this.uniforms.radArc.value    = v;
+        this.uniforms.radOffset.value = offset;
+    }
+}
+
+// #endregion
+
+// #region GIZMO
+
+class IKLimbGizmo{
+    // #region MAIN
+    name    = "iklimb";
+    origin  = new Vec3();
+    target  = new Vec3();
+    swing   = new Vec3();
+    twist   = new Vec3();
+    ortho   = new Vec3();
+    orient  = new Quat();
+
+    a0      = new Vec3();
+    // a1      = new Vec3();
+    // b0      = new Vec3();
+    // b1      = new Vec3();
+
+    points      = [ this.target, this.a0 ];
+    colors      = [ 0x0ff00, 0xffff00 ];
+
+    sys         = null;
+    hasHover    = '';
+
+    twistRadius = 0.12;
+    twistRng    = 0.03;
+    pntDist     = 0.1;
+    pntRng      = 0.05;
+    
+    // pntResult = new NearPointResult();
+    constructor(){
+        this.twistMesh = tearMesh();
+        this.twistMesh.scale.setScalar( this.twistRadius );
+        this.twistMesh.material.color.set( '#707070' );
+    }
+    // #endregion
+
+    // #region METHODS
+    load( sys, prop=null ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const opt = Object.assign( {
+            origin  : [0,0,0],
+            target  : [0,1,0],
+            up      : [0,1,0],
+        }, prop );
+        
+        this.sys = sys;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Copy main data
+        this.origin.copy( opt.origin );
+        this.target.copy( opt.target );
+        this.twist.copy( opt.up );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Do some compute
+        this.calc();
+
+        sys.container.add( this.twistMesh );
+
+        return this;
+    }
+
+    unload( sys, prop=null ){
+        sys.container.remove( this.twistMesh );
+        this.sys = null;
+        return this;
+    }
+    
+    show(){
+        this.twistMesh.visible = true;
+        this.render();
+        return this;
+    }
+
+    hide(){ 
+        this.twistMesh.visible = false;
+        return this;
+    }
+    // #endregion
+
+    // #region HELPERS
+    calc( reOrient=false ){
+        if( reOrient ){
+            const dist = Vec3.dist( this.target, this.origin );
+            this.swing.fromQuat( this.orient, [0,0,1] ).norm();
+            this.target.fromScale( this.swing, dist ).add( this.origin );            
+        }else{
+            this.swing.fromSub( this.target, this.origin ).norm();
+            this.orient.fromLook( this.swing, this.twist );
+        }
+
+        this.twist.fromQuat( this.orient, [0,1,0] );
+        this.ortho.fromQuat( this.orient, [1,0,0] );
+
+        this.a0.fromScale( this.swing, this.pntDist ).add( this.target );
+        // this.a1.fromScale( this.ortho, -this.pntDist ).add( this.target );
+
+        // this.b0.fromScale( this.twist, this.pntDist ).add( this.target );
+        // this.b1.fromScale( this.twist, -this.pntDist ).add( this.target );
+
+        return this;
+    }
+    
+    testHit( ray ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Twist Mesh
+        const hitPos = [0,0,0];
+        const isHit  = intersectPlane( ray, this.target, this.swing, hitPos ) !== null;
+        if( isHit && Math.abs( Vec3.dist( hitPos, this.target ) - this.twistRadius ) <= this.twistRng ){
+            return 't';
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Points
+        for( let i=0; i < this.points.length; i++ ){
+            if( ( nearPoint( ray, this.points[i], this.pntRng ) !== null ) ) return i;
+        }
+
+        return '';
+    }
+    
+    receiveData( sys, type, o ){
+        const data = {
+            gizmo     : this.name,
+            targetPos : this.target.clone(),
+            targetDir : this.swing.clone(),
+            poleDir   : this.twist.clone(),
+            orient    : this.orient.clone(),
+        };
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Translation Data
+        if( o.pos ){
+            data.targetPos.copy( o.pos );
+            sys.emit( type, data );
+            return this;
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if( o.finalQuat ){
+            data.orient.copy( o.finalQuat );
+
+            const dist = Vec3.dist( this.target, this.origin );
+
+            data.targetDir.fromQuat( data.orient, [0,0,1] ).norm();
+            data.targetPos.fromScale( data.targetDir, dist ).add( this.origin );
+            data.poleDir.fromQuat( data.orient, [0,1,0] );
+
+            sys.emit( type, data );
+            return this;
+        }
+    }
+    // #endregion
+
+    // #region EVENT HANDLERS
+    onDown( sys, ray, e ){
+        switch( this.testHit( ray ) ){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            case 1:
+                const endPos = new Vec3().fromSub( this.target, this.origin ).norm().scale( 1000 );
+                const offset = new Vec3().fromSub( this.target, this.a0 );
+                this.hide();
+                return { 
+                    action      : 'line', 
+                    initPos     : this.target,
+                    startPos    : this.origin, 
+                    endPos,
+                    offset,
+                };
+                break;
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            case 't':
+                this.hide();
+                return {
+                    action      : 'axisRot',
+                    initQuat    : this.orient,
+                    origin      : this.target,
+                    forward     : this.swing,
+                    up          : this.twist,
+                }
+                break;
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            case 0:
+                this.hide();
+                return {
+                    action      : 'arcBall',
+                    origin      : this.origin,
+                    initPos     : this.target,
+                    initQuat    : this.orient,
+                    radius      : Vec3.dist( this.origin, this.target ),
+                }
+                break;
+            
+        }
+    }
+    
+    onHover( sys, ray, e ){
+        const hit = this.testHit( ray );
+        if( this.hasHit !== hit ){
+            this.hasHover = hit;
+            this.render();
+        }
+    }
+
+    onUp( sys, data, e ){
+        if( data.pos ){
+            this.target.copy( data.pos );
+            this.calc();
+        }
+
+        if( data.finalQuat ){
+            this.orient.copy( data.finalQuat );
+            this.calc( true );
+        }
+
+        this.show();
+    }
+    // #endregion
+
+    // #region RENDERING
+    render(){
+        const ln   = this.sys.ln;
+        const pnt  = this.sys.pnt;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Points
+        pnt .reset().add( this.origin, 0xff0000, 1, 1 );
+
+        let col;
+        for( let i=0; i < this.points.length; i++ ){
+            col = ( this.hasHover === i )? 0xffffff : this.colors[i];
+            pnt.add( this.points[i], col, 1, 1 );
+        }
+        pnt._updateGeometry();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Lines
+        col = ( this.hasHover === 0 )? 0xffffff : this.colors[0];
+        ln .reset()
+           .add( this.origin, this.target, 0xff0000, col )
+           ._updateGeometry()
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Twist mesh
+        this.twistMesh.position.fromArray( this.target );
+        this.twistMesh.quaternion.fromArray( this.orient );
+
+        col = ( this.hasHover === 't' )? '#c0c0c0' :  '#707070';
+        this.twistMesh.material.color.set( col );
+    }
+    // #endregion
+}
+
+// #endregion
+
+// #region RAY CASTING
+
+class Ray{
+    // #region MAIN
+    posStart    = new Vec3();   // Origin
+    posEnd      = new Vec3();   // 
+    direction   = new Vec3();   // Direction from Start to End
+    vecLength   = new Vec3();   // Vector Length between start to end
+    // #endregion
+
+    // #region SETUP
+    fromEndPoints( a, b ){
+        this.posStart.copy( a );                    // Starting Point of the Ray
+        this.posEnd.copy( b );                      // The absolute end of the ray
+        this.vecLength.fromSub( b, a );             // Vector Length
+        this.direction.fromNorm( this.vecLength );  // Normalized Vector Length 
+        return this;
+    }
+
+    fromScreenProjection( x, y, w, h, projMatrix, camMatrix ){
+        // http://antongerdelan.net/opengl/raycasting.html
+        // Normalize Device Coordinate
+        const nx  = x / w * 2 - 1;
+        const ny  = 1 - y / h * 2;
+
+        // inverseWorldMatrix = invert( ProjectionMatrix * ViewMatrix ) OR
+        // inverseWorldMatrix = localMatrix * invert( ProjectionMatrix ) 
+        // const invMatrix = mat4.invert( projMatrix )
+        // mat4.mul( camMatrix, invMatrix, invMatrix );
+        const invMatrix = new Mat4().fromInvert( projMatrix ).pmul( camMatrix );
+        
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // https://stackoverflow.com/questions/20140711/picking-in-3d-with-ray-tracing-using-ninevehgl-or-opengl-i-phone/20143963#20143963
+        // Clip Cords would be [nx,ny,-1,1];
+        const clipNear   = [ nx, ny, -1, 1 ];
+        const clipFar    = [ nx, ny, 1, 1 ];
+
+        // using 4d Homogeneous Clip Coordinates
+        invMatrix.transformVec4( clipNear );
+        invMatrix.transformVec4( clipFar );
+
+        // Normalize by using W component
+        for( let i=0; i < 3; i++){
+            clipNear[ i ] /= clipNear[ 3 ];
+            clipFar [ i ] /= clipFar [ 3 ];
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Final Compute
+        this.posStart.copy( clipNear );                         // Starting Point of the Ray
+        this.posEnd.copy( clipFar );                            // The absolute end of the ray
+        this.vecLength.fromSub( this.posEnd, this.posStart );   // Vector Length
+        this.direction.fromNorm( this.vecLength );              // Normalized Vector Length
+        return this;
+    }
+    // #endregion
+
+    // #region GETTERS / SETTERS
+    /** Get position of the ray from T Scale of VecLen */
+    posAt( t, out = [0,0,0] ){
+        // RayVecLen * t + RayOrigin
+        // also works lerp( RayOrigin, RayEnd, t )
+        out[ 0 ] = this.vecLength[ 0 ] * t + this.posStart[ 0 ];
+        out[ 1 ] = this.vecLength[ 1 ] * t + this.posStart[ 1 ];
+        out[ 2 ] = this.vecLength[ 2 ] * t + this.posStart[ 2 ];
+        return out;
+    }
+
+    /** Get position of the ray from distance from origin */
+    directionAt( len, out = [0,0,0] ){
+        out[ 0 ] = this.direction[ 0 ] * len + this.posStart[ 0 ];
+        out[ 1 ] = this.direction[ 1 ] * len + this.posStart[ 1 ];
+        out[ 2 ] = this.direction[ 2 ] * len + this.posStart[ 2 ];        
+        return out;
+    }
+    // #endregion
+
+    // #region OPS
+    transformMat4( m ){
+        this.fromEndPoints( 
+            m.transformVec3( this.posStart, [0,0,0] ), 
+            m.transformVec3( this.posEnd,   [0,0,0] ),
+        );
+        return this;
+    }
+    // #endregion
+}
+
+
+class NearSegmentResult{
+    segPosition = [0,0,0];
+    rayPosition = [0,0,0];
+    distanceSq  = 0;
+    distance    = 0;
+}
+
+/** Returns [ T of Segment, T of RayLen ] */
+function nearSegment( ray, p0, p1, results=null){
+    // http://geomalgorithms.com/a07-_distance.html
+    const u = new Vec3( p1 ).sub( p0 );
+    const v = ray.vecLength;
+    const w = new Vec3( p0 ).sub( ray.posStart );
+    const a = Vec3.dot( u, u ); // always >= 0
+    const b = Vec3.dot( u, v );
+    const c = Vec3.dot( v, v ); // always >= 0
+    const d = Vec3.dot( u, w );
+    const e = Vec3.dot( v, w );
+    const D = a * c - b * b;    // always >= 0
+
+    let tU = 0; // T Of Segment 
+    let tV = 0; // T Of Ray
+
+    // Compute the line parameters of the two closest points
+    if( D < 0.000001 ){	            // the lines are almost parallel
+        tU = 0.0;
+        tV = ( b > c ? d/b : e/c ); // use the largest denominator
+    }else{
+        tU = ( b*e - c*d ) / D;
+        tV = ( a*e - b*d ) / D;
+    }
+
+    if( tU < 0 || tU > 1 || tV < 0 || tV > 1 ) return null;
+    
+    // Segment Position : u.scale( tU ).add( p0 )
+    // Ray Position :     v.scale( tV ).add( this.origin ) ];
+    if( results ){
+        // Get SegPostion by lerping the two end points
+        const ti = 1 - tU;
+        results.segPosition[ 0 ] = p0[0] * ti + p1[0] * tU;
+        results.segPosition[ 1 ] = p0[1] * ti + p1[1] * tU;
+        results.segPosition[ 2 ] = p0[2] * ti + p1[2] * tU;
+        
+        // Get Ray position by using its T Lerp value as well
+        ray.posAt( tV, results.rayPosition );
+        
+        // Distances for intersection testing
+        results.distanceSq = Vec3.distSqr( results.segPosition, results.rayPosition );
+        results.distance   = Math.sqrt( results.distanceSq );
+    }
+
+    return [ tU, tV ]; // The Lerp T values for Segment & Ray
+}
+
+
+class NearPointResult{
+    rayPosition = [0,0,0];
+    distanceSq  = 0;
+    distance    = 0;
+}
+
+function nearPoint( ray, p, distLimit=0.1, results=null ){
+    /* closest_point_to_line3D
+    let dx	= bx - ax,
+        dy	= by - ay,
+        dz	= bz - az,
+        t	= ( (px-ax)*dx + (py-ay)*dy + (pz-az)*dz ) / ( dx*dx + dy*dy + dz*dz ) ; */
+
+    const v = new Vec3( p ).sub( ray.posStart ).mul( ray.vecLength );
+    const t = ( v[0] + v[1] + v[2] ) / Vec3.lenSqr( ray.vecLength );
+
+    if( t < 0 || t > 1 ) return null; // Over / Under shoots the Ray Segment
+
+    if( results ){
+        ray.posAt( t, results.rayPosition );
+        results.distanceSq = Vec3.distSqr( results.rayPosition , p );
+
+        if( results.distanceSq <= (distLimit*distLimit) ){
+            results.distance = Math.sqrt( results.distanceSq );
+            return t;
+        }
+        return null;
+    }
+
+    const lenSqr = Vec3.distSqr( ray.posAt( t, v ), p ); // Distance from point to nearest point on ray.
+    return ( lenSqr <= (distLimit*distLimit) )? t : null;
+}
+
+
+class RaySphereResult{
+    tMin        = 0;        // 0 > 1
+    tMax        = 0;        // 0 > 1
+    posEntry    = [0,0,0];
+    posExit     = [0,0,0];
+}
+
+function intersectSphere( ray, origin, radius, results = null ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const radiusSq      = radius * radius;
+    const rayToCenter   = new Vec3( origin ).sub( ray.posStart );
+    const tProj         = Vec3.dot( rayToCenter, ray.direction ); // Project the length to the center onto the Ray
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Get length of projection point to center and check if its within the sphere
+    // Opposite^2 = hyptenuse^2 - adjacent^2
+    const oppLenSq = Vec3.lenSqr( rayToCenter ) - ( tProj * tProj );
+    if( oppLenSq > radiusSq ) return false;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    if( results ){
+        // -----------------------------
+        // if a parallel ray right on the radius, exit & entry is the same
+        if( oppLenSq == radiusSq ){
+            results.tMin = tProj;
+            results.tMax = tProj;
+
+            ray.directionAt( tProj, results.posEntry );
+
+            results.posExit[ 0 ] = results.posEntry[ 0 ];
+            results.posExit[ 1 ] = results.posEntry[ 1 ];
+            results.posExit[ 2 ] = results.posEntry[ 2 ];
+            return true;
+        }
+
+        // -----------------------------
+        // Separate positions for entry and exit
+        const oLen  = Math.sqrt( radiusSq - oppLenSq ); // Opposite = sqrt( hyptenuse^2 - adjacent^2 )
+        const t0    = tProj - oLen;
+        const t1    = tProj + oLen;
+
+        // Swap
+        if( t1 < t0 ){
+            results.tMin = t1; 
+            results.tMax = t0; 
+        }else{
+            results.tMin = t0; 
+            results.tMax = t1; 
+        }
+
+        ray.directionAt( t0, results.posEntry );
+        ray.directionAt( t1, results.posExit );
+    }
+
+    return true;
+}
+
+
+function intersectPlane( ray, planePos, planeNorm, hitPos=null ){
+    // ((planePos - rayOrigin) dot planeNorm) / ( rayVecLen dot planeNorm )
+    // pos = t * rayVecLen + rayOrigin;
+    const denom = Vec3.dot( ray.vecLength, planeNorm );         // Dot product of ray Length and plane normal
+    if( denom <= 0.000001 && denom >= -0.000001 ) return null;  // abs(denom) < epsilon, using && instead to not perform absolute.
+
+    const v = [
+        planePos[0] - ray.posStart[0],
+        planePos[1] - ray.posStart[1],
+        planePos[2] - ray.posStart[2],
+    ];
+
+    const t = Vec3.dot( v, planeNorm ) / denom;
+
+    if( hitPos && t >= 0 ) ray.posAt( t, hitPos );
+
+    return ( t >= 0 )? t : null;
+}
+
+// #endregion
+
+// #region MESHES
+function tearMesh(){
+    const geo = geoBuffer( tearShape() );
+    geo.computeVertexNormals();
+    return new THREE.Mesh( 
+        geo, 
+        new THREE.MeshBasicMaterial( { side : THREE.DoubleSide, color:0xffffff } ) 
+    );
+}
+
+function tearShape( radius=1, steps=24, power=8, pull=0.4 ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Generate half shape
+    const hStep = steps / 2;
+    const inc   = (Math.PI * 2.0) / steps;
+    const arc   = [];
+    let v       = [0,0,0];
+    let rad;
+    let r;
+    let i;
+    
+    for( i=0; i <= hStep; i++ ){
+        rad = inc * i + Math.PI * 0.5;
+        r   = ( i <= hStep )
+            ? (1-( i/hStep )) ** power * pull + radius 
+            : radius;
+
+        planeCircle( [0,0,0], [1,0,0], [0,1,0], rad, r, v );
+        arc.push( v.slice() );
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Generate mesh vertices from the half shape
+
+    const verts = [];
+    // Front Face
+    for( v of arc ){ verts.push( v[0], v[1], 0.1 ); }
+    for( i=arc.length-2; i > 0; i-- ){ v = arc[ i ]; verts.push( -v[0], v[1], 0.1 ); }
+
+    // Back Face
+    for( v of arc ){ verts.push( v[0], v[1], -0.1 ); }
+    for( i=arc.length-2; i > 0; i-- ){ v = arc[ i ]; verts.push( -v[0], v[1], -0.1 ); }
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const indices = [];
+    let   ii;
+    let   b;
+    let   c;
+    for( let i=0; i < steps; i++ ){
+        ii = i + steps;
+        c  = (i + 1) % steps;
+        b  = ((i + 1) % steps) + steps;
+        indices.push( i, ii, b, b, c, i );
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    return {
+        vertices : new Float32Array( verts ),
+        indices  : new Uint16Array( indices ),
+    };
+}
+
+function planeCircle( center, xAxis, yAxis, angle, radius, out ){
+    const sin = Math.sin( angle );
+    const cos = Math.cos( angle );
+    out[0] = center[0] + radius * cos * xAxis[0] + radius * sin * yAxis[0];
+    out[1] = center[1] + radius * cos * xAxis[1] + radius * sin * yAxis[1];
+    out[2] = center[2] + radius * cos * xAxis[2] + radius * sin * yAxis[2];
+    return out;
+}
+// #endregion
+
+</script></body></html>
