@@ -1,0 +1,396 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import useTransformControl from '@lib/useTransformControl.js';
+
+// import AngelViewMaterial from '@lib/shader/AngleViewMaterial.js';
+import AngelViewMaterial from '@lib/shader/AngleView2Material.js';
+import facedCube         from '@lib/meshes/FacedCube.js';
+
+import Vec3 from '@lib/maths/Vec3.js';
+import Quat from '@lib/maths/Quat.js';
+
+import { Pane } from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    gizmo   : useTransformControl( App ).useAxes(),
+    min     : -45,
+    max     : 45,
+};
+
+const TORAD = Math.PI / 180;
+
+window.addEventListener( 'load', async ()=>{
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.sphericalLook( 0, 20, 8, [ 0, 0.1, 0 ] );
+    Debug = await useVisualDebug( App );
+    
+    Ref.gizmo.setPos( [0,0,2] );
+    // Ref.gizmo.setPos( [4.663333557769653, 1, 2] );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.c0 = facedCube( [-2,1,0] );
+    Ref.c1 = facedCube( [2,1,0] );
+    App.scene.add( Ref.c0, Ref.c1  );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const q = new Quat();
+    q.rotY( Math.PI * -0.2 ).rotX( Math.PI * 0.2 ).rotZ( Math.PI * -0.25 );
+
+    Ref.limit = new HingeLimit();
+    Ref.limit.axes.fromQuat( q );
+    Ref.limit.setRangeDeg( Ref.min, Ref.max );
+
+    // Debug.ln.add( [0,0,0], Ref.limit.axes.twist, 0x00ff00 );
+    // Debug.ln.add( [0,0,0], Ref.limit.axes.swing, 0x00ff00 );
+    
+    // q.rotY( Math.PI * -0.26 ).rotX( Math.PI * -1.25 );
+    // debugQuat( hinge.orientation );
+    // debugQuat( q );
+    // hinge.applyTo( q );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    q.fromLook( Ref.limit.axes.twist, Ref.limit.axes.swing );
+    Ref.view = AngelViewMaterial.createMesh();
+    Ref.view.scale.setScalar( 3 );
+    Ref.view.quaternion.fromArray( q );
+    Ref.view.position.copy( Ref.c1.position );
+    Ref.view.material.setRange( Ref.limit.min, Ref.limit.max );
+    Ref.view.material.renderOrder = 99;
+    Ref.view.material.depthTest = false;
+
+    // Ref.view.material.setArc( 30 * TORAD );
+    // Ref.view.material.setRange( -45 * TORAD, 90 * TORAD );
+    // Ref.view.material.setRadLine( -45 * TORAD );
+    App.scene.add( Ref.view );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+    buildUI();
+    updateCubes();
+});
+
+function onPreRender( dt, et ){}
+
+Ref.gizmo.onMove = p=>{ 
+    // console.log( p );
+    updateCubes();
+};
+
+function updateCubes(){
+    Debug.reset();
+
+    const pos = Ref.gizmo.getPos();
+    const q   = new Quat();
+    const v   = new Vec3();
+
+    const fn  = ( o, lmt=false )=>{
+        const p = o.position.toArray();
+        v.fromSub( pos, p ).norm();
+        q.fromLook( v, [0,1,0] );
+
+        if( lmt ){
+            Ref.limit.applyTo( q );
+            Ref.view.material
+                .setRadLine( Ref.limit.rad )
+                .setRange( Ref.limit.min, Ref.limit.max );
+        }
+
+        o.quaternion.fromArray( q );
+        debugQuat( q, p, 0, 0.6 );
+    };
+
+    fn( Ref.c0 );
+    fn( Ref.c1, true );
+}
+
+
+async function buildUI(){
+    appendGithubLink( false );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const p = new Pane( { } );
+    p.on( 'change', e=>{
+        Ref.limit.setRangeDeg( Ref.min, Ref.max );
+        Ref.view.material.setRange( Ref.limit.min, Ref.limit.max );
+    });
+
+    const f = p.addFolder({ title: 'User Interface', expanded: true });
+    f.addBinding( Ref, 'min', { min: -180, max: 180, step: 5, label: 'Min' } );
+    f.addBinding( Ref, 'max', { min: -180, max: 180, step: 5, label: 'Max' } );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.pane = p;
+}
+// #endregion
+
+// #region DEBUGGING
+
+function debugQuat( q, pos=[0,0,0], c=0, scl=1 ){
+    const v    = new Vec3();
+    const axes = [ [1,0,0], [0,1,0], [0,0,1] ];
+    const cols = ( c === 0 )
+        ? [ 0xff0000, 0x00ff00, 0x0000ff ]
+        : [ 0xff00ff, 0xffff00, 0x00ffff ];
+
+    for( let i=0; i < 3; i++ ){
+        v.fromQuat( q, axes[i] ).scale( scl ).add( pos );
+        Debug.ln.add( pos, v, cols[i] );
+    }
+}
+
+// #endregion
+
+
+class SwingTwist{
+    // #region MAIN
+    swing = new Vec3(0,0,1);
+    twist = new Vec3(0,1,0);
+    ortho = new Vec3(1,0,0);
+    // #endregion
+
+    set( fwd, up ){
+        this.swing.copy( fwd ).norm();
+        this.twist.copy( up ).norm();
+        this.ortho.fromCross( this.twist, this.swing ).norm();
+
+        // FWD & UP are parallel
+        if( this.ortho.lenSqr === 0 ){
+            if( Math.abs( up[2] ) === 1 ) this.swing[0] += 0.0001;  // shift x when Fwd or Bak
+            else                          this.swing[2] += 0.0001;  // shift z
+
+            this.swing.norm();                                      // ReNormalize
+            this.ortho.fromCross( this.twist, this.swing ).norm();  // Redo Right
+        }
+
+        this.twist.fromCross( this.swing, this.ortho ).norm();      // Realign Up
+        return this;
+    }
+
+    angle( swing, inDeg=false ){
+        const sign = Math.sign( Vec3.dot( swing, this.ortho ) );
+        const d    = Vec3.dot( swing, this.swing );
+        const c    = Vec3.cross( swing, this.swing );
+        const rad  = Math.atan2( Vec3.len( c ), d ) * sign;
+
+        return ( !inDeg )? rad : rad * 180/Math.PI;
+    }
+
+    fromQuat( q ){
+        const fwd = new Vec3( [0,0,1] ).transformQuat( q );
+        const up  = new Vec3( [0,1,0] ).transformQuat( q );
+
+        // console.log( fwd, up );
+        this.set( fwd, up );
+        return this;
+    }
+
+    // getQuat(){ return new Quat().fromAxes( this.ortho, this.twist, this.swing ); }
+}
+
+
+class HingeLimit{
+    // #region MAIN
+    axes = new SwingTwist();
+    min  = 0;
+    max  = 0;
+    rad  = 0;
+    constructor( min=-45, max=45, swing=[0,0,1], twist=[0,1,0] ){
+        this.setRangeDeg( min, max );
+        this.axes.set( swing, twist );
+    }
+
+    setRangeDeg( min, max ){
+        this.min = min * Math.PI / 180;
+        this.max = max * Math.PI / 180;
+        return this;
+    }
+    // #endregion
+
+    applyTo( rot ){
+        const org = [0,0,0];
+        const vv  = new Vec3();
+        // debugQuat( rot );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Align twist vector        
+        const q         = new Quat( rot );
+        // const v         = new Vec3().fromQuat( q, this.axes.twist );
+        const v         = new Vec3().fromQuat( q, [0,1,0] );
+        const tEpsilon  = 0.99999;
+        let isTwistOk   = true;
+
+        // Debug.ln.add( org, vv.fromScale( v, 1.5 ), 0x00ffff );
+        // console.log( 'DOT', Vec3.dot( v, this.axes.twist ) );
+
+        if( Vec3.dot( v, this.axes.twist ) < tEpsilon ){
+            // console.log( 'Need to align twist vector' );
+            q.pmul( new Quat().fromSwing( v, this.axes.twist ) );
+            isTwistOk = false;
+            // debugQuat( q, [0,0,0], 1, 1.5 );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Test if twist is within range
+        // v.fromQuat( q, this.axes.swing );            // Compute swing direction from input rotation
+        v.fromQuat( q, [0,0,1] );                       // Compute swing direction from input rotation
+        v.fromPlaneSnap( v, this.axes.twist ).norm();   // Project point onto twist plane incase there was no twist alignment.
+
+        this.rad = this.axes.angle( v );
+        const inRange = Radian.isBetween( this.min, this.max, this.rad );
+
+        // Debug.ln.add( org, this.axes.swing, 0xffffff );
+        // console.log( this.rad, Radian.deg( this.rad ), inRange );
+        
+        // Exit early if there is no need to modify the quaternion
+        if( inRange && isTwistOk ){
+            // console.log( 'Quaternion is good' );
+            return rot;
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Create clamped quaternion
+        if( !inRange ){
+            this.rad = Radian.clamp( this.min, this.max, this.rad );
+            // console.log( 'clamped', this.rad, Radian.deg( this.rad ) );
+            q.fromAxes( this.axes.ortho, this.axes.twist, this.axes.swing ); // Build Neutral Quaternion
+            q.pmulAxisAngle( this.axes.twist, this.rad );                    // Rotate it to is min/max
+        }
+
+        // v.fromQuat( q, this.axes.swing );
+        // Debug.ln.add( org, v, 0xffff00 );
+
+        q.copyTo( rot );
+        return rot;
+    }
+}
+
+
+class Degree{
+
+    static norm( a ){
+        const x = a % 360;
+        if( x > 180 )  return x - 360;
+        if( x < -180 ) return x + 360;
+        return x;
+    }
+
+    static rad( a ){ return a * Math.PI / 180; }
+
+    static isBetween( dMin, dMax, d ){
+        const nMin = this.norm( dMin );
+        const nMax = this.norm( dMax );
+        const nD   = this.norm( d );
+
+        if( nMin < nMax ) return ( nD >= nMin ) && ( nD <= nMax );
+
+        // Crosses -180/180 boundary like 170 to -170
+        return ( nD >= nMin && nD <= 180 ) ||
+            ( nD >= -180 && nD <= nMax );
+    }
+
+    // Total Arc Angle & Starting Offset angle to visualize min & max
+    static arcAndOffset( dMin, dMax ){ // : [ arc, offset ]
+        const nMin = this.norm( dMin );
+        const nMax = this.norm( dMax );
+        
+        if( nMin <= nMax ) return [ ( nMax - nMin ), nMin ];
+        
+        // Crosses -180/180 boundary like 170 to -170
+        return [ (( 180 - nMin ) + ( nMax - (-180) )) , nMin ];
+    }
+
+    // Helper function to find the shortest angular distance
+    static angleDist(a1, a2) {
+        const diff = Math.abs( this.norm(a1) - this.norm(a2) );
+        return Math.min(diff, 360 - diff);
+    }
+
+    static clamp( dMin, dMax, d ){
+        const nMin = this.norm( dMin );
+        const nMax = this.norm( dMax );
+        const nD   = this.norm( d );
+
+        if( this.isBetween( nMin, nMax, nD ) ) return nD;
+
+        // Calculate the distance to both min and max angles and return the closer one.
+        const distToMin = this.angleDist( nD, nMin );
+        const distToMax = this.angleDist( nD, nMax );
+
+        return distToMin < distToMax ? nMin : nMax;
+    }
+
+}
+
+const TAU = Math.PI * 2;
+class Radian{
+
+    static deg( a ){ return a * 180 / Math.PI; }
+
+    static norm( a ){
+        const x = a % TAU;
+        if( x > Math.PI )  return x - TAU;
+        if( x < -Math.PI ) return x + TAU;
+        return x;
+    }
+
+    static isBetween( dMin, dMax, d ){
+        const nMin = this.norm( dMin );
+        const nMax = this.norm( dMax );
+        const nD   = this.norm( d );
+
+        if( nMin < nMax ) return ( nD >= nMin ) && ( nD <= nMax );
+
+        // Crosses -180/180 boundary like 170 to -170
+        return ( nD >= nMin && nD <= Math.PI ) ||
+            ( nD >= -Math.PI && nD <= nMax );
+    }
+
+    // Total Arc Angle & Starting Offset angle to visualize min & max
+    static arcAndOffset( dMin, dMax ){ // : [ arc, offset ]
+        const nMin = this.norm( dMin );
+        const nMax = this.norm( dMax );
+        
+        if( nMin <= nMax ) return [ ( nMax - nMin ), nMin ];
+        
+        // Crosses -180/180 boundary like 170 to -170
+        return [ (( Math.PI - nMin ) + ( nMax - (-Math.PI) )) , nMin ];
+    }
+
+        // Helper function to find the shortest angular distance
+    static angleDist(a1, a2) {
+        const diff = Math.abs( this.norm(a1) - this.norm(a2) );
+        return Math.min(diff, TAU - diff);
+    }
+
+    static clamp( dMin, dMax, d ){
+        const nMin = this.norm( dMin );
+        const nMax = this.norm( dMax );
+        const nD   = this.norm( d );
+
+        if( this.isBetween( nMin, nMax, nD ) ) return nD;
+
+        // Calculate the distance to both min and max angles and return the closer one.
+        const distToMin = this.angleDist( nD, nMin );
+        const distToMax = this.angleDist( nD, nMax );
+
+        return distToMin < distToMax ? nMin : nMax;
+    }
+
+}
+
+// float a0 = mod( -radOffset, TAU );
+// float a1 = mod( -radOffset + radArc, TAU );
+
+// maskArc = sdArc2( uvn, radOffset, radOffset + radArc, 0.80 );
+// maskArc = sdArc2( uvn, -0.1, PI, 0.80 );
+// maskArc = sdArc2( uvn, a0, a1, 0.80 );
+
+</script></body></html>
