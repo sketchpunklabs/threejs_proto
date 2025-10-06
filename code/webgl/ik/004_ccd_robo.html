@@ -1,0 +1,917 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import { GLTFLoader } from 'three/GLTFLoader.js';
+import { traverseFind, firstFind, cloneSkeleton }  from '@lib/util.js';
+import useTransformControl from '@lib/useTransformControl.js';
+import AngelViewMaterial from '@lib/shader/AngleView2Material.js';
+
+import Radian from '@lib/maths/Radian.js';
+import Vec3   from '@lib/maths/Vec3.js';
+import Quat   from '@lib/maths/Quat.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    gizmo : useTransformControl( App ).useAxes(),
+    views : [],
+};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 20, 5, [0,1.0,0] );
+    Debug = await useVisualDebug( App );
+
+    Ref.gizmo.setPos( [-0.5,1.6,0.9] )//.hide();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // LOAD MODEL
+    const tf = await new GLTFLoader().loadAsync( '../../../res/models/kuma_r9k/kuma_r9k.gltf' );
+    // const o  = 
+    // console.log( tf.scene.children[0] );
+    let mesh = firstFind( tf.scene, o=> (o.type === 'SkinnedMesh') );
+    let skel = mesh.skeleton
+    // for( const m of traverseFind( tf.scene, o=> (o.type === 'SkinnedMesh') ) ){
+    //     if( !mesh ) mesh = m;
+    //     if( !skel ) skel = m.skeleton;
+    // }
+    
+    mesh.parent.rotation.x = Math.PI; // Flip model
+    Ref.tpose = cloneSkeleton( skel );
+    Ref.pose  = skel;
+
+    App.scene.add( mesh.parent );
+    App.scene.add( new THREE.SkeletonHelper( skel.bones[0] ) ); // App.scene.add( skel.bones[0] );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // SETUP IK CHAIN
+
+    const ik = new IKSet( skel, {
+        // joint_names  : [ 'Base', 'Shoulder', 'Core', 'Core001', 'Motor', 'ArmLong', 'ArmLong_2', 'ArmShort', 'ArmShorter', 'ArmShortest', 'ArmShortest_end' ],
+        joint_names  : [ 'Shoulder', 'Core', 'Motor', 'ArmLong', 'ArmShort', 'ArmShorter', 'ArmShortest', 'ArmShortest_end' ],
+
+        solver       : { type:'ccd', props:{ iterLimit: 1, eps:0.1 } },
+        swing_twist  : {
+            from_points : true,
+            // swing_dir : [1,0,0], 
+            twist_dir : [0,1,0],
+            // items    : [ { swing_dir: [1,0,0], twist_dir:[0,1,0] } ],
+        },
+
+        constraints : [
+            { type:'hinge', swing_dir:[1,0,0], twist_dir:[0,1,0], range:[ -180, 180 ] },
+            { type:'hinge', swing_dir:[1,0,0], twist_dir:[0,0,1], range:[ -40, 180 ] },
+            { type:'hinge', swing_dir:[1,0,0], twist_dir:[0,1,0], range:[ -160, 160 ] },
+            { type:'hinge', swing_dir:[-1,0,0], twist_dir:[0,0,1], range:[ -140, 140 ] },
+            { type:'hinge', swing_dir:[-1,0,0], twist_dir:[0,0,1], range:[ -120, 120 ] },
+            { type:'hinge', swing_dir:[-1,0,0], twist_dir:[0,0,1], range:[ -150, 150 ] },
+            { type:'hinge', swing_dir:[-1,0,0], twist_dir:[0,0,1], range:[ -100, 100 ] },
+            null,
+        ]
+    } );
+
+    Ref.ik = ik;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // TESTING
+
+    // Ref.gizmo.setPos( [1.5, 1, 0]  );
+     
+    // setInterval( ()=>{
+        // ik.target.setPos( Ref.gizmo.getPos() );
+        // ik.updatePose( Ref.tpose, skel );
+        // renderHingeLimits();
+    // }, 500 );
+
+    Ref.fixed = new FixedFrame( 30, onFixedFrame );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // READY
+    App.createRenderLoop( onPreRender ).start(); // App.renderLoop();
+    appendGithubLink( false );
+});
+
+// Ref.gizmo.onStart = ()=>{ console.log( 'GIZMO START' ) };
+// Ref.gizmo.onStop = ()=>{ console.log( 'GIZMO STOP' ) };
+// Ref.gizmo.onMove = p=>{ console.log( p ) };
+
+function onPreRender( dt, et, ts ){
+    Ref.fixed?.update( ts );
+}
+
+function onFixedFrame( ts ){
+    Debug.reset();
+    
+    Ref.ik.target.setPos( Ref.gizmo.getPos() ); // Set IK Target
+    Ref.ik.updatePose( Ref.tpose, Ref.pose );   // Run Solver
+    
+    renderHingeLimits();                        // Visualize Constraint Limits
+}
+// #endregion
+
+// #region DEBUGGING
+
+function debugQuat( q, pos=[0,0,0], c=0, scl=1 ){
+    const v    = new Vec3();
+    const axes = [ [1,0,0], [0,1,0], [0,0,1] ];
+    const cols = ( c === 0 )
+        ? [ 0xff0000, 0x00ff00, 0x0000ff ]
+        : [ 0xff00ff, 0xffff00, 0x00ffff ];
+
+    for( let i=0; i < 3; i++ ){
+        v.fromQuat( q, axes[i] ).scale( scl ).add( pos );
+        Debug.ln.add( pos, v, cols[i] );
+    }
+}
+
+function renderHingeLimits(){
+    const swing = new Vec3();
+    const twist = new Vec3();
+    const pos   = new Vec3();
+    const rot   = new Quat();
+
+    const ik    = Ref.ik;
+    const tbone = Ref.tpose.bones;
+    const pbone = Ref.pose.bones;
+
+    let j = 0;
+    let view, b, lmt;
+
+    for( const [ i, lnk ] of ik.chain.links.entries() ){
+        if( lnk.limits.length !== 1 ) continue;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        view = Ref.views[ j ]; 
+        if( !view ){
+            view = AngelViewMaterial.createMesh( { scl:0.3, debug:true } );
+            Ref.views[ j ] = view;
+            App.scene.add( view );
+        }
+
+        lmt = lnk.limits[ 0 ];
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // view.scale.setScalar( 3 );
+        view.material.setRange( lmt.min, lmt.max );
+        view.material.setRadLine( lmt.rad );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Set position
+        getWPos( pbone[ lnk.index ], pos );
+        view.position.fromArray( pos );
+        
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Set rotationn
+        getWRot( pbone[ lnk.pindex ], rot );
+        rot.mul( tbone[ lnk.index ].quaternion.toArray() );
+
+        swing.fromQuat( rot, lmt.axes.swing );
+        twist.fromQuat( rot, lmt.axes.twist );
+        rot.fromLook( twist, swing );
+        view.quaternion.fromArray( rot );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        j++;
+    }
+}
+
+// #endregion
+
+// #region IK BITS
+
+class IKLink{
+    name   = '';
+    index  = -1;
+    pindex = -1;
+    len    = 0;
+
+    swing  = new Vec3( [0,1,0] );
+    twist  = new Vec3( [0,0,1] );
+    ortho  = new Vec3( [-1,0,0] );
+
+    limits = [];
+
+    constructor(){}
+
+    // q is WorldSpace rotation, function will invert it to compute inv direction
+    setDir( q, swing=[0,1,0], twist=[0,0,1] ){
+        const inv = new Quat( q ).invert();
+        this.swing.fromQuat( inv, swing ).norm();
+        this.twist.fromQuat( inv, twist ).norm();
+        this.ortho.fromCross( this.twist, this.swing ).norm();
+        return this;
+    }
+
+    static fromName( name, pose, swing=[0,1,0], twist=[0,0,1] ){
+        const lnk = new IKLink();
+        lnk.index = pose.bones.findIndex( o=>o.name === name );
+        lnk.name  = name;
+
+        const b = pose.bones[ lnk.index ];
+        if( b.parent.isBone ) lnk.pindex = pose.bones.indexOf( b.parent );
+
+        const q = getWRot( b );
+        lnk.setDir( q, swing, twist );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // DEBUG
+        // const vv = getWPos( b );
+        // Debug.pnt.add( vv, 0x00ff00, 2 );
+        // Debug.ln.add( vv, v.fromScale( swing, 0.7 ).add(vv), 0x00ffff );
+        // Debug.ln.add( vv, v.fromScale( twist, 0.7 ).add(vv), 0xffff00 );
+        
+        return lnk;
+    }
+}
+
+class IKChain{
+    links = [];
+    len   = 0;
+    constructor(){}
+
+    addLink( lnk ){ this.links.push( lnk ); return this; }
+
+    setBones( bName, tpose, swing, twist ){
+        for( const [i,name] of bName.entries() ){
+            this.links.push( IKLink.fromName( name, tpose, swing, twist ) );
+        }
+
+        this.computeLengths( tpose );
+        return this;
+    }
+
+    compouteSwingTwistPoints( pose, twistDir=[0,1,0] ){
+        const va = new THREE.Vector3();
+        const vb = new THREE.Vector3();
+        const tq = new THREE.Quaternion(); 
+        const v  = new Vec3();
+        let la, lb;
+        let ja, jb;
+        let axes;
+
+        for( let i=1; i < this.links.length; i++ ){
+            // Get Links & Joints
+            la = this.links[ i-1 ];
+            lb = this.links[ i ];
+            ja = pose.bones[ la.index ];
+            jb = pose.bones[ lb.index ];
+            
+            // Get worldspace position & rotation
+            ja.getWorldPosition( va );
+            jb.getWorldPosition( vb );
+            ja.getWorldQuaternion( tq );
+
+            // Compute swing / twist direction
+            v.fromSub( vb.toArray(), va.toArray() ).norm();
+            axes = Vec3.look( v, twistDir );
+            
+            la.setDir( tq.toArray(), axes[2], axes[1] );
+
+            // Debug.ln.add( va.toArray(), v.fromScale( axes[2], 0.15 ).add( va.toArray() ), 0x00ff00 );
+            // Debug.ln.add( va.toArray(), v.fromScale( axes[1], 0.15 ).add( va.toArray() ), 0x00ffff );
+            // Debug.pnt.add( va.toArray(), 0x00ff00, 2 );
+        }
+
+        // Last axes gets passed to the leaf joint
+        jb.getWorldQuaternion( tq );
+        lb.setDir( tq.toArray(), axes[2], axes[1] );
+
+        // Debug.pnt.add( vb.toArray(), 0x00ff00, 2 );
+        // Debug.ln.add( vb.toArray(), v.fromScale( axes[2], 0.15 ).add( vb.toArray() ), 0x00ff00 );
+        // Debug.ln.add( vb.toArray(), v.fromScale( axes[1], 0.15 ).add( vb.toArray() ), 0x00ffff );
+    }
+
+    computeLengths( pose ){
+        const v = new THREE.Vector3();
+
+        let l;
+        let c;
+        let p = pose.bones[ this.links[0].index ]
+            .getWorldPosition( v )
+            .toArray();
+
+        for( let i=1; i < this.links.length; i++ ){
+            c = pose.bones[ this.links[i].index ]
+                .getWorldPosition( v )
+                .toArray();
+
+            l                   = Vec3.dist( c, p );
+            this.len           += i;
+            this.links[i-1].len = l; 
+            p                   = c;
+        }
+
+        return this;
+    }
+
+    resetPose( tpose, pose, i, ii ){
+        let lnk, t, p;
+        for( let j=i; j <= ii; j++ ){
+            lnk = this.links[ j ];
+            t   = tpose.bones[ lnk.index ];
+            p   = pose.bones[ lnk.index ];
+
+            p.quaternion.copy( t.quaternion );
+        }
+        return this;
+    }
+
+    getEffectorPos( pose ){
+        const v3 = new THREE.Vector3();
+        const b  = pose.bones[ this.effectIdx ];
+        return b.getWorldPosition( v3 ).toArray();
+    }
+
+    get parentIdx(){ return this.links[0].pindex; }
+    get rootIdx(){ return this.links[0].index; }
+    get effectIdx(){ return this.links.at(-1).index; }
+}
+
+class IKTarget{
+    // #region MAIN
+    sMode  = 0; // Swing Mode
+    tMode  = 0; // Twist Mode
+
+    origin = new Vec3();    // Origin point for target
+    pos    = new Vec3();    // Target Point
+    dist   = 0;
+
+    swing  = new Vec3();    // Direction torward target
+    twist  = new Vec3();    // Direction of the twist
+    ortho  = new Vec3();    // Ortho of Swing & Twist
+
+    pRot   = new Quat();
+    rRot   = new Quat();
+
+    constructor(){}
+    // #endregion
+
+    // #region SETTER
+    setPos( v ){ this.pos.copy( v  ); this.sMode=0; return this; }
+
+    setDir( v, dist=1 ){ this.swing.copy(v).norm(); this.dist = dist; this.sMode=1; return this; }
+
+    setPoleDir( v ){ this.twist.copy( v ).norm(); return this; }
+    // #endregion
+
+    // #region METHODS
+    resolve( chain, tpose, pose ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Get origin data
+        const v3 = new THREE.Vector3();
+        const q3 = new THREE.Quaternion();
+        let i;
+        let b;
+        
+        // Get the Worldspace position of the chain's root
+        b = pose.bones[ chain.rootIdx ];
+        b.getWorldPosition( v3 );
+        this.origin.copy( v3.toArray() );
+
+        // Get parent rotation of the root in the current pose
+        i = chain.parentIdx;
+        if( i >= 0 ){
+            b = pose.bones[ i ];
+            this.pRot.copy( b.getWorldQuaternion( q3 ).toArray() );
+        }else if( pose.bones[0].parent ){
+            this.pRot.copy( pose.bones[0].parent.getWorldQuaternion( q3 ).toArray() );
+        }else{
+            this.pRot.copy( [0,0,0,1] );
+        }
+        
+        // Move the tpose local rotation to world space
+        b = tpose.bones[ chain.rootIdx ];
+        this.rRot.copy( b.quaternion.toArray() ).pmul( this.pRot );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Setup Target Position / Swing Direction
+        if( this.sMode === 0 ){
+            // From Position
+            this.swing.fromSub( this.pos, this.origin );
+            this.dist = this.swing.len;
+            this.swing.norm();
+        }else{
+            // From Direction
+            this.pos
+                .fromScale( this.swing, this.dist )
+                .add( this.origin );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Make directions orthogonal
+        const axes = Vec3.look( this.swing, this.twist );
+        this.swing.copy( axes[2] );
+        this.twist.copy( axes[1] );
+        this.ortho.copy( axes[0] );
+    }
+    // #endregion
+}
+
+class IKSet{
+    // #region MAIN
+    solver      = null;
+    chain       = new IKChain();
+    target      = new IKTarget();
+    limits      = [];
+
+    constructor( pose, config ){
+        this.autoConfig( pose, config );
+    }
+
+    autoConfig( pose, config ){
+        const st     = config.swing_twist;
+        const stMax  = st.items? st.items.length - 1 : -1;
+        let swingDir = ( st.from_points )? st.swing_dir : undefined;
+        let twistDir = ( st.from_points )? st.twist_dir : undefined;
+        let sti;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        for( const [i,jn] of config.joint_names.entries() ){
+            // ---------------------------------
+            // Swing Twist Direction Parsing
+            // Allow setting all links with the same set or set up each one differently
+            sti = Math.min( i, stMax );
+            if( sti > -1 ) ({ swingDir, twistDir } = config.swing_twist[ sti ]);
+
+            // ---------------------------------
+            // Create Links
+            this.chain.addLink( IKLink.fromName( jn, pose, swingDir, twistDir ) );
+        }
+
+        this.chain.computeLengths( pose );
+        
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Niche Usecase - Compute swing direction from parent to child link
+        // position for each link.
+        if( st.from_points ){
+            this.chain.compouteSwingTwistPoints( pose, st.twist_dir || [0,1,0] );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Configure IK Solver
+        this.solver = new SOLVERS[ config.solver.type ]( config.solver.props );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if( config.constraints ){
+            let lnk, lmt;
+            for( const [i,c] of config.constraints.entries() ){
+                if( !c ) continue;
+                lnk = this.chain.links[i]
+                lmt = CONSTRAINTS[ c.type ].fromName( lnk.name, pose, c );
+                lnk.limits.push( lmt );
+            }
+        }
+    }
+    // #endregion
+
+    updatePose( tpose, pose ){
+        this.target.resolve( this.chain, tpose, pose );
+        this.solver.resolve( this, tpose, pose );
+        // Debug.pnt.add( this.target.pos, 0x00ff00, 1 );
+        // Debug.pnt.add( this.target.origin, 0xff0000, 1 );
+    }
+}
+
+function getWPos( o, v=null ){
+    const v3 = new THREE.Vector3();
+    o.getWorldPosition( v3 );
+
+    if( v ){
+        v[0] = v3.x;
+        v[1] = v3.y;
+        v[2] = v3.z;
+        return v;
+    }
+    
+    return v3.toArray();
+}
+
+function getWRot( o, v=null ){
+    const q = new THREE.Quaternion();
+    o.getWorldQuaternion( q );
+
+    if( v ){
+        v[0] = q.x;
+        v[1] = q.y;
+        v[2] = q.z;
+        v[3] = q.w;
+        return v;
+    }
+    
+    return q.toArray();
+}
+
+// #endregion
+
+// #region SOLVER
+
+class NaturalCCD{
+    iterLimit = 1;  // How many interations to perform
+    eps       = 1;  // Target Range limit to end iterations sooner
+
+    constructor( props={} ){
+        const opt = {
+            iterLimit : 10,
+            eps       : 0.001,
+            ...props,
+        };
+
+        this.iterLimit = opt.iterLimit;
+        this.eps       = opt.eps;
+    }
+
+    // Execute Solver
+    resolve( ik, tpose, pose ){
+        for( let iter = 0; iter < this.iterLimit; iter++ ){   
+            // console.log( iter );
+            if( this.iteration( ik, tpose, pose ) ) break;            
+        }
+    }
+
+    // Single Iteration of CCD algorithm
+    iteration( ik, tpose, pose ){
+        const jEff   = pose.bones[ ik.chain.links.at(-1).index ];  // Effector Joint
+        const tv     = new THREE.Vector3();
+        const tq     = new THREE.Quaternion();
+        
+        const effPos = new Vec3();  // Effector Pos
+        const lnkPos = new Vec3();  // Link / Joint Pos
+        const toEff  = new Vec3();  // Joint to Effector direction
+        const toTar  = new Vec3();  // Joint to Target direction
+        const q      = new Quat();  // Working rotation
+        let j;
+        let jp;
+        let lnk;
+
+        let t  = new Vec3(); // for debugging
+        let tt = new Vec3(); // for debugging
+        
+        for( let i = ik.chain.links.length-2; i >= 0; i-- ){
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Test if effector is in range of target
+            effPos.copyObj( jEff.getWorldPosition( tv ) );
+
+            // console.log( Vec3.distSqr( ik.target.pos, effPos ),  this.eps );
+            if( Vec3.dist( ik.target.pos, effPos ) <= this.eps ) return true;
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Get the joint's ws position & parent reference for localspace transform
+            lnk = ik.chain.links[ i ];
+            
+            j   = pose.bones[ lnk.index ];      // Joint/Bone
+            jp  = ( lnk.pindex !== -1 )
+                    ? pose.bones[ lnk.pindex ]  
+                    : pose.bones[ 0 ].parent;
+
+            lnkPos.copyObj( j.getWorldPosition( tv ) );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Compute swing rotation to make the effector point
+            // as close to the target as possible
+            toTar.fromSub( ik.target.pos, lnkPos ).norm();
+            toEff.fromSub( effPos, lnkPos ).norm();
+
+            // Debug.ln.add( lnkPos, tt.fromScale( toEff, 0.5 ).add( lnkPos ), 0x00ff00 );
+            // Debug.ln.add( lnkPos, tt.fromScale( toTar, 0.5 ).add( lnkPos ), 0x00ffff );
+
+            // TODO - Add K Factor to upgrade from CCD to NaturalCCD
+
+            j.getWorldQuaternion( tq );     // Get Current World Rot
+            q   .fromSwing( toEff, toTar )  // Create & Apply Swing Rotation
+                .mul( tq.toArray() );
+                
+            // q.copy( tq.toArray() );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Apply all available constraints on ws rotation of joint
+            if( lnk.limits.length ){
+                for( const lmt of lnk.limits ) lmt.applyFromPose( q, lnk, tpose, pose, i );
+            }
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            jp.getWorldQuaternion( tq );    // Get Parent's Worldspace Rot
+            q.pmulInvert( tq.toArray() );   // Move to local psace
+            j.quaternion.fromArray( q );    // Save to joint
+        }
+
+        return false;
+    }
+}
+
+const SOLVERS = {
+    ccd: NaturalCCD,
+}
+
+// #endregion
+
+// #region CONSTRAINT
+
+// Manage the Inverse Vectors when locking quaternion orientation 
+class SwingTwist{
+    // #region MAIN
+    swing = new Vec3(0,0,1);
+    twist = new Vec3(0,1,0);
+    ortho = new Vec3(1,0,0);
+    // #endregion
+
+    set( fwd, up ){
+        this.swing.copy( fwd ).norm();
+        this.twist.copy( up ).norm();
+        this.ortho.fromCross( this.twist, this.swing ).norm();
+
+        // FWD & UP are parallel
+        if( this.ortho.lenSqr === 0 ){
+            if( Math.abs( up[2] ) === 1 ) this.swing[0] += 0.0001;  // shift x when Fwd or Bak
+            else                          this.swing[2] += 0.0001;  // shift z
+
+            this.swing.norm();                                      // ReNormalize
+            this.ortho.fromCross( this.twist, this.swing ).norm();  // Redo Right
+        }
+
+        this.twist.fromCross( this.swing, this.ortho ).norm();      // Realign Up
+        return this;
+    }
+
+    angle( swing, inDeg=false ){
+        const sign = Math.sign( Vec3.dot( swing, this.ortho ) );
+        const d    = Vec3.dot( swing, this.swing );
+        const c    = Vec3.cross( swing, this.swing );
+        const rad  = Math.atan2( Vec3.len( c ), d ) * sign;
+
+        return ( !inDeg )? rad : rad * 180/Math.PI;
+    }
+
+    fromQuat( q, swing=[0,0,1], twist=[0,1,0] ){
+        const fwd = new Vec3( swing ).transformQuat( q );
+        const up  = new Vec3( twist ).transformQuat( q );
+        this.set( fwd, up );
+
+        // const qi = new Quat().fromInvert( q );
+        // const v  = new Vec3( this.twist ).transformQuat( qi );
+        // Debug.ln.add( [0,0,0], v, 0x00ff00 );
+        return this;
+    }
+
+    // getQuat(){ return new Quat().fromAxes( this.ortho, this.twist, this.swing ); }
+}
+
+class HingeLimit{
+    // #region MAIN
+    axes = new SwingTwist();
+    min  = 0;   // Min rotation angle in radians
+    max  = 0;   // Max rotation angle in radians
+    rad  = 0;   // Angle rotation of last execution, accessable for debugging or visualization
+    constructor( props={} ){
+        const opts = {
+            range       : [-45,45], // Range limit in Degrees
+            swing_dir   : null,     // Forward direction to define neutral rotation vector
+            twist_dir   : null,     // Up Direction to define rotational axis of hinge
+            worldRot    : null,     // Worldspace rotation of join to lock orientation on
+            ...props,
+        };
+
+        if( opts.range ) this.setRangeDeg( opts.range[0], opts.range[1] );
+        if( opts.swing && opts.twist ) this.setSwingTwist( opts.swing_dir, opts.twist_dir, opts.worldRot );
+    }
+    // #endregion
+
+    // #region SETTERS
+    setRangeDeg( min, max ){
+        this.min = min * Math.PI / 180;
+        this.max = max * Math.PI / 180;
+        return this;
+    }
+
+    setSwingTwist( swing, twist, q=null ){
+        if( q ) this.axes.fromQuat( q, swing, twist );
+        else    this.axes.set( swing, twist );
+    }
+    // #endregion
+
+    // #region METHODS
+
+    // Method used by solver to reorient & clamp quaternion
+    applyFromPose( rot, lnk, tpose, pose, idx ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const pwRot = getWRot( pose.bones[ lnk.pindex ], new Quat() );  // Parent World Rotation
+        const lRot  = new Quat()
+            .copyObj( tpose.bones[ lnk.index ].quaternion );    // Bind Local Rotation
+        const cwRot = new Quat().fromMul( pwRot, lRot );        // Neutral World Rotation
+        const wrot  = new Quat( rot );                          // Working Rotation
+        const q     = new Quat();
+
+        // Debugging VARs
+        const vv = new Vec3();
+        const p = getWPos( pose.bones[ lnk.index ] );
+        // Debug.pnt.add( p, 0x00ff00, 3 );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Align twist vector
+        const tEpsilon  = 0.99999;
+        const tDir      = new Vec3().fromQuat( cwRot, this.axes.twist ); // Neutral Twist Vector
+        const v         = new Vec3().fromQuat( rot, this.axes.twist );   // Current Twist Vector
+        let isTwistOk   = true;
+
+        // console.log( cwRot, dir,  vv.fromAdd( p, dir ) );
+        // Debug.ln.add( p, vv.fromAdd( p, tDir ), 0x00ffff ); // Neutral Twist Cyan
+        // Debug.ln.add( p, vv.fromAdd( p, v ), 0xffff00 );    // Current Twist Yellow
+
+        if( Vec3.dot( tDir, v ) < tEpsilon ){
+            // console.log( 'Need to align twist vector' );
+            q.fromSwing( v, tDir );  // Swing from current to neutral twist vector
+            q.dotNegate( wrot );
+            wrot.pmul( q );          // Apply to align current world rotation
+            // wrot.norm();
+            isTwistOk = false;
+            // debugQuat( q, [0,0,0], 1, 1.5 );
+        }
+
+        // wrot.copyTo( rot );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Test if twist angle is within range
+        const oDir = new Vec3().fromQuat( cwRot, this.axes.ortho ); // Neutral Ortho Vector
+        const sDir = new Vec3().fromQuat( cwRot, this.axes.swing ); // Neutral Swing Vector
+        v.fromQuat( wrot, this.axes.swing );                        // Current Swing Vector
+        v.fromPlaneSnap( v, tDir ).norm();                          // Project point onto twist plane incase there was no twist alignment.
+
+        // Debug.ln.add( p, vv.fromScaleThenAdd( 0.3, sDir, p ), 0x00ffff );  // Neutral Swing Cyan
+        // Debug.ln.add( p, vv.fromScaleThenAdd( 0.3, v, p ), 0xffff00 );     // Current Swing Yellow
+        // Debug.ln.add( p, vv.fromScaleThenAdd( 0.3, oDir, p ), 0xffffff );  // Neutral Ortho White
+        // Debug.ln.add( p, vv.fromScaleThenAdd( 0.3, tDir, p ), 0xff00ff );  // Neutral Twist Purple
+
+        // Compute angle between neutral & current swing vectors
+        const sign = Math.sign( Vec3.dot( v, oDir ) );
+        const d    = Vec3.dot( v, sDir );
+        const c    = Vec3.cross( v, sDir );
+        this.rad   = Math.atan2( Vec3.len( c ), d ) * sign;
+
+        // console.log( idx, this.rad * ( 180 / Math.PI ) );
+
+        const inRange = Radian.isBetween( this.min, this.max, this.rad );
+        
+        // console.log( inRange, this.rad * 180 / Math.PI );
+        // Debug.ln.add( org, this.axes.swing, 0xffffff );
+        // console.log( this.rad, Radian.deg( this.rad ), inRange );
+        
+        // Exit early if there is no need to modify the quaternion
+        if( inRange && isTwistOk ){
+            // console.log( 'Quaternion is good' );
+            return rot;
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Create clamped quaternion
+        if( !inRange ){
+            this.rad = Radian.clamp( this.min, this.max, this.rad );
+            // console.log( 'clamped', this.rad, Radian.deg( this.rad ) );
+            // wrot.fromAxes( oDir, tDir, sDir );      // Build Neutral Quaternion
+            // wrot.pmulAxisAngle( tDir, this.rad );   // Rotate it to is min/max
+            
+            wrot.fromAxisAngle( tDir, this.rad )    // Rotate to min or max
+                .dotNegate( cwRot )
+                .mul( cwRot )                       // Apply it to neutral world rotation   
+                .norm();
+        }
+
+        // v.fromQuat( wrot, this.axes.swing );
+        // Debug.ln.add( p, vv.fromAdd( p, v ), 0xff00ff );
+
+        wrot.copyTo( rot );
+        return rot;
+    }
+
+    // PROTOTYPE FUNCTION, NOT USED BY SOLVER
+    applyTo( rot ){
+        const org = [0,0,0];
+        const vv  = new Vec3();
+        // debugQuat( rot );
+
+        console.log( 'HingeLimit')
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Align twist vector        
+        const q         = new Quat( rot );
+        // const v         = new Vec3().fromQuat( q, this.axes.twist );
+        const v         = new Vec3().fromQuat( q, [0,1,0] );
+        const tEpsilon  = 0.99999;
+        let isTwistOk   = true;
+
+        // Debug.ln.add( org, vv.fromScale( v, 1.5 ), 0x00ffff );
+        // console.log( 'DOT', Vec3.dot( v, this.axes.twist ) );
+
+        // TODO GOTTA FIX ALIGNMENT
+        // - Get twist vector from unmodified joint
+        // - Get twist vector from current joint
+        // - Compare & realign
+
+        if( Vec3.dot( v, this.axes.twist ) < tEpsilon ){
+            console.log( 'Need to align twist vector' );
+            q.pmul( new Quat().fromSwing( v, this.axes.twist ) );
+            isTwistOk = false;
+            debugQuat( q, [0,0,0], 1, 1.5 );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Test if twist is within range
+        // v.fromQuat( q, this.axes.swing );            // Compute swing direction from input rotation
+        v.fromQuat( q, [0,0,1] );                       // Compute swing direction from input rotation
+        v.fromPlaneSnap( v, this.axes.twist ).norm();   // Project point onto twist plane incase there was no twist alignment.
+
+        this.rad = this.axes.angle( v );
+        const inRange = Radian.isBetween( this.min, this.max, this.rad );
+
+        // Debug.ln.add( org, this.axes.swing, 0xffffff );
+        // console.log( this.rad, Radian.deg( this.rad ), inRange );
+        
+        // Exit early if there is no need to modify the quaternion
+        if( inRange && isTwistOk ){
+            console.log( 'Quaternion is good' );
+            return rot;
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Create clamped quaternion
+        if( !inRange ){
+            this.rad = Radian.clamp( this.min, this.max, this.rad );
+            console.log( 'clamped', this.rad, Radian.deg( this.rad ) );
+            q.fromAxes( this.axes.ortho, this.axes.twist, this.axes.swing ); // Build Neutral Quaternion
+            q.pmulAxisAngle( this.axes.twist, this.rad );                    // Rotate it to is min/max
+        }
+
+        // v.fromQuat( q, this.axes.swing );
+        // Debug.ln.add( org, v, 0xffff00 );
+
+        q.copyTo( rot );
+        return rot;
+    }
+    
+    // #endregion
+
+    // Static setup for Hinges
+    static fromName( name, pose, config={} ){
+        console.log( name );
+        const b     = pose.bones.find( o=>o.name === name );
+        const q     = getWRot( b, new Quat() ).invert();
+        const lmt   = new HingeLimit()
+
+        lmt.setRangeDeg( config.range[0], config.range[1] );
+        lmt.setSwingTwist( config.swing_dir, config.twist_dir, q );
+        return lmt;
+    }
+
+}
+
+const CONSTRAINTS = {
+    hinge: HingeLimit,
+}
+
+// #endregion
+
+// #region SUPPORT
+
+// Execute things on a fixed framerate, good to make physics predictable
+class FixedFrame{
+    #accumulate    = 0;
+    #timeStep      = 1000;  // millisecond step
+    #maxTimeStep   = 2000;  // Clamp accumulator
+    #lastTimeStamp = 0;     // DOMHighResTimeStamp from requestAnimationFrame
+    #tStep         = 0;
+    onFixedFrame   = null;
+
+    constructor( fps=50, fn=null ){ 
+        this.#timeStep      = 1000 / fps;
+        this.#maxTimeStep   = this.#timeStep * 5;
+        this.onFixedFrame   = fn;
+    }
+
+    get timeStepSec(){ return this.#timeStep / 1000; }
+
+    update( ts ){
+        if( ts == null ) return;
+
+        // Compute Time
+        this.#accumulate   += ts - this.#lastTimeStamp;
+        this.#lastTimeStamp = ts;
+
+        // Clamp time
+        if( this.#accumulate >= this.#maxTimeStep ) this.#accumulate = this.#maxTimeStep;
+
+        // Execute how many steps needed
+        while( this.#accumulate >= this.#timeStep ){
+            if( this.onFixedFrame ) this.onFixedFrame( this.#timeStep / 1000 );
+            this.#accumulate -= this.#timeStep;
+        }
+
+        // Normalized time for interpolation
+        this.#tStep = Math.min( 1.0, this.#accumulate / this.#timeStep );
+    }
+}
+// #endregion
+
+</script></body></html>
