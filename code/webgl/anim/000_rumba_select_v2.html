@@ -18,7 +18,7 @@ let Debug = {};
 let Ref   = {
     dev     : false,
 
-    gizmo   : useTransformControl( App ).useAxes().toRotate().hide(),
+    gizmo   : useTransformControl( App ).useDetachless().toRotate().hide(),
 
     boneIdx : -1,
     pRotInv : [0,0,0,1],

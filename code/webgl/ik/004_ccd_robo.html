@@ -17,7 +17,7 @@ import Quat   from '@lib/maths/Quat.js';
 let App   = useDarkScene( useThreeWebGL2() );
 let Debug = {};
 let Ref   = {
-    gizmo : useTransformControl( App ).useAxes(),
+    gizmo : useTransformControl( App ).useDetachless(),
     views : [],
 };
 
@@ -504,6 +504,22 @@ function getWRot( o, v=null ){
     
     return q.toArray();
 }
+
+// iksetConfig = {
+//     joint_names  : [ 'a', 'b' ],
+//     solver       : { type:'ccd', props:{ iterLimit: 1, eps:0.1 } },
+//     swing_twist  : {
+//         from_points : true,      // Compute swing from Parent to Child Direction
+//         swing_dir   : [1,0,0],   // All bones use his swing direction
+//         twist_dir   : [0,1,0],   // All bones use this twist direction, can be used with from_points
+//         items       : [ { swing_dir: [1,0,0], twist_dir:[0,1,0] } ], //  Set individual swingTwist
+//     },
+
+//     constraints : [
+//         { type:'hinge', swing_dir:[1,0,0], twist_dir:[0,1,0], range:[ -180, 180 ] },
+//         null,
+//     ]
+// }
 
 // #endregion
 

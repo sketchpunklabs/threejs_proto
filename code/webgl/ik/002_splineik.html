@@ -1,0 +1,1467 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import { GLTFLoader }           from 'three/GLTFLoader.js';
+import ScreenPicker, { Tasker } from '@lib/misc/ScreenPicker.js';
+import HotKeys                  from '@lib/misc/HotKeys.js';
+import ShapeQuads               from '@lib/meshes/ShapeQuads.js';
+import DynLineMesh              from '@lib/meshes/DynLineMesh.js';
+import useTransformControl      from '@lib/useTransformControl.js';
+import * as util                from '@lib/util.js';
+ 
+import Vec3         from '@lib/maths/Vec3.js';
+import Quat         from '@lib/maths/Quat.js';
+import Transform    from '@lib/maths/Transform.js';
+import BezierCubicSpline    from '@lib/maths/curves/BezierCubicSpline.js';
+import DistSampler          from '@lib/maths/curves/util/DistSampler.js';
+import SplineSampler        from '@lib/maths/curves/util/SplineSampler.js';
+import RotMinFrame          from '@lib/maths/curves/util/RotMinFrame.js';
+// #endregion
+
+/*
+INSPIRATION
+- https://x.com/sttuuuufffff/status/1976389996849611257
+*/
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    gizmo   : useTransformControl( App ).useDetachless().setSize( 0.6 ).hide(),
+    tasks   : new Tasker(),
+    hotKeys : new HotKeys(),
+    shapes  : new ShapeQuads().forDebugging(),
+    lines   : new DynLineMesh().forDebugging(),
+
+    selIdx  : -1,
+    qInit   : new Quat(),
+};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 80, 2, [0,1.4,0] );
+    Debug       = await useVisualDebug( App );
+    Ref.picker  = new ScreenPicker( App );
+    App.scene.add( Ref.shapes, Ref.lines );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const skel = await loadCharacter( { url:'../../../res/models/luffy_proto/luffy_proto.gltf', mesh:true, tpose:true, skelHelper:false } );
+    Ref.tpose  = new Pose( skel ); 
+    Ref.pose   = Ref.tpose.clone();
+    Ref.skel   = skel;
+    Ref.bMap   = util.boneMap( skel );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Set up an IK Set
+    // for( let [i,b] of skel.bones.entries() ) console.log( i, b.name );
+    // const bm = Ref.bMap;
+    // Debug.pnt.add( bm.pos( 'Bip001_L_Clavicle' ), 0x00ffff, 1 );
+
+    // const jName = [ 'Bip001_LUpArmTwist', 'Bip001_LUpArmTwist1', 'Bone_L_hand01', 'Bone_L_hand02', 'Bone_L_hand03', 'Bone_L_hand04', 'Bone_L_hand05', 'Bone_L_hand06', 'Bone_L_hand07', 'Bone_L_hand08', 'Bone_Lhand' ];
+    const jName = [ 'Bip001_LUpArmTwist', 'Bone_L_hand064', 'Bone_L_hand01', 'Bone_L_hand02', 'Bone_L_hand03', 'Bone_L_hand04', 'Bone_L_hand05', 'Bone_L_hand06', 'Bone_L_hand07', 'Bone_L_hand08', 'Bone_Lhand' ];
+    const ik    = new IKSet( Ref.tpose, {
+        joint_names  : jName,
+        solver       : { type:'spline', props:{} },
+        swing_twist  : {
+            swing_dir   : [1,0,0],
+            twist_dir   : [0,0,-1],
+        },
+    } );
+    
+    Ref.ik = ik;
+
+    // console.log(  ik.chain.getAttrib( 0, 'twist' ) );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // TESTING
+    // ik.target.aCtrl = [0.2772979266847957, 1.1822450910214817, -0.056543668961772604];
+    // ik.target.bPos = [0.6470626001538309, 1.548122979625815, 0.016556588555299415]; // chain < curve test
+    // ik.target.bPos = [0.4414750101613417, 1.4618628985850792, -0.056035505392854096]; // chain > curve test
+    ik.updatePose( Ref.tpose, Ref.pose );
+    Ref.pose.updateWorld();
+    Ref.pose.toSkeleton( skel );
+
+    // Debug.pnt.add( [0.6470626001538309, 1.548122979625815, 0.016556588555299415], 0xff0000, 1 );
+
+    // renderCurve();
+    renderPoints();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.createRenderLoop( null, onPostRender ).start();
+    // App.renderLoop();
+    appendGithubLink( false );
+});
+
+function onPreRender( dt, et ){}
+
+function onCurveUpdate(){
+    Debug.pnt.reset();
+    Debug.ln.reset();
+
+    Ref.ik.updatePose( Ref.tpose, Ref.pose );
+    Ref.pose.updateWorld().toSkeleton( Ref.skel );
+
+    // renderCurve();
+    renderPoints();
+}
+// #endregion
+
+// #region HOTKEYS
+
+const LIMITS = [
+    { default:'ztwist', allow:[ 'yscale', 'ztwist' ] }, // 0
+    { default:'translate', allow:[ 'yscale', 'translate', 'ztwist' ] }, // 1
+    { default:'translate', allow:[ 'yscale', 'translate', 'ztwist' ] }, // 2
+    { default:'translate', allow:[ 'yscale', 'translate', 'ztwist' ] }, // 3
+    { default:'translate', allow:[ 'yscale', 'translate', 'ztwist' ] }, // 4
+    { default:'translate', allow:[ 'yscale', 'translate', 'ztwist' ] }, // 5
+    { default:'translate', allow:[ 'yscale', 'translate', 'ztwist' ] }, // 6
+    { default:'translate', allow:[ 'yscale', 'translate', 'ztwist' ] }, // 7
+    { default:'translate', allow:[ 'yscale', 'translate', 'ztwist' ] }, // 8
+    { default:'translate', allow:[ 'yscale', 'translate', 'ztwist' ] }, // 9
+    { default:'translate', allow:[ 'yscale', 'translate', 'rotate', 'ztwist' ] }, // 10
+
+    { default:'translate', allow:[ 'translate' ] }, // 11
+    { default:'translate', allow:[ 'translate' ] }, // 12
+];
+
+function switchGizmo( m ){
+    // if( !Ref.gizmo.visible ) return;
+    if( Ref.selIdx === -1 ) return;
+
+    console.log( m );
+
+    const lmt = LIMITS[ Ref.selIdx ];
+    m = m || Ref.gizmo.mode;
+    Ref.gizmo.setMode( (lmt.allow.includes( m ))? m : lmt.default );
+
+    switch( Ref.gizmo.mode ){
+        case 'rotate':{
+            const chain = Ref.ik.chain;
+            const lnk   = chain.links[ Ref.selIdx ];
+            const j    = Ref.pose.joints[ lnk.index ];
+
+            Ref.gizmo.reset( j.world.pos, j.world.rot );
+        break; }
+        
+        case 'translate':{
+            switch( Ref.selIdx ){
+                case 11: Ref.gizmo.reset( Ref.ik.target.aCtrl ); break; //s.points[1].pos
+                case 12: Ref.gizmo.reset( Ref.ik.target.bCtrl ); break; //s.points[2].pos
+                default:
+                    const lnk = Ref.ik.chain.links[ Ref.selIdx ];
+                    const j   = Ref.pose.joints[ lnk.index ];
+                    Ref.gizmo.reset( j.world.pos );
+                    break;
+            }
+            break;
+        break; }
+
+        case 'ztwist':{
+            // Create initial rotation from gizmo
+            const chain = Ref.ik.chain;
+            const lnk   = chain.links[ Ref.selIdx ];
+            const j     = Ref.pose.joints[ lnk.index ];
+            Ref.gizmo.reset( j.world.pos, lnk.getSwingQuat( j.world.rot ) );
+
+            const ptran = Ref.pose.getWorld( lnk.pindex );
+            ptran.mul( Ref.tpose.joints[ lnk.index ].local );
+            Ref.qInit.copy( ptran.rot );
+        break; }
+        
+        case 'yscale':{
+            // Create initial rotation from gizmo
+            const chain = Ref.ik.chain;
+            const lnk   = chain.links[ Ref.selIdx ];
+            const j     = Ref.pose.joints[ lnk.index ];
+            const v     = new Vec3().fromQuat( j.world.rot, lnk.swing );
+            const q     = new Quat().fromLook( v, [0,1,0] );
+
+            Ref.gizmo.reset( j.world.pos, q, [1,lnk.attrib.scale,1] );
+        break; }
+    }
+
+    Ref.gizmo.show();
+}
+
+Ref.hotKeys.reg( 'e', ()=>{ switchGizmo( 'yscale' ) });
+Ref.hotKeys.reg( 'r', ()=>{ switchGizmo( 'rotate' ) });
+Ref.hotKeys.reg( 't', ()=>{ switchGizmo( 'translate' ) });
+Ref.hotKeys.reg( 'y', ()=>{ switchGizmo( 'ztwist' ) });
+
+// RESET selected point
+Ref.hotKeys.reg( 'x', ()=>{
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    if( Ref.selIdx >= 0 && Ref.selIdx <= 9 ){
+        const chain = Ref.ik.chain;
+        const lnk   = chain.links[ Ref.selIdx ];
+        lnk.attrib.offset.copy( lnk.attrib.initOffset );
+        lnk.attrib.twist = 0;
+        lnk.attrib.scale = 1;
+        onCurveUpdate();
+        Ref.gizmo.hide();
+        return;
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    if( Ref.selIdx === 10 ){
+        const chain = Ref.ik.chain;
+        const lnk   = chain.links[ Ref.selIdx ];
+        const tj    = Ref.tpose.joints[ lnk.index ];
+        
+        Ref.pose.setRot( tj.index, tj.local.rot );
+        lnk.attrib.twist = 0;
+        lnk.attrib.scale = 1;
+        
+        onCurveUpdate();
+        Ref.gizmo.hide();
+        return;
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    if( Ref.selIdx === -1 ){
+        for( const [i, lnk] of Ref.ik.chain.links.entries() ){
+            if( i <= 10 ){
+                lnk.attrib.twist = 0;
+                lnk.attrib.scale = 1;
+                lnk.attrib.offset.copy( lnk.attrib.initOffset );
+            }
+
+            if( i === 10 ){
+                const tj = Ref.tpose.joints[ lnk.index ];
+                Ref.pose.setRot( tj.index, tj.local.rot );
+            }
+
+            onCurveUpdate();
+            Ref.gizmo.hide();
+        }
+    }
+});
+
+// #endregion
+
+// #region GIZMO
+// Ref.gizmo.onStart = ()=>{ console.log( 'GIZMO START' ) };
+// Ref.gizmo.onStop = ()=>{ console.log( 'GIZMO STOP' ) };
+
+Ref.gizmo.onMove = p=>{
+    // if( Ref.selIdx !== -1 ){
+        // Ref.ik.target.spline.setPos( Ref.selIdx, p );
+        // onCurveUpdate();
+        // // console.log( p );
+    // }
+
+    const tar = Ref.ik.target;
+    switch( Ref.selIdx ){
+        case  0:
+        case -1: return;
+        case 10: tar.bPos  = p; break;
+        case 11: tar.aCtrl = p; break;
+        case 12: tar.bCtrl = p; break;        
+        default:
+            const lnk = Ref.ik.chain.links[ Ref.selIdx ];
+            lnk.attrib.offset.fromSub( p, lnk.attrib.atPos );
+            break;
+    }
+
+    onCurveUpdate();
+};
+
+Ref.gizmo.onRotate = r=>{
+    switch( Ref.gizmo.mode ){
+        case 'rotate':{
+            const chain = Ref.ik.chain;
+            const lnk   = chain.links[ Ref.selIdx ];
+            const ptran = Ref.pose.getWorld( lnk.pindex );
+            Ref.pose.setRot( lnk.index, ptran.toLocalRot( r ) );
+            Ref.pose.toSkeleton( Ref.skel );
+        break; }
+
+        case 'ztwist':{
+            const chain = Ref.ik.chain;
+            const lnk   = chain.links[ Ref.selIdx ];
+            
+            const ptran = Ref.pose.getWorld( lnk.pindex );              // Current Parent transform
+            const ntran = new Transform()                               // Current Neutral child transform
+                .fromMul( ptran, Ref.tpose.joints[ lnk.index ].local );
+
+            // Shift neutral rotation so its SWING Direction asligns with Gizmos's FORWARD
+            // const vFrom = new Vec3().fromQuat( ntran.rot, lnk.swing );  // Neutral Swing Direction
+            const vFrom = new Vec3().fromQuat( Ref.qInit, lnk.swing );  // Neutral Swing Direction
+            const vTo   = new Vec3().fromQuat( r, [0,0,1] );            // Gizmo Forward Direction
+            // const rot   = new Quat().fromSwing( vFrom, vTo ).mul( ntran.rot ); // Swing to alignment
+            const rot   = new Quat().fromSwing( vFrom, vTo ).mul( Ref.qInit ); // Swing to alignment
+
+            // Get Ortho direction to compute sign of angle
+            const ortho = new Vec3().fromQuat( rot, lnk.ortho );
+
+            vFrom.fromQuat( rot, lnk.twist );   // Neutral Twist Direction
+            vTo.fromQuat( r, [0,1,0] );         // Gizmo Up Direction
+
+            // Visual Debugging
+            // const v = new Vec3();
+            // Debug.ln.reset();
+            // Debug.ln.add( ntran.pos, v.fromAdd( ntran.pos, vFrom ), 0x00ff00 );
+            // Debug.ln.add( ntran.pos, v.fromAdd( ntran.pos, vTo ), 0xff0000 );
+            // Debug.ln.add( ntran.pos, v.fromAdd( ntran.pos, ortho ), 0xff00ff );
+
+            // Compute angle between the two twist vectors, -180 to 180 range
+            const sign = Math.sign( Vec3.dot( vTo, ortho ) );
+            const d    = Vec3.dot( vTo, vFrom );
+            const c    = Vec3.cross( vTo, vFrom );
+            const rad  = Math.atan2( Vec3.len( c ), d ) * sign;
+
+            // console.log( rad * 180 / Math.PI );
+            lnk.attrib.twist = rad;
+            onCurveUpdate();
+        break; }
+    }
+};
+
+Ref.gizmo.onScale = s=>{
+    // console.log( 'scale', s[1] );
+    
+    const lnk = Ref.ik.chain.links[ Ref.selIdx ];
+    lnk.attrib.scale = s[1];
+
+    onCurveUpdate();
+}
+// #endregion
+
+// #region PICKING
+function onPostRender( dt, et ){ Ref.tasks.run(); }
+
+window.addEventListener( 'pointerdown', e=>{
+    if( e.button === 2 ){
+        Ref.gizmo.hide();
+        Ref.selIdx = -1;
+        return;
+    }
+
+    if( Ref.gizmo.dragging ) return;
+    Ref.tasks.push( Ref.picker.pixelTaskFromEvent(e, onPicker, true) );
+});
+
+function onPicker( o ){
+    // console.log( 'Pick', o );
+    switch( o.type ){
+        case 'shapeQuad':
+            if( o.idx >= 0 ){
+                Ref.selIdx = o.idx;
+                switchGizmo();
+
+                // Ref.gizmo.show( o.hit )
+                // console.log( o.idx );
+            }
+        break;
+    }
+}
+// #endregion
+
+// #region CHARACTER LOADING
+
+async function loadCharacter( props={} ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // LOAD
+    const opt = { mesh:true, skel:true, skelHelper:true, toon:true, tpose:false, ...props };
+    const tf  = await new GLTFLoader().loadAsync( opt.url );
+    // const o  = firstFind( tf.scene, o=> (o.type === 'SkinnedMesh') );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Find Skeleton & Push Skinned Meshes to the scene
+    let skel;
+    for( const m of util.traverseFind( tf.scene, o=> (o.type === 'SkinnedMesh') ) ){
+        if( opt.mesh && opt.toon ){
+            const mat = new THREE.MeshToonMaterial( {
+                map       : m.material.map,
+                normalMap : m.material.normalMap,
+            } );
+            m.material = mat;
+        }
+
+        if( opt.mesh )  App.scene.add( m );
+        if( !skel )     skel = m.skeleton;  // First skeleton
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    if( opt.tpose ){
+        const clip = tf.animations.find( i=>i.name.toLowerCase() === 'tpose' );
+        if( clip )  util.poseFromClip( clip, skel );
+        else        console.log( 'TPose animation clip not found' );
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Push Skeleton Helper
+    App.scene.add( skel.bones[0] );
+    if( opt.skelHelper ){
+        App.scene.add( new THREE.SkeletonHelper( skel.bones[0] ) );
+    }
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    return skel;
+}
+
+// #endregion
+
+// #region IK BITS
+
+class IKLink{
+    name   = '';
+    index  = -1;
+    pindex = -1;
+    len    = 0;
+    attrib = null;
+
+    swing  = new Vec3( [0,1,0] );
+    twist  = new Vec3( [0,0,1] );
+    ortho  = new Vec3( [-1,0,0] );
+
+    limits = [];
+
+    constructor(){}
+
+    // q is WorldSpace rotation, function will invert it to compute inv direction
+    setDir( q, swing=[0,1,0], twist=[0,0,1] ){
+        const inv = new Quat( q ).invert();
+        this.swing.fromQuat( inv, swing ).norm();
+        this.twist.fromQuat( inv, twist ).norm();
+        this.ortho.fromCross( this.twist, this.swing ).norm();
+        return this;
+    }
+
+    getSwingQuat( wq ){
+        const swing = new Vec3().fromQuat( wq, this.swing );
+        const twist = new Vec3().fromQuat( wq, this.twist );
+        return new Quat().fromLook( swing, twist );
+    }
+
+    static fromName( name, pose, swing=[0,1,0], twist=[0,0,1] ){
+        const lnk  = new IKLink();
+        const j    = pose.getJoint( name );
+
+        lnk.index  = j.index
+        lnk.name   = j.name;
+        lnk.pindex = j.pindex;
+
+        const t    = pose.getWorld( j.index );
+        lnk.setDir( t.rot, swing, twist );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // DEBUG
+        // const vv = util.getWPos( b );
+        // const v  = new Vec3();
+        // Debug.pnt.add( vv, 0x00ff00, 0.2 );
+        // Debug.ln.add( vv, v.fromScale( swing, 0.2 ).add(vv), 0xff0000 );
+        // Debug.ln.add( vv, v.fromScale( twist, 0.2 ).add(vv), 0xffff00 );
+        
+        return lnk;
+    }
+}
+
+class IKChain{
+    links = []; // List of link
+    len   = 0;  // Total length of chain
+    constructor(){}
+
+    // #region GETTER / SETTERS
+    get parentIdx(){ return this.links[0].pindex; }
+    get rootIdx(){ return this.links[0].index; }
+    get effectIdx(){ return this.links.at(-1).index; }
+
+    addLink( lnk ){ this.links.push( lnk ); return this; }
+
+    getAttrib( idx, name ){ return this.links[ idx ].attrib[ name ]; }
+    setAttrib( idx, name, val  ){ this.links[ idx ].attrib[ name ] = val; return this; }
+
+    setBones( bName, tpose, swing, twist ){
+        for( const [i,name] of bName.entries() ){
+            this.links.push( IKLink.fromName( name, tpose, swing, twist ) );
+        }
+
+        this.computeLengths( tpose );
+        return this;
+    }
+
+    getEffectorPos( pose ){
+        const v3 = new THREE.Vector3();
+        const b  = pose.bones[ this.effectIdx ];
+        return b.getWorldPosition( v3 ).toArray();
+    }
+
+    resetPose( tpose, pose, i, ii ){
+        let lnk, t, p;
+        for( let j=i; j <= ii; j++ ){
+            lnk = this.links[ j ];
+            t   = tpose.bones[ lnk.index ];
+            p   = pose.bones[ lnk.index ];
+
+            p.quaternion.copy( t.quaternion );
+        }
+        return this;
+    }
+    // #endregion
+
+    // #region COMPUTE
+    compouteSwingTwistPoints( pose, twistDir=[0,1,0] ){
+        const va = new THREE.Vector3();
+        const vb = new THREE.Vector3();
+        const tq = new THREE.Quaternion(); 
+        const v  = new Vec3();
+        let la, lb;
+        let ja, jb;
+        let axes;
+
+        for( let i=1; i < this.links.length; i++ ){
+            // Get Links & Joints
+            la = this.links[ i-1 ];
+            lb = this.links[ i ];
+            ja = pose.bones[ la.index ];
+            jb = pose.bones[ lb.index ];
+            
+            // Get worldspace position & rotation
+            ja.getWorldPosition( va );
+            jb.getWorldPosition( vb );
+            ja.getWorldQuaternion( tq );
+
+            // Compute swing / twist direction
+            v.fromSub( vb.toArray(), va.toArray() ).norm();
+            axes = Vec3.look( v, twistDir );
+            
+            la.setDir( tq.toArray(), axes[2], axes[1] );
+
+            // Debug.ln.add( va.toArray(), v.fromScale( axes[2], 0.15 ).add( va.toArray() ), 0x00ff00 );
+            // Debug.ln.add( va.toArray(), v.fromScale( axes[1], 0.15 ).add( va.toArray() ), 0x00ffff );
+            // Debug.pnt.add( va.toArray(), 0x00ff00, 2 );
+        }
+
+        // Last axes gets passed to the leaf joint
+        jb.getWorldQuaternion( tq );
+        lb.setDir( tq.toArray(), axes[2], axes[1] );
+
+        // Debug.pnt.add( vb.toArray(), 0x00ff00, 2 );
+        // Debug.ln.add( vb.toArray(), v.fromScale( axes[2], 0.15 ).add( vb.toArray() ), 0x00ff00 );
+        // Debug.ln.add( vb.toArray(), v.fromScale( axes[1], 0.15 ).add( vb.toArray() ), 0x00ffff );
+    }
+
+    computeLengths( pose ){
+        const v = new THREE.Vector3();
+        let p = pose.joints[ this.links[0].index ].world.pos;
+        let l;
+        let c;
+
+        for( let i=1; i < this.links.length; i++ ){
+            c = pose.joints[ this.links[i].index ].world.pos;
+            l                   = Vec3.dist( c, p );
+            this.len           += l;
+            this.links[i-1].len = l;
+            p                   = c;
+        }
+
+        return this;
+    }
+    // #endregion
+}
+
+class IKTarget{
+    // #region MAIN
+    sMode  = 0; // Swing Mode
+    tMode  = 0; // Twist Mode
+
+    origin = new Vec3();    // Origin point for target
+    pos    = new Vec3();    // Target Point
+    dist   = 0;
+
+    swing  = new Vec3();    // Direction torward target
+    twist  = new Vec3();    // Direction of the twist
+    ortho  = new Vec3();    // Ortho of Swing & Twist
+
+    pRot   = new Quat();
+    rRot   = new Quat();
+
+    constructor(){}
+    // #endregion
+
+    // #region SETTER
+    setPos( v ){ this.pos.copy( v  ); this.sMode=0; return this; }
+
+    setDir( v, dist=1 ){ this.swing.copy(v).norm(); this.dist = dist; this.sMode=1; return this; }
+
+    setPoleDir( v ){ this.twist.copy( v ).norm(); return this; }
+    // #endregion
+
+    // #region METHODS
+    resolve( chain, tpose, pose ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Get origin data
+        const v3 = new THREE.Vector3();
+        const q3 = new THREE.Quaternion();
+        let i;
+        let b;
+        
+        // Get the Worldspace position of the chain's root
+        b = pose.bones[ chain.rootIdx ];
+        b.getWorldPosition( v3 );
+        this.origin.copy( v3.toArray() );
+
+        // Get parent rotation of the root in the current pose
+        i = chain.parentIdx;
+        if( i >= 0 ){
+            b = pose.bones[ i ];
+            this.pRot.copy( b.getWorldQuaternion( q3 ).toArray() );
+        }else if( pose.bones[0].parent ){
+            this.pRot.copy( pose.bones[0].parent.getWorldQuaternion( q3 ).toArray() );
+        }else{
+            this.pRot.copy( [0,0,0,1] );
+        }
+        
+        // Move the tpose local rotation to world space
+        b = tpose.bones[ chain.rootIdx ];
+        this.rRot.copy( b.quaternion.toArray() ).pmul( this.pRot );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Setup Target Position / Swing Direction
+        if( this.sMode === 0 ){
+            // From Position
+            this.swing.fromSub( this.pos, this.origin );
+            this.dist = this.swing.len;
+            this.swing.norm();
+        }else{
+            // From Direction
+            this.pos
+                .fromScale( this.swing, this.dist )
+                .add( this.origin );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Make directions orthogonal
+        const axes = Vec3.look( this.swing, this.twist );
+        this.swing.copy( axes[2] );
+        this.twist.copy( axes[1] );
+        this.ortho.copy( axes[0] );
+    }
+    // #endregion
+}
+
+class IKSet{
+    // #region MAIN
+    solver      = null;
+    chain       = new IKChain();
+    target      = new IKTargetBezierCubic(); //new IKTarget();
+
+    constructor( pose, config ){
+        this.autoConfig( pose, config );
+    }
+
+    autoConfig( pose, config ){
+        const st      = config.swing_twist;
+        const stMax   = st.items? st.items.length - 1 : -1;
+        let swing_dir = st.swing_dir ?? [0,0,1];
+        let twist_dir = st.twist_dir ?? [0,1,0];
+        let sti;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // BUILD CHAIN
+        for( const [i,jn] of config.joint_names.entries() ){
+            // ---------------------------------
+            // Swing Twist Direction Parsing
+            // Allow setting all links with the same set or set up each one differently
+            sti = Math.min( i, stMax );
+            if( sti > -1 ) ({ swing_dir, twist_dir } = config.swing_twist.items[ sti ]);
+
+            // ---------------------------------
+            // Create Links
+            this.chain.addLink( IKLink.fromName( jn, pose, swing_dir, twist_dir ) );
+        }
+
+        this.chain.computeLengths( pose );
+        
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // RE-COMPUTE UNIQUE CHAIN SWING-TWIST
+        // Niche Usecase - Compute swing direction from parent to child link
+        // position for each link.
+        if( st.from_points ){
+            this.chain.compouteSwingTwistPoints( pose, st.twist_dir || [0,1,0] );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // INITIAL TARGET DATA
+        this.target.reset( this.chain, pose );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // CONFIGURE IK SOLVER
+        if( config.solver ){
+            this.solver = new SOLVERS[ config.solver.type ]( config.solver.props );
+            if( this.solver.needAttrib ) this.solver.initAttrib( this.chain, this.target, pose );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // SETUP CONSTRAINTS
+        if( config.constraints ){
+            let lnk, lmt;
+            for( const [i,c] of config.constraints.entries() ){
+                if( !c ) continue;
+                lnk = this.chain.links[i]
+                lmt = CONSTRAINTS[ c.type ].fromName( lnk.name, pose, c );
+                lnk.limits.push( lmt );
+            }
+        }
+    }
+    // #endregion
+
+    updatePose( tpose, pose ){
+        this.target.resolve( this.chain, tpose, pose );
+        this.solver.resolve( this.chain, this.target, tpose, pose );
+
+        // Debug.pnt.add( this.target.pos, 0x00ff00, 1 );
+        // Debug.pnt.add( this.target.origin, 0xff0000, 1 );
+    }
+}
+
+// iksetConfig = {
+//     joint_names  : [ 'a', 'b' ],
+//     solver       : { type:'ccd', props:{ iterLimit: 1, eps:0.1 } },
+//     swing_twist  : {
+//         from_points : true,      // Compute swing from Parent to Child Direction
+//         swing_dir   : [1,0,0],   // All bones use his swing direction
+//         twist_dir   : [0,1,0],   // All bones use this twist direction, can be used with from_points
+//         items       : [ { swing_dir: [1,0,0], twist_dir:[0,1,0] } ], //  Set individual swingTwist
+//     },
+
+//     constraints : [
+//         { type:'hinge', swing_dir:[1,0,0], twist_dir:[0,1,0], range:[ -180, 180 ] },
+//         null,
+//     ]
+// }
+
+class Pose{
+    // #region MAIN
+    srcPose     = null;
+    nameIdx     = new Map();
+    joints      = [];
+    rootOffset  = new Transform();  // Absolute root transform
+    poseOffset  = new Transform();  // Offset applied to pose
+    constructor( skel ){
+        if( skel ) this.fromSkeleton( skel );
+    }
+    // #endregion
+
+    // #region GETTERS / SETTERS
+
+    getJoint( o ){
+        switch( typeof o ){
+            case 'number': return this.joints[ o ];
+            case 'string': {
+                const idx = this.nameIdx.get( o );
+                return ( idx !== undefined )? this.joints[ idx ] : null;
+            }
+        }
+        return null;
+    }
+
+    clone(){
+        const p = new Pose();
+        p.rootOffset.copy( this.rootOffset );
+        p.poseOffset.copy( this.poseOffset );
+
+        for( const j of this.joints ) p.joints.push( j.clone() );
+
+        p.srcPose = this.srcPose ?? this;
+        p.nameIdx = this.nameIdx; // Ref copy, should never change
+        return p;
+    }
+
+    fromSkeleton( skel ){
+        this.nameIdx.clear();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        let j;
+        for( const [i, b] of skel.bones.entries() ){
+            // console.log( i, b );
+            // Create Joint
+            j = new Joint().fromBone( b );
+            j.index = i;
+
+            // Map Name to Index
+            this.nameIdx.set( j.name, j.index );
+
+            // Link up parent-child relationshop
+            if( ( b.parent && b.parent.isBone ) ){
+                j.pindex = this.nameIdx.get( b.parent.name );
+                this.joints[ j.pindex ].children.push( j.index );
+            }
+
+            this.joints[ i ] = j;
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Get pose offset transform
+
+        const b = skel.bones[0];
+        if( b.parent ){
+            const v = new THREE.Vector3();
+            b.parent.getWorldPosition( v );
+            this.poseOffset.pos[ 0 ] = v.x;
+            this.poseOffset.pos[ 1 ] = v.y;
+            this.poseOffset.pos[ 2 ] = v.z;
+
+            b.parent.getWorldScale( v );
+            this.poseOffset.scl[ 0 ] = v.x;
+            this.poseOffset.scl[ 1 ] = v.y;
+            this.poseOffset.scl[ 2 ] = v.z;
+
+            const q = new THREE.Quaternion();
+            b.parent.getWorldQuaternion( q );
+            this.poseOffset.rot[ 0 ] = q.x;
+            this.poseOffset.rot[ 1 ] = q.y;
+            this.poseOffset.rot[ 2 ] = q.z;
+            this.poseOffset.rot[ 4 ] = q.w;
+        }
+
+        this.updateWorld();
+    }
+
+    toSkeleton( skel ){
+        let j;
+        for( const [i,b] of skel.bones.entries() ){
+            j = this.joints[ i ];
+            b.position.fromArray( j.local.pos );
+            b.quaternion.fromArray( j.local.rot );
+            b.scale.fromArray( j.local.scl );
+        }
+    }
+
+    setRot( i, rot ){
+        const r = this.joints[ i ].local.rot;
+        r[0]    = rot[0];
+        r[1]    = rot[1];
+        r[2]    = rot[2];
+        r[3]    = rot[3];
+        return this;
+    }
+
+    setPos( i, pos ){
+        const p = this.joints[ i ].local.pos;
+        p[0]    = pos[0];
+        p[1]    = pos[1];
+        p[2]    = pos[2];
+        return this;
+    }
+
+    setScl( i, scl ){
+        const p = this.joints[ i ].local.scl;
+        p[0]    = scl[0];
+        p[1]    = scl[1];
+        p[2]    = scl[2];
+        return this;
+    }
+
+    setScalar( i, s ){
+        const p = this.joints[ i ].local.scl;
+        p[0]    = s;
+        p[1]    = s;
+        p[2]    = s;
+        return this;
+    }
+    // #endregion
+
+    // #region COMPUTE
+    updateWorld(){
+        for( const j of this.joints ){
+            if( j.pindex !== -1 ){
+                // Parent Exists
+                j.world.fromMul( this.joints[ j.pindex ].world, j.local );
+            }else{
+                // No Parent, apply any possible offset
+                j.world
+                    .fromMul( this.rootOffset, this.poseOffset )
+                    .mul( j.local );
+            }
+        }
+
+        return this;
+    }
+
+    getWorld( id, out=new Transform() ){
+        let joint = this.getJoint( id );
+
+        if( !joint ){
+            if( boneId === -1 ) out.fromMul( this.rootOffset, this.poseOffset );
+            else                console.error( 'Pose.getWorld - joint not found', id );
+            return out;
+        }
+
+        // Work up the heirarchy till the root bone
+        out.copy( joint.local );
+        while( joint.pindex !== -1 ){
+            joint = this.joints[ joint.pindex ];
+            out.pmul( joint.local );
+        }
+
+        // Add offset
+        out .pmul( this.poseOffset )
+            .pmul( this.rootOffset );
+
+        return out;
+    }
+    // #endregion
+
+    debug(){
+        for( const j of this.joints ){
+            Debug.pnt.add( j.world.pos, 0x00ff00, 0.5 );
+        }
+        return this;
+    }
+}
+
+class Joint{
+    name     = '';
+    index    = -1;
+    pindex   = -1;
+    isRoot   = false;
+    children = [];
+    local    = new Transform();
+    world    = new Transform();
+
+    fromBone( b ){
+        this.name = b.name;
+
+        let v = b.position.toArray();
+        this.local.pos[ 0 ] = v[ 0 ];
+        this.local.pos[ 1 ] = v[ 1 ];
+        this.local.pos[ 2 ] = v[ 2 ];
+
+        v = b.quaternion.toArray();
+        this.local.rot[ 0 ] = v[ 0 ];
+        this.local.rot[ 1 ] = v[ 1 ];
+        this.local.rot[ 2 ] = v[ 2 ];
+        this.local.rot[ 3 ] = v[ 3 ];
+
+        v = b.scale.toArray();
+        this.local.scl[ 0 ] = v[ 0 ];
+        this.local.scl[ 1 ] = v[ 1 ];
+        this.local.scl[ 2 ] = v[ 2 ];
+
+        return this;
+    }
+
+    clone(){
+        const j     = new Joint();
+        j.name      = this.name;
+        j.index     = this.index;
+        j.pindex    = this.pindex;
+        j.isRoot    = this.isRoot;
+        j.children  = [ ...this.children ];
+        j.local.copy( this.local );
+        j.world.copy( this.world );
+        return j;
+    }
+}
+
+// #endregion
+
+// #region SOLVERS
+class IKTargetBezierCubic{
+    // #region MAIN
+    spline = new BezierCubicSpline();
+
+    // dist   = 0;
+    // swing  = new Vec3();        // Direction torward target
+    twist  = new Vec3();        // Direction of the twist
+    // ortho  = new Vec3();        // Ortho of Swing & Twist
+
+    pworld = new Transform();   // Parent of root 
+    rworld = new Transform();   // Root Transform
+
+    constructor(){
+        this.spline.add( [0,0,0] );
+        this.spline.add( [0,0,0] );
+        this.spline.add( [0,0,0] );
+        this.spline.add( [0,0,0] );
+    }
+    // #endregion
+
+    // #region GETTERS / SETTERS
+    get aPos(){ return this.spline.points[0].pos.clone(); }
+    // set aPos( v ){ return this.spline.points[0].pos.copy( v ); }
+
+    get aCtrl(){ return this.spline.points[1].pos.clone(); }
+    set aCtrl( v ){ return this.spline.points[1].pos.copy( v ); }
+
+    get bCtrl(){ return this.spline.points[2].pos.clone(); }
+    set bCtrl( v ){ return this.spline.points[2].pos.copy( v ); }
+
+    get bPos(){ return this.spline.points[3].pos.clone(); }
+    set bPos( v ){ return this.spline.points[3].pos.copy( v ); }
+
+    reset( chain, pose ){
+        const p = this.spline.points;
+
+        p[0].pos.copy( pose.joints[ chain.rootIdx ].world.pos );
+        p[3].pos.copy( pose.joints[ chain.effectIdx ].world.pos );
+
+        p[1].pos.fromLerp( p[0].pos, p[3].pos, 0.25 );
+        p[2].pos.fromLerp( p[0].pos, p[3].pos, 0.75 );
+
+        // Debug.pnt.add( p[0].pos, 0xff0000, 1.5, 6 );
+        // Debug.pnt.add( p[3].pos, 0x00ff00, 1.5, 6 );
+        // Debug.pnt.add( p[1].pos, 0xff0000, 1, 2 );
+        // Debug.pnt.add( p[2].pos, 0x00ff00, 1, 2 );
+    }
+    // #endregion
+
+    // #region CURVE METHODS
+    getAt( t, out=[0,0,0] ){
+        this.spline.at( t, out );
+        return out;
+    }
+    // #endregion
+ 
+    // #region CALC
+    resolve( chain, tpose, pose ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Compute Root Information
+        const lnk = chain.links[0];
+
+        // Get the World transform to the root's parent bone of the chain
+        pose.getWorld( lnk.pindex, this.pworld );
+
+        // Then add bone's LS bind transform to get its current unmodified world transform
+        this.rworld.fromMul( this.pworld, tpose.joints[ lnk.index ].local );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // this.swing
+        //     .fromSub( this.spline.points[3].pos, this.rworld.pos )
+        //     .norm();
+
+        this.twist.fromQuat( this.rworld.rot, lnk.twist );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Make directions orthogonal
+        // const axes = Vec3.look( this.swing, this.twist );
+        // this.swing.copy( axes[2] );
+        // this.twist.copy( axes[1] );
+        // this.ortho.copy( axes[0] );
+        
+    }
+    // #endregion
+}
+
+class IKSolver{
+    name      = 'IKSolver';
+    needAttrib = false;
+
+    initAttrib( chain, target, pose ){    console.log( 'initAttrib not implemented:', this.name ); return this; };
+    resolve( chain, target, tpose, pose ){ console.log( 'resolve not implemented:', this.name );   return this; };
+}
+
+class SplineIK extends IKSolver{
+    // #region MAIN
+    name        = 'SplineIK';
+    needAttrib  = true;
+    sampler     = null;
+
+    // Solver Properties
+    sketch      = true;
+
+    constructor( props={} ){ 
+        super();
+        const opt = { stretch : true, ...props };
+
+        this.stretch = opt.stretch;
+    }
+    
+    initAttrib( chain, target, pose ){
+        let len = 0;
+        let t   = 0;
+        let offset;
+        let wpos;
+        let j;
+
+        // Sample curve to get its starting distance
+        const ds = new DistSampler( target.spline, chain.links.length * 2 );
+
+        for( const lnk of chain.links ){
+            // Get T at Distance
+            t = ds.atDist( len );
+
+            // Compute delta from curve
+            j      = pose.joints[ lnk.index ];
+            wpos   = new Vec3();
+            offset = new Vec3();                
+            target.getAt( t, wpos );
+            offset.fromSub( wpos, j.world.pos );
+
+            // Debug.pnt.add( j.world.pos, 0x00ff00, 1.5 );
+
+            // Build link's attribute data to be used by ik Solver
+            lnk.attrib = {
+                twist       : 0,
+                scale       : 1,
+                offset      : offset,
+                initOffset  : offset.clone(),
+                atPos       : wpos,
+                t           : t,
+            };
+            
+            // Incremenet Distance
+            len += lnk.len;
+        }
+
+        return this;
+    }
+    // #endregion
+
+    // #region SOLVING
+    resolve( chain, target, tpose, pose ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Initial Samples - Should include offsets added to position
+        const sampler = ( this.stretch )
+            ? stretchSamples( chain, target )
+            : nonStretchSamples( chain, target );
+
+        // for( const s of sampler.items ) Debug.pnt.add( s.pos, 0xffff00, 0.2 );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // TODO - Revisit realign tangents so vector aims to next point
+        //        This might not be needed or at least not for stretching
+        
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Transport twist direction
+        
+        // Use the target twist direction which would be where the elbow / knees are pointing
+        RotMinFrame.transportNormal( sampler.items, target.twist );
+
+        // Lerp all the twist values in the chain
+        applyChainTwisting( chain, sampler.items );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Update pose with sampler
+        applySamplesToPose( chain, tpose, pose, sampler.items );
+
+        this.sampler = sampler; // Save for debugging or visualization
+
+        // Debug sampler data
+        // const v = new Vec3();
+        // for( const s of sampler.items ){
+        //     Debug.pnt.add( s.pos, 0xffff00, 0.2 );
+        //     Debug.ln.add( s.pos, v.fromScale( s.tangent, 0.2 ).add( s.pos ), 0xffaa00 );
+        //     Debug.ln.add( s.pos, v.fromScale( s.normal, 0.2 ).add( s.pos ), 0x00ffff );
+        // }
+    }
+    // #endregion
+}
+
+const SOLVERS = {
+    spline: SplineIK,
+}
+
+// Sample spline with clamped Attrib.T of link plus offset
+function stretchSamples( chain, target ){
+    const sampler = new SplineSampler();
+    let itm;
+    
+    for( const lnk of chain.links ){
+        itm = sampler.addAt( target.spline, lnk.attrib.t );
+        // itm.pos.add( lnk.attrib.offset );
+    }
+
+    return sampler;
+}
+
+// Sample spline to match link distances
+// - Handle Chain > Curve and Chain < Curuve cases
+function nonStretchSamples( chain, target ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Sample curve to get its starting distance
+    const ds        = new DistSampler( target.spline, chain.links.length * 3 ); // Get T of Distance
+    const sampler   = new SplineSampler();  // Full Curve Samples
+    const v         = new Vec3();
+    let travel      = 0;        // How much travel on the curve
+    let itmExtend   = false;
+    let t;
+    let itm;
+    let pLnk;
+
+    for( const [i, lnk] of chain.links.entries() ){
+
+        if( travel > ds.dist ){
+            if( !itmExtend ){
+                // ----------------------------------
+                // UseCase : When Curve is shorter then the chain.
+                // creata a new sample that will be aimed at the end of the curve
+                // this new sample will be repeated for any remaining links\
+
+                const sLast = sampler.items.at(-1);
+                itm   = sLast.clone();
+                const tan = itm.tangent.clone(); // Backup for swing rotation
+
+                // Force Direction to Target Position as new Tangent
+                // NOTE: This can create a slight tick in movement
+                // TODO: To smooth things out, lerp between current tangent and the target direction
+                if( Vec3.dist( target.bPos, sLast.pos ) > 0.003 ){
+                    itm.tangent.fromSub( target.bPos, sLast.pos );
+                }
+                itm.tangent.norm();
+
+                // Move position by distance from previous link in
+                // tne new tangent direction
+                pLnk = chain.links[ i-1 ];
+                itm.pos.add( v.fromScale( itm.tangent, pLnk.len ) );
+
+                // Swing normal in the same direction as tangent to limit orientation flipping
+                const q = new Quat().fromSwing( tan, itm.tangent );
+                itm.normal.transformQuat( q );
+
+                // Finalize
+                sampler.addItem( itm );
+                itmExtend = true;
+
+                // console.log( i, 'itmExtend' );
+            }else{
+                // ----------------------------------
+                // Clone the extended item
+
+                itm  = sampler.items.at(-1).clone();
+                pLnk = chain.links[ i-1 ];
+
+                itm.pos.add( v.fromScale( itm.tangent, pLnk.len ) );                
+                sampler.addItem( itm );
+
+                // Debug.pnt.add( itm.pos, 0xff0000, 0.3 );
+            }
+
+        }else{
+            // ----------------------------------
+            // Get T at Distance
+            t = ds.atDist( travel );
+
+            // Get Sample at T
+            itm = sampler.addAt( target.spline, t );
+            // itm.pos.add( lnk.attrib.offset );
+
+            // Incremenet Distance
+            travel += lnk.len;
+        }
+
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // UseCase chain shorter than spline
+    // - TODO - Revisit aim last joint torward target, 
+    // - TODO - Revisit fabric reach torward target
+
+    return sampler;
+}
+
+// Lerp linked twist values & apply to samples
+function applyChainTwisting( chain, samples ){
+    // Debug.ln.reset();
+    // chain.setAttrib( 0, 'twist', 45 * Math.PI / 180 );
+    // chain.setAttrib( 5, 'twist', 0 * Math.PI / 180 );
+    // chain.setAttrib( 10, 'twist', -45 * Math.PI / 180 );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Compute the interpolated twist values across all the links in the chain
+    const lnks      = chain.links;
+    const eIdx      = lnks.length - 1;
+    const radAry    = new Array( lnks.length ).fill( 0 );
+    let i           = 0;
+    let t;
+    let rng;
+
+    radAry[0] = lnks[0].attrib.twist;  // Set initial value
+
+    for( let j=1; j < lnks.length; j++ ){
+        // The end or non zero twist
+        if( j === eIdx || lnks[j].attrib.twist !== 0 ){
+            rng = j - i; // Array range to update
+
+            // Lerp twist angle between the two index point, skip first element
+            for( let x=1; x <= rng; x++ ){
+                t = x / rng;
+                radAry[ i + x ] = lnks[i].attrib.twist * (1-t) + lnks[j].attrib.twist * t;
+            }
+
+            i = j; // Set new starting point for next loop
+        }
+    }
+
+    // console.log( radAry );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Apply Twisting
+    const v0    = new Vec3();
+    const v1    = new Vec3();
+    // const q     = new Quat();
+    let s       = 0;
+    let c       = 0;
+
+    for( const [i, itm] of samples.entries() ){
+        c   = Math.cos( radAry[i] );
+        s   = Math.sin( radAry[i] );
+
+        // Both vectors are on the same plane, adding gives
+        // you either vector or some inbetween at Radians
+        // twistNorm = normal * cos(rad) + binormal * sin(rad)
+        // binormal  = cross( twistNorm, tangent )
+        v0.fromScale( itm.normal, c );
+        v1.fromScale( itm.binormal, s );
+
+        itm.normal.fromAdd( v0, v1 ).norm();
+        itm.binormal.fromCross( itm.normal, itm.tangent ).norm();
+
+        // q.fromAxisAngle( itm.tangent.norm(), -radAry[i] );
+        // itm.normal.transformQuat( q ).norm();
+        // itm.binormal.fromCross( itm.normal, itm.tangent ).norm();
+    }
+}
+
+// Pose chain based on curve samples
+function applySamplesToPose( chain, tpose, pose, samples ){    
+    const ptran   = new Transform();
+    const ctran   = new Transform();
+    const sRot    = new Quat();
+    const tRot    = new Quat();
+    const fromDir = new Vec3();
+    const v       = new Vec3();
+    
+    let eIdx      = chain.links.length - 1;
+    let lnk;
+    let samp;
+    let lastScl   = 1;
+
+    // Debug.ln.reset();
+    for( let i=0; i <= eIdx; i++ ){ 
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        lnk     = chain.links[ i ];
+        samp    = samples[ i ];
+
+        lnk.attrib.atPos.copy( samp.pos );  // Save copy of current WS curve position as OFFSET origin
+
+        pose.getWorld( lnk.pindex, ptran ); // Parent's WorldSpace Transform
+
+        // Apply position change
+        v.fromAdd( samp.pos, lnk.attrib.offset );
+        pose.setPos( lnk.index, ptran.toLocalPos( v, v ) );
+
+        // Apply scaling
+        let scl = lnk.attrib.scale * ( 1 / lastScl );
+        pose.setScalar( lnk.index, scl );
+        // pose.setScl( lnk.index, [ scl, scl, 1 ] );
+        lastScl = lnk.attrib.scale;
+
+        // Skip last point, need to be able to apply FK rotation, it will get overwritten by this function
+        if( i === eIdx ) break; 
+
+        // Joint's neutral worldspace transform
+        ctran.fromMul( ptran, tpose.joints[ lnk.index ].local );
+
+        // fromDir.fromQuat( ctran.rot, lnk.twist );
+        // Debug.ln.add( ctran.pos, v.fromScale( fromDir, 1.4 ).add( ctran.pos ), 0xff0000 );
+
+        // Debug.pnt.add( ctran.pos, 0x00ff00, 0.4 );
+        // Debug.pnt.add( samp.pos, 0xff0000, 0.3 );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // SWING
+        fromDir.fromQuat( ctran.rot, lnk.swing );
+        sRot
+            .fromSwing( fromDir, samp.tangent ) // Rotation FROM > TO
+            .mul( ctran.rot )                   // Apply to WS Rotation of bone
+
+        // Debug.ln.add( ctran.pos, v.fromScale( fromDir, 1.4 ).add( ctran.pos ), 0x00ff00 );
+        // Debug.ln.add( ctran.pos, v.fromScale( samp.tangent, 1.6 ).add( ctran.pos ), 0x00ffff );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // TWIST + Finalize
+        fromDir.fromQuat( sRot, lnk.twist ).norm();
+
+        tRot    .fromSwing( fromDir, samp.normal )  // Create Twisting Rotatio
+                .mul( sRot )                        // Apply it to swing
+                .pmulInvert( ptran.rot )            // To Local Space
+                .norm();                            // Normalize
+
+        // Debug.ln.add( ctran.pos, v.fromScale( fromDir, 0.4 ).add( ctran.pos ), 0x00ff00 );
+        // Debug.ln.add( ctran.pos, v.fromScale( samp.normal, 0.6 ).add( ctran.pos ), 0x00ffff );
+    
+        pose.setRot( lnk.index, tRot );
+    }
+}
+
+// #endregion
+
+// #region RENDERING
+
+function renderCurve(){
+    const s = Ref.ik.target.spline;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.shapes.reset();
+    for( const p of s.points ){
+        switch( p.type ){
+            case 0: Ref.shapes.add( p.pos, 0x00ff00, 1.3, 6 ); break;
+            case 1: Ref.shapes.add( p.pos, 0xffaa00, 1.0, 1 ); break;
+        }
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.lines.reset();
+    const iMax = 9;
+    const prev = new Vec3();
+    const curr = new Vec3();
+    
+    s.at( 0, prev );
+    for( let i=1; i <= iMax; i++ ){
+        s.at( i / iMax, curr );
+        Ref.lines.add( prev, curr, 0x808080 );
+        prev.copy( curr );
+    }
+
+    Ref.lines.add( s.points[0].pos, s.points[1].pos, 0x00ff00, 0xffaa00 );
+    Ref.lines.add( s.points[3].pos, s.points[2].pos, 0x00ff00, 0xffaa00 );
+}
+
+function renderPoints(){
+    Ref.shapes.reset();
+    Ref.lines.reset();
+
+    const s    = Ref.ik.target.spline;
+    const pose = Ref.pose;
+    const ik   = Ref.ik;
+    const v    = new Vec3();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    let j;
+    for( let lnk of ik.chain.links ){
+        j = pose.getJoint( lnk.index );
+        v.fromQuat( j.world.rot, lnk.twist ).scale( 0.05 ).add( j.world.pos );
+
+        Ref.shapes.add( j.world.pos, 0xb0b0b0, 0.5 );
+        Ref.lines.add( j.world.pos, v, 0xb0b0b0 );
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.shapes.add( s.points[1].pos, 0xffaa00, 1.0, 6 );
+    Ref.shapes.add( s.points[2].pos, 0xffaa00, 1.0, 6 );
+
+    Ref.lines.add( s.points[0].pos, s.points[1].pos, 0x00ff00, 0xffaa00 );
+    Ref.lines.add( s.points[3].pos, s.points[2].pos, 0x00ff00, 0xffaa00 );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const iMax = 9;
+    const prev = new Vec3();
+    const curr = new Vec3();
+    
+    s.at( 0, prev );
+    for( let i=1; i <= iMax; i++ ){
+        s.at( i / iMax, curr );
+        Ref.lines.add( prev, curr, 0xA0A0A0 );
+        prev.copy( curr );
+    }
+}
+
+// #endregion
+
+</script></body></html>
