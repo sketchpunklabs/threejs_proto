@@ -1,0 +1,899 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import { GLTFLoader }           from 'three/GLTFLoader.js';
+import * as util                from '@lib/util.js';
+ 
+import Vec3         from '@lib/maths/Vec3.js';
+import Quat         from '@lib/maths/Quat.js';
+import Transform    from '@lib/maths/Transform.js';
+
+import { Pane }     from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    blend: {x: 0, y: 0},
+
+    index_bend0     : 0,
+    index_bend1     : 0,
+    index_spread    : 0,
+
+    middle_bend0    : 0,
+    middle_bend1    : 0,
+    middle_spread   : 0,
+
+    ring_bend0      : 0,
+    ring_bend1      : 0,
+    ring_spread     : 0,
+
+    pinky_bend0     : 0,
+    pinky_bend1     : 0,
+    pinky_spread    : 0,
+
+    thumb_bend0     : 0,
+    thumb_bend1     : 0,
+    thumb_spread    : 0,
+};
+
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 70, 55, 2, [0.6,1.4,-0.05] );
+    Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const skel = await loadCharacter( { url:'../../../res/models/luffy_proto/luffy_proto.gltf', mesh:true, tpose:true, skelHelper:false } );
+    // const bm = util.boneMap( skel );
+    // console.log( bm.getIndex( 'Bone_Lfinger_10' ) );
+    
+    // Pose THUMB in a more usable way
+    skel.bones[ 67 ].rotation.z -= 21 * Math.PI / 180;
+    skel.bones[ 67 ].rotation.y -= 30 * Math.PI / 180;
+    skel.bones[ 67 ].rotation.x += 5 * Math.PI / 180;
+
+    // Debug.pnt.add( [0.6,1.4,-0.05], 0x00ff00, 3 );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Set up an IK Set
+    // for( let [i,b] of skel.bones.entries() ) console.log( i, b.name );
+    // Debug.pnt.add( bm.pos( 'Bone_Lfinger_13' ), 0x00ffff, 0.2 );
+
+    Ref.hand = new HandRig( skel );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( null, onPostRender ).start();
+    App.renderLoop();
+    appendGithubLink( false );
+    buildUI();
+});
+
+function onPreRender( dt, et ){}
+
+async function buildUI(){    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const container = document.createElement( 'div' );
+    container.style.position    = 'fixed';
+    container.style.top         = '10px';
+    container.style.right       = '10px';
+    container.style.width       = '250px'; //'fit-content';
+    container.style.height      = 'fit-content';
+    document.body.appendChild( container );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const p = new Pane( { container } );
+    p.on( 'change', e=>{
+        // console.log( e );
+        // console.log( e.target.label, e.value, e.target.controller.value.binding.target.key );
+        // console.log( e.target.key );
+        if( e.target.key === 'blend' ){
+            // console.log( e.value, quadrantFromCoord( [e.value.x,e.value.y] ) );
+            // calcBlendShapeWeights( [e.value.x,e.value.y] );
+            Ref.hand.blendSpace( [e.value.x,e.value.y] );
+        }else{
+            const parts = e.target.key.split( '_' );
+            Ref.hand[ parts[0] ][ parts[1] ] = e.value;
+            Ref.hand.resolve();
+        }
+    });
+
+    const fld0 = p.addFolder({ title: '2D Blendspace', expanded: true });
+    // blend: {x: 0, y: 0},
+    fld0.addBinding( Ref, 'blend', {
+        label       : '',
+        picker      : 'inline',
+        expanded    : true,
+        x           : { step:0.01, min:-1, max:1 },
+        y           : { step:0.01, min:-1, max:1, inverted:true },
+    });
+
+    // fld0.addButton({ title: 'Save' }).on( 'click', ()=>Ref.hand.savePose() );s
+
+    const fld1 = p.addFolder({ title: 'Index', expanded: false });
+    fld1.addBinding( Ref, 'index_bend0',  { min: 0, max: 1, step: 0.01, label: 'Bend0' } );
+    fld1.addBinding( Ref, 'index_bend1',  { min: 0, max: 1, step: 0.01, label: 'Bend1' } );
+    fld1.addBinding( Ref, 'index_spread', { min: 0, max: 1, step: 0.01, label: 'Spread' } );
+
+    const fld2 = p.addFolder({ title: 'Middle', expanded: false });
+    fld2.addBinding( Ref, 'middle_bend0',  { min: 0, max: 1, step: 0.01, label: 'Bend0' } );
+    fld2.addBinding( Ref, 'middle_bend1',  { min: 0, max: 1, step: 0.01, label: 'Bend1' } );
+    fld2.addBinding( Ref, 'middle_spread', { min: 0, max: 1, step: 0.01, label: 'Spread' } );
+
+    const fld3 = p.addFolder({ title: 'Ring', expanded: false });
+    fld3.addBinding( Ref, 'ring_bend0',  { min: 0, max: 1, step: 0.01, label: 'Bend0' } );
+    fld3.addBinding( Ref, 'ring_bend1',  { min: 0, max: 1, step: 0.01, label: 'Bend1' } );
+    fld3.addBinding( Ref, 'ring_spread', { min: 0, max: 1, step: 0.01, label: 'Spread' } );
+    
+    const fld4 = p.addFolder({ title: 'Pinky', expanded: false });
+    fld4.addBinding( Ref, 'pinky_bend0',  { min: 0, max: 1, step: 0.01, label: 'Bend0' } );
+    fld4.addBinding( Ref, 'pinky_bend1',  { min: 0, max: 1, step: 0.01, label: 'Bend1' } );
+    fld4.addBinding( Ref, 'pinky_spread', { min: 0, max: 1, step: 0.01, label: 'Spread' } );
+
+    const fld5 = p.addFolder({ title: 'Thumb', expanded: false });
+    fld5.addBinding( Ref, 'thumb_bend0',  { min: 0, max: 1, step: 0.01, label: 'Bend0' } );
+    fld5.addBinding( Ref, 'thumb_bend1',  { min: 0, max: 1, step: 0.01, label: 'Bend1' } );
+    fld5.addBinding( Ref, 'thumb_spread', { min: 0, max: 1, step: 0.01, label: 'Spread' } );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.pane = p;
+}
+// #endregion
+
+// #region CHARACTER LOADING
+
+async function loadCharacter( props={} ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // LOAD
+    const opt = { mesh:true, skel:true, skelHelper:true, toon:true, tpose:false, ...props };
+    const tf  = await new GLTFLoader().loadAsync( opt.url );
+    // const o  = firstFind( tf.scene, o=> (o.type === 'SkinnedMesh') );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Find Skeleton & Push Skinned Meshes to the scene
+    let skel;
+    for( const m of util.traverseFind( tf.scene, o=> (o.type === 'SkinnedMesh') ) ){
+        if( opt.mesh && opt.toon ){
+            const mat = new THREE.MeshToonMaterial( {
+                map       : m.material.map,
+                normalMap : m.material.normalMap,
+            } );
+            m.material = mat;
+        }
+
+        if( opt.mesh )  App.scene.add( m );
+        if( !skel )     skel = m.skeleton;  // First skeleton
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    if( opt.tpose ){
+        const clip = tf.animations.find( i=>i.name.toLowerCase() === 'tpose' );
+        if( clip )  util.poseFromClip( clip, skel );
+        else        console.log( 'TPose animation clip not found' );
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Push Skeleton Helper
+    App.scene.add( skel.bones[0] );
+    if( opt.skelHelper ){
+        App.scene.add( new THREE.SkeletonHelper( skel.bones[0] ) );
+    }
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    return skel;
+}
+
+// #endregion
+
+// #region IK BITS
+
+class IKLink{
+    name   = '';
+    index  = -1;
+    pindex = -1;
+    len    = 0;
+    attrib = null;
+
+    swing  = new Vec3( [0,1,0] );
+    twist  = new Vec3( [0,0,1] );
+    ortho  = new Vec3( [-1,0,0] );
+
+    limits = [];
+
+    constructor(){}
+
+    // q is WorldSpace rotation, function will invert it to compute inv direction
+    setDir( q, swing=[0,1,0], twist=[0,0,1] ){
+        const inv = new Quat( q ).invert();
+        this.swing.fromQuat( inv, swing ).norm();
+        this.twist.fromQuat( inv, twist ).norm();
+        this.ortho.fromCross( this.twist, this.swing ).norm();
+        return this;
+    }
+
+    getSwingQuat( wq ){
+        const swing = new Vec3().fromQuat( wq, this.swing );
+        const twist = new Vec3().fromQuat( wq, this.twist );
+        return new Quat().fromLook( swing, twist );
+    }
+
+    static fromName( name, pose, swing=[0,1,0], twist=[0,0,1] ){
+        const lnk  = new IKLink();
+        const j    = pose.getJoint( name );
+
+        lnk.index  = j.index
+        lnk.name   = j.name;
+        lnk.pindex = j.pindex;
+
+        const t    = pose.getWorld( j.index );
+        lnk.setDir( t.rot, swing, twist );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // DEBUG
+        // const vv = util.getWPos( b );
+        // const v  = new Vec3();
+        // Debug.pnt.add( vv, 0x00ff00, 0.2 );
+        // Debug.ln.add( vv, v.fromScale( swing, 0.2 ).add(vv), 0xff0000 );
+        // Debug.ln.add( vv, v.fromScale( twist, 0.2 ).add(vv), 0xffff00 );
+        
+        return lnk;
+    }
+}
+
+class IKChain{
+    links = []; // List of link
+    len   = 0;  // Total length of chain
+    constructor(){}
+
+    // #region GETTER / SETTERS
+    get parentIdx(){ return this.links[0].pindex; }
+    get rootIdx(){ return this.links[0].index; }
+    get effectIdx(){ return this.links.at(-1).index; }
+
+    addLink( lnk ){ this.links.push( lnk ); return this; }
+
+    getAttrib( idx, name ){ return this.links[ idx ].attrib[ name ]; }
+    setAttrib( idx, name, val  ){ this.links[ idx ].attrib[ name ] = val; return this; }
+
+    setBones( bName, tpose, swing, twist ){
+        for( const [i,name] of bName.entries() ){
+            this.links.push( IKLink.fromName( name, tpose, swing, twist ) );
+        }
+
+        this.computeLengths( tpose );
+        return this;
+    }
+
+    getEffectorPos( pose ){
+        const v3 = new THREE.Vector3();
+        const b  = pose.bones[ this.effectIdx ];
+        return b.getWorldPosition( v3 ).toArray();
+    }
+
+    resetPose( tpose, pose, i, ii ){
+        let lnk, t, p;
+        for( let j=i; j <= ii; j++ ){
+            lnk = this.links[ j ];
+            t   = tpose.bones[ lnk.index ];
+            p   = pose.bones[ lnk.index ];
+
+            p.quaternion.copy( t.quaternion );
+        }
+        return this;
+    }
+    // #endregion
+
+    // #region COMPUTE
+    compouteSwingTwistPoints( pose, twistDir=[0,1,0] ){
+        const va = new THREE.Vector3();
+        const vb = new THREE.Vector3();
+        const tq = new THREE.Quaternion(); 
+        const v  = new Vec3();
+        let la, lb;
+        let ja, jb;
+        let axes;
+
+        for( let i=1; i < this.links.length; i++ ){
+            // Get Links & Joints
+            la = this.links[ i-1 ];
+            lb = this.links[ i ];
+            ja = pose.bones[ la.index ];
+            jb = pose.bones[ lb.index ];
+            
+            // Get worldspace position & rotation
+            ja.getWorldPosition( va );
+            jb.getWorldPosition( vb );
+            ja.getWorldQuaternion( tq );
+
+            // Compute swing / twist direction
+            v.fromSub( vb.toArray(), va.toArray() ).norm();
+            axes = Vec3.look( v, twistDir );
+            
+            la.setDir( tq.toArray(), axes[2], axes[1] );
+
+            // Debug.ln.add( va.toArray(), v.fromScale( axes[2], 0.15 ).add( va.toArray() ), 0x00ff00 );
+            // Debug.ln.add( va.toArray(), v.fromScale( axes[1], 0.15 ).add( va.toArray() ), 0x00ffff );
+            // Debug.pnt.add( va.toArray(), 0x00ff00, 2 );
+        }
+
+        // Last axes gets passed to the leaf joint
+        jb.getWorldQuaternion( tq );
+        lb.setDir( tq.toArray(), axes[2], axes[1] );
+
+        // Debug.pnt.add( vb.toArray(), 0x00ff00, 2 );
+        // Debug.ln.add( vb.toArray(), v.fromScale( axes[2], 0.15 ).add( vb.toArray() ), 0x00ff00 );
+        // Debug.ln.add( vb.toArray(), v.fromScale( axes[1], 0.15 ).add( vb.toArray() ), 0x00ffff );
+    }
+
+    computeLengths( pose ){
+        const v = new THREE.Vector3();
+        let p = pose.joints[ this.links[0].index ].world.pos;
+        let l;
+        let c;
+
+        for( let i=1; i < this.links.length; i++ ){
+            c = pose.joints[ this.links[i].index ].world.pos;
+            l                   = Vec3.dist( c, p );
+            this.len           += l;
+            this.links[i-1].len = l;
+            p                   = c;
+        }
+
+        return this;
+    }
+    // #endregion
+}
+
+class Pose{
+    // #region MAIN
+    srcPose     = null;
+    nameIdx     = new Map();
+    joints      = [];
+    rootOffset  = new Transform();  // Absolute root transform
+    poseOffset  = new Transform();  // Offset applied to pose
+    constructor( skel ){
+        if( skel ) this.fromSkeleton( skel );
+    }
+    // #endregion
+
+    // #region GETTERS / SETTERS
+
+    getJoint( o ){
+        switch( typeof o ){
+            case 'number': return this.joints[ o ];
+            case 'string': {
+                const idx = this.nameIdx.get( o );
+                return ( idx !== undefined )? this.joints[ idx ] : null;
+            }
+        }
+        return null;
+    }
+
+    clone(){
+        const p = new Pose();
+        p.rootOffset.copy( this.rootOffset );
+        p.poseOffset.copy( this.poseOffset );
+
+        for( const j of this.joints ) p.joints.push( j.clone() );
+
+        p.srcPose = this.srcPose ?? this;
+        p.nameIdx = this.nameIdx; // Ref copy, should never change
+        return p;
+    }
+
+    fromSkeleton( skel ){
+        this.nameIdx.clear();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        let j;
+        for( const [i, b] of skel.bones.entries() ){
+            // console.log( i, b );
+            // Create Joint
+            j = new Joint().fromBone( b );
+            j.index = i;
+
+            // Map Name to Index
+            this.nameIdx.set( j.name, j.index );
+
+            // Link up parent-child relationshop
+            if( ( b.parent && b.parent.isBone ) ){
+                j.pindex = this.nameIdx.get( b.parent.name );
+                this.joints[ j.pindex ].children.push( j.index );
+            }
+
+            this.joints[ i ] = j;
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Get pose offset transform
+
+        const b = skel.bones[0];
+        if( b.parent ){
+            const v = new THREE.Vector3();
+            b.parent.getWorldPosition( v );
+            this.poseOffset.pos[ 0 ] = v.x;
+            this.poseOffset.pos[ 1 ] = v.y;
+            this.poseOffset.pos[ 2 ] = v.z;
+
+            b.parent.getWorldScale( v );
+            this.poseOffset.scl[ 0 ] = v.x;
+            this.poseOffset.scl[ 1 ] = v.y;
+            this.poseOffset.scl[ 2 ] = v.z;
+
+            const q = new THREE.Quaternion();
+            b.parent.getWorldQuaternion( q );
+            this.poseOffset.rot[ 0 ] = q.x;
+            this.poseOffset.rot[ 1 ] = q.y;
+            this.poseOffset.rot[ 2 ] = q.z;
+            this.poseOffset.rot[ 4 ] = q.w;
+        }
+
+        this.updateWorld();
+    }
+
+    toSkeleton( skel, rotOnly=true ){
+        let j;
+        for( const [i,b] of skel.bones.entries() ){
+            j = this.joints[ i ];
+            
+            b.quaternion.fromArray( j.local.rot );
+            if( !rotOnly ){
+                b.position.fromArray( j.local.pos );
+                b.scale.fromArray( j.local.scl );
+            }
+        }
+    }
+
+    setRot( i, rot ){
+        const r = this.joints[ i ].local.rot;
+        r[0]    = rot[0];
+        r[1]    = rot[1];
+        r[2]    = rot[2];
+        r[3]    = rot[3];
+        return this;
+    }
+
+    setPos( i, pos ){
+        const p = this.joints[ i ].local.pos;
+        p[0]    = pos[0];
+        p[1]    = pos[1];
+        p[2]    = pos[2];
+        return this;
+    }
+
+    setScl( i, scl ){
+        const p = this.joints[ i ].local.scl;
+        p[0]    = scl[0];
+        p[1]    = scl[1];
+        p[2]    = scl[2];
+        return this;
+    }
+
+    setScalar( i, s ){
+        const p = this.joints[ i ].local.scl;
+        p[0]    = s;
+        p[1]    = s;
+        p[2]    = s;
+        return this;
+    }
+    // #endregion
+
+    // #region COMPUTE
+    updateWorld(){
+        for( const j of this.joints ){
+            if( j.pindex !== -1 ){
+                // Parent Exists
+                j.world.fromMul( this.joints[ j.pindex ].world, j.local );
+            }else{
+                // No Parent, apply any possible offset
+                j.world
+                    .fromMul( this.rootOffset, this.poseOffset )
+                    .mul( j.local );
+            }
+        }
+
+        return this;
+    }
+
+    getWorld( id, out=new Transform() ){
+        let joint = this.getJoint( id );
+
+        if( !joint ){
+            if( boneId === -1 ) out.fromMul( this.rootOffset, this.poseOffset );
+            else                console.error( 'Pose.getWorld - joint not found', id );
+            return out;
+        }
+
+        // Work up the heirarchy till the root bone
+        out.copy( joint.local );
+        while( joint.pindex !== -1 ){
+            joint = this.joints[ joint.pindex ];
+            out.pmul( joint.local );
+        }
+
+        // Add offset
+        out .pmul( this.poseOffset )
+            .pmul( this.rootOffset );
+
+        return out;
+    }
+    // #endregion
+
+    debug(){
+        for( const j of this.joints ){
+            Debug.pnt.add( j.world.pos, 0x00ff00, 0.5 );
+        }
+        return this;
+    }
+}
+
+class Joint{
+    name     = '';
+    index    = -1;
+    pindex   = -1;
+    isRoot   = false;
+    children = [];
+    local    = new Transform();
+    world    = new Transform();
+
+    fromBone( b ){
+        this.name = b.name;
+
+        let v = b.position.toArray();
+        this.local.pos[ 0 ] = v[ 0 ];
+        this.local.pos[ 1 ] = v[ 1 ];
+        this.local.pos[ 2 ] = v[ 2 ];
+
+        v = b.quaternion.toArray();
+        this.local.rot[ 0 ] = v[ 0 ];
+        this.local.rot[ 1 ] = v[ 1 ];
+        this.local.rot[ 2 ] = v[ 2 ];
+        this.local.rot[ 3 ] = v[ 3 ];
+
+        v = b.scale.toArray();
+        this.local.scl[ 0 ] = v[ 0 ];
+        this.local.scl[ 1 ] = v[ 1 ];
+        this.local.scl[ 2 ] = v[ 2 ];
+
+        return this;
+    }
+
+    clone(){
+        const j     = new Joint();
+        j.name      = this.name;
+        j.index     = this.index;
+        j.pindex    = this.pindex;
+        j.isRoot    = this.isRoot;
+        j.children  = [ ...this.children ];
+        j.local.copy( this.local );
+        j.world.copy( this.world );
+        return j;
+    }
+}
+
+// #endregion
+
+
+class HandRig{
+    // #region MAIN
+    tpose   = null;
+    wpose   = null;
+    skel    = null;
+
+    fingers = [ 'thumb', 'index', 'middle', 'ring', 'pinky' ];
+    thumb   = { chain:null, spread:0, bend0:0, bend1:0, bRad: Math.PI * 0.5, sRad: -50 * Math.PI / 180 };
+    index   = { chain:null, spread:0, bend0:0, bend1:0, bRad: Math.PI * 0.5, sRad: -10 * Math.PI / 180 };
+    middle  = { chain:null, spread:0, bend0:0, bend1:0, bRad: Math.PI * 0.5, sRad: 0 };
+    ring    = { chain:null, spread:0, bend0:0, bend1:0, bRad: Math.PI * 0.5, sRad: 10 * Math.PI / 180 };
+    pinky   = { chain:null, spread:0, bend0:0, bend1:0, bRad: Math.PI * 0.5, sRad: 25 * Math.PI / 180 };
+    
+    constructor( skel ){
+        this.skel  = skel;
+        this.tpose = new Pose( skel ); 
+        this.wpose = this.tpose.clone();
+        this.init();
+    }
+    // #endregion
+
+    init(){
+        this.setChain( this.thumb,  ['Bone_Lfinger_13', 'Bone_Lfinger_14', 'Bone_Lfinger_15'], 25 * Math.PI / 180 );
+        this.setChain( this.index,  ['Bone_Lfinger_07', 'Bone_Lfinger_08', 'Bone_Lfinger_09'],  3 * Math.PI / 180 );
+        this.setChain( this.middle, ['Bone_Lfinger_10', 'Bone_Lfinger_11', 'Bone_Lfinger_12'], -3 * Math.PI / 180 );
+        this.setChain( this.ring,   ['Bone_Lfinger_04', 'Bone_Lfinger_05', 'Bone_Lfinger_06'], -5 * Math.PI / 180 );
+        this.setChain( this.pinky,  ['Bone_Lfinger_01', 'Bone_Lfinger_02', 'Bone_Lfinger_03'], -7 * Math.PI / 180 );
+        return this;
+    }
+
+    setChain( o, bName, twistRad=0 ){
+        // Compute Swing
+        const apos  = this.tpose.getJoint( bName[0] ).world.pos;
+        const bpos  = this.tpose.getJoint( bName.at(-1) ).world.pos;
+        const swing = new Vec3().fromSub( bpos, apos ).norm();
+
+        // Compute Twist
+        const ortho = new Vec3().fromCross( swing, [0,1,0] );
+        const twist = new Vec3().fromCross( ortho, swing );
+        if( twistRad !== 0 ) twist.axisAngle( swing, twistRad );
+
+        // Chain
+        o.chain = new IKChain().setBones( bName, this.tpose, swing, twist );
+
+        // Debug
+        // const v = new Vec3();
+        // Debug.pnt.add( apos, 0x00ff00, 0.3 );
+        // Debug.pnt.add( bpos, 0x00ff00, 0.3 );
+        // Debug.ln.add( apos, v.fromScale( swing, 0.3 ).add( apos ), 0x00ff00 );
+        // Debug.ln.add( apos, v.fromScale( twist, 0.3 ).add( apos ), 0xff0000 );
+
+        return this
+    }
+
+    savePose(){
+        const rtn = {}
+        for( const f of this.fingers ){
+            const i = this[ f ];
+            rtn[ f ] = {
+                spread: i.spread,
+                bend0 : i.bend0,
+                bend1 : i.bend1,
+            };
+        }
+
+        console.log( JSON.stringify( rtn ) );
+    }
+
+    resolve(){
+        this.resolveFinger( this.index );
+        this.resolveFinger( this.middle );
+        this.resolveFinger( this.ring );
+        this.resolveFinger( this.pinky );
+        this.resolveFinger( this.thumb );
+
+        this.wpose.toSkeleton( this.skel );
+    }
+
+    resolveFinger( o ){
+        const ch    = o.chain;
+        const ptran = new Transform();
+        const ctran = new Transform();
+        const axes  = new Vec3();
+        const q     = new Quat();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const bend = ( lnk, n, i=0 )=>{
+            // Neutral Transform   
+            this.wpose.getWorld( lnk.pindex, ptran );
+
+            if( i === 1 ){
+                ctran.fromMul( ptran, this.wpose.joints[ lnk.index ].local );
+            }else{
+                ctran.fromMul( ptran, this.tpose.joints[ lnk.index ].local );
+            }
+
+            // Rotate by Ortho Axis
+            const nDir = ( i === 0 )? lnk.twist : lnk.ortho;
+            const rad  = ( i === 0 )? o.sRad : o.bRad;
+            axes.fromQuat( ctran.rot, nDir );
+            q   .fromAxisAngle( axes, rad * n )
+                .mul( ctran.rot )
+                .pmulInvert( ptran.rot );
+
+            // Save
+            this.wpose.setRot( lnk.index, q );
+        };
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        //
+        bend( ch.links[0], o.spread, 0 );
+        bend( ch.links[0], o.bend0, 1 );
+        bend( ch.links[1], o.bend1, 2 );
+        bend( ch.links[2], o.bend1, 3 );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // const v = new Vec3();
+        // Debug.ln.add( ctran.pos, v.fromAdd( ortho, ctran.pos ), 0x00ff00 );
+    }
+
+    blendSpace( v ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Compute weights get get which poses to use
+        const d   = calcBlendSpaceWeights( v );
+        const out = {
+            thumb   : { bend0:0, bend1:0, spread:0 },
+            index   : { bend0:0, bend1:0, spread:0 },
+            middle  : { bend0:0, bend1:0, spread:0 },
+            ring    : { bend0:0, bend1:0, spread:0 },
+            pinky   : { bend0:0, bend1:0, spread:0 },
+        };
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Blend the hand poses
+        for( const [i,dd] of d.pnt.entries() ){
+            const p = POSES[ dd.pose ];
+            const w = d.wgt[ i ];
+            for( const [k,v] of Object.entries(p) ){
+                out[ k ].spread += v.spread * w;
+                out[ k ].bend1  += v.bend1 * w;
+                out[ k ].bend0  += v.bend0 * w;
+            }
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Apply pose data & run posing
+        for( const [k,v] of Object.entries(out) ){
+            this[k].spread = v.spread;
+            this[k].bend1 = v.bend1;
+            this[k].bend0 = v.bend0;
+        }
+        this.resolve();
+    }
+}
+
+
+// #region 2D Blendspaces
+
+const COORDS = [
+    { pos: [-1, 1], pose:0 }, // TL 0
+    { pos: [ 0, 1], pose:1 }, // TM 1
+    { pos: [ 1, 1], pose:0 }, // TR 2
+    { pos: [ 1, 0], pose:3 }, // R  3
+    
+    { pos: [ 1,-1], pose:0 }, // BR 4
+    { pos: [ 0,-1], pose:4 }, // BM 5
+    { pos: [-1,-1], pose:0 }, // BL 6
+    { pos: [-1, 0], pose:2 }, // L  7
+
+    { pos: [ 0, 0], pose:0 }, // C  8
+];
+
+// Triangles in CCW
+// 1st & 4th points can be swopped based on 
+// absolute & normalized diagnal value
+const ZQUADRANT = [
+    { tri:[8,7,5,6] }, // BL
+    { tri:[8,5,3,4] }, // BR
+    { tri:[8,1,7,0] }, // TL
+    { tri:[8,3,1,2] }, // TR
+];
+
+function calcBlendSpaceWeights( v ){
+    const qc  = quadrantFromCoord( v );
+    const q   = ZQUADRANT[ qc ];
+    const p1  = COORDS[ q.tri[1] ];
+    const p2  = COORDS[ q.tri[2] ];
+
+    // console.log( 'Quadrant', qc );
+
+    // Check diagnal to see which triangle to access
+    // Array is setup where the 1st & 4th pnts can be swopped
+    // const p0  = ( Math.abs(v[0]) + Math.abs(v[1]) < 1 )
+    //     ? COORDS[ q.tri[0] ]
+    //     : COORDS[ q.tri[3] ];
+
+    const p0 = COORDS[ q.tri[0] ];
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    let wgt;
+    if ( Math.abs(v[0]) + Math.abs(v[1]) < 1 ){
+        // Inside triange connected to origin, weight between 3 points
+        wgt = barycentricWeights( v, p0.pos, p1.pos, p2.pos );
+    }else{
+        // outside triangle, get weight between two points
+        const w = linearWeight( v, p1.pos, p2.pos );
+        wgt = [0,...w];
+    }
+
+    return { wgt, pnt: [p0,p1,p2] };
+}
+
+
+// Standard Z-order - 0:BL, 1:BR, 2:TL, 3:TR
+function quadrantFromCoord( v ){
+    // Determine the binary indicators ( 0 or 1 )
+    const Fx = ( Math.sign( v[0] ) >= 0 )? 1 : 0; 
+    const Fy = ( Math.sign( v[1] ) >= 0 )? 1 : 0;
+
+    // 0: TL, 1: TR, 2: BR, 3: BL
+    // return ( Fy * Fx ) + (( 1 - Fy ) * ( 3 - Fx ));
+
+    // NOTE- For fun lets use morton as its a simpler equation
+    // Morton Code ( Z-order ) = ( Fy * 2 ) + Fx
+    // This interleaves the bits: [Fy, Fx]
+    return ( Fy << 1 ) | Fx; // Using bitwise shift/OR for efficiency
+}
+
+
+// NOTES: CCW, D will be Positive, CW D will be negative
+function barycentricWeights( t, p1, p2, p3 ){
+    const tx = t[0];
+    const ty = t[1];
+    const x1 = p1[0];
+    const y1 = p1[1];
+    const x2 = p2[0];
+    const y2 = p2[1];
+    const x3 = p3[0];
+    const y3 = p3[1];
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Calculate Twice the Signed Area of the main triangle (D)
+    // D = (x2 - x1)(y3 - y1) - (x3 - x1)(y2 - y1)
+    const D = (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1);
+
+    // If D is zero, the triangle is degenerate (points are collinear).
+    // We handle this by returning zero weights or a simple linear interpolation,
+    // but for this function, we'll return zero weights and log an error.
+    if( Math.abs( D ) < 1e-6 ){
+        console.error( 'Triangle is degenerate (collinear points). Cannot compute Barycentric Coordinates.' );
+        return [0,0,0];
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Calculate Numerators (N1, N2, N3) which are related to twice the area
+    // of the sub-triangles created by the target point T.
+
+    // Weight for P1 (omega_1) is based on the area of triangle T P2 P3
+    // N1 = (x2 - Tx)(y3 - Ty) - (x3 - Tx)(y2 - Ty)
+    const n1 = (x2 - tx) * (y3 - ty) - (x3 - tx) * (y2 - ty);
+
+    // Weight for P2 (omega_2) is based on the area of triangle T P3 P1
+    // N2 = (x3 - Tx)(y1 - Ty) - (x1 - Tx)(y3 - Ty)
+    const n2 = (x3 - tx) * (y1 - ty) - (x1 - tx) * (y3 - ty);
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Compute the final weights by dividing by D
+    // w3 can be calculated using the sum property: w1 + w2 + w3 = 1
+    const w1 = n1 / D;
+    const w2 = n2 / D;
+    const w3 = 1.0 - w1 - w2;
+    return [ w1, w2, w3 ];
+}
+
+
+function linearWeight( v, p1, p2 ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Project position onto segment
+    const ABx = p2[0] - p1[0];  // p2 - p1
+    const ABy = p2[1] - p1[1];
+    const AVx = v[0]  - p1[0];  // v - p1
+    const AVy = v[1]  - p1[1];
+
+    const dot    = AVx * ABx + AVy * ABy;   // Calculate Dot Product (AV * AB)
+    const magSqr = ABx * ABx + ABy * ABy;   // Squared Magnitude of AB
+
+    // Check for zero length ( p1 and p1 are the same point)
+    if(magSqr === 0) {
+        // If points are the same, t is 1 if T is at the same spot, 0 otherwise (or handle as an error)
+        const t = ( AVx === 0 && AVy === 0 )? 1.0 : 0.0;
+        return [ 1.0-t, t ];
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const t = Math.max( 0, Math.min( 1, dot / magSqr ) );
+    return [ 1.0-t, t ];
+}
+
+// #endregion
+
+// #region POSES
+const POSES = [
+    // Default TPose
+    {"thumb":{"spread":0,"bend0":0,"bend1":0},"index":{"spread":0,"bend0":0,"bend1":0},"middle":{"spread":0,"bend0":0,"bend1":0},"ring":{"spread":0,"bend0":0,"bend1":0},"pinky":{"spread":0,"bend0":0,"bend1":0}},
+
+    // Spread
+    {"thumb":{"spread":0.5700000000000001,"bend0":0,"bend1":0},"index":{"spread":1,"bend0":0,"bend1":0},"middle":{"spread":0,"bend0":0,"bend1":0},"ring":{"spread":1,"bend0":0,"bend1":0},"pinky":{"spread":1,"bend0":0,"bend1":0}},
+
+    // Claw
+    {"thumb":{"spread":0.5,"bend0":0,"bend1":0.46},"index":{"spread":1,"bend0":0.09,"bend1":0.48},"middle":{"spread":0,"bend0":0.16,"bend1":0.43},"ring":{"spread":1,"bend0":0.18,"bend1":0.43},"pinky":{"spread":1,"bend0":0.17,"bend1":0.42}},
+
+    // Fist
+    {"thumb":{"spread":0.36,"bend0":0,"bend1":0.72},"index":{"spread":0,"bend0":1,"bend1":1},"middle":{"spread":0,"bend0":1,"bend1":1},"ring":{"spread":0,"bend0":1,"bend1":1},"pinky":{"spread":0,"bend0":1,"bend1":1}},
+
+    // Devil
+    {"thumb":{"spread":0,"bend0":0,"bend1":0.5700000000000001},"index":{"spread":1,"bend0":0,"bend1":0},"middle":{"spread":0,"bend0":1,"bend1":1},"ring":{"spread":0,"bend0":1,"bend1":1},"pinky":{"spread":0.58,"bend0":0,"bend1":0}}
+];
+// #endregion
+
+</script></body></html>
