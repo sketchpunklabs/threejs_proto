@@ -1,0 +1,786 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import { GLTFLoader }           from 'three/GLTFLoader.js';
+import ScreenPicker, { Tasker } from '@lib/misc/ScreenPicker.js';
+// import FixedFrame               from '@lib/misc/FixedFrame.js';
+import ShapeQuads               from '@lib/meshes/ShapeQuads.js';
+import DynLineMesh              from '@lib/meshes/DynLineMesh.js';
+import useTransformControl      from '@lib/useTransformControl.js';
+import * as util                from '@lib/util.js';
+ 
+import Vec3         from '@lib/maths/Vec3.js';
+import Quat         from '@lib/maths/Quat.js';
+import Transform    from '@lib/maths/Transform.js';
+// #endregion
+
+// #region REFS / NOTES
+/*
+- https://matthias-research.github.io/pages/tenMinutePhysics/index.html
+  - Simple Soft Bodies : https://www.youtube.com/watch?v=uCaHXkS2cUg
+    - https://github.com/matthias-research/pages/blob/master/tenMinutePhysics/10-softBodies.html
+
+DeltaTs = DeltaT / subSteps
+while
+    for n substeps
+        for all particles i
+            Vi = Vi + DeltaTs * G  // Velocity
+            Pi = Xi
+            Xi = Xi + DeltaTs * Vi
+        
+        for all constraints C
+            //solve( c, DeltaTs )
+            for all particles i of C
+                compute deltaXi // Correction Vector, like the in Dist Constraint
+                Xi = Xi + deltaXi
+        
+        for all particles i
+            Vi = (Xi - Pi) / DeltaTs
+*/
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    gizmo   : useTransformControl( App ).useDetachless().setSize( 0.6 ).hide(),
+    tasks   : new Tasker(),
+    // fframe  : new FixedFrame( 1 ),
+    shapes  : new ShapeQuads().forDebugging(102),
+    lines   : new DynLineMesh().forDebugging(),
+
+    selIdx  : -1,
+};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 0, 1.5, [0,1.2,0] );
+    Debug       = await useVisualDebug( App );
+    Ref.picker  = new ScreenPicker( App );
+    App.scene.add( Ref.shapes, Ref.lines );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.skel  = await loadCharacter( { url:'../../../res/models/nabba.gltf', mesh:true, tpose:false, skelHelper:false } );
+    Ref.tpose = new Pose( Ref.skel ); 
+    Ref.pose  = Ref.tpose.clone();
+    
+    Ref.tpose.debug()
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // 6 'Clavicle_L'
+    // 7 'UpperArm_L'
+    // 8 'ForeArm_L'
+    // 9 'Hand_L'
+
+    Ref.chain = new IKChain()
+        .fromPose( ['UpperArm_L','ForeArm_L','Hand_L'], Ref.tpose );
+
+    Ref.chain.preConstraints.push( TargetConstraint );
+    Ref.chain.constraints.push( new ChainDistConstraint() );
+
+    renderChainPoints();
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // TESTING
+    // Ref.chain.setTarget( [0.4826145005577306, 1.4959363244000023, -0.06809048191564288] );
+    // Ref.chain.setTarget( [0.42575040170807277, 1.2465171614471495, -0.06811725693771323] );
+
+    // PBDSolver( Ref.chain, Ref.tpose, Ref.pose );
+    // PBDToPose( Ref.chain, Ref.tpose, Ref.pose );
+    // Ref.pose.toSkeleton( Ref.skel );
+    // renderChainPoints();
+
+    
+    Ref.gizmo.show( [0.5939121117316539, 1.186197261957519, -0.06809048191564288] );
+    Ref.selIdx = 2;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.createRenderLoop( onPreRender, onPostRender ).start();
+    // App.renderLoop();
+    appendGithubLink( false );
+});
+
+function onPreRender( dt, et, ts ){ }
+
+function resolvePDBIK(){
+    PBDSolver( Ref.chain, Ref.tpose, Ref.pose );
+    PBDToPose( Ref.chain, Ref.tpose, Ref.pose );
+    Ref.pose.toSkeleton( Ref.skel );
+    renderChainPoints();
+}
+
+// #endregion
+
+// #region GIZMO
+// Ref.gizmo.onStart = ()=>{ console.log( 'GIZMO START' ) };
+// Ref.gizmo.onStop = ()=>{ console.log( 'GIZMO STOP' ) };
+// Ref.gizmo.onRotate = r=>{};
+// Ref.gizmo.onScale = s=>{};
+
+Ref.gizmo.onMove = p=>{
+    Debug.reset()
+    Ref.chain.setTarget( p, Ref.selIdx );
+    resolvePDBIK()
+    Ref.pose.debug();
+    // console.log( p );
+
+};
+
+// #endregion
+
+// #region PICKING
+function onPostRender( dt, et ){ Ref.tasks.run(); }
+
+window.addEventListener( 'pointerdown', e=>{
+    if( e.button === 2 ){
+        Ref.gizmo.hide();
+        Ref.selIdx = -1;
+        return;
+    }
+
+    if( Ref.gizmo.dragging ) return;
+    Ref.tasks.push( Ref.picker.pixelTaskFromEvent(e, onPicker, true) );
+});
+
+function onPicker( o ){
+    // console.log( 'Pick', o );
+    switch( o.type ){
+        case 'shapeQuad':
+            if( o.idx > 0 ){
+                Ref.selIdx = o.idx;
+                Ref.gizmo.show( o.hit )
+                // console.log( o.idx, o.hit );
+            }
+        break;
+    }
+}
+// #endregion
+
+// #region CHARACTER LOADING
+
+async function loadCharacter( props={} ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // LOAD
+    const opt = { mesh:true, skel:true, skelHelper:true, toon:true, tpose:false, ...props };
+    const tf  = await new GLTFLoader().loadAsync( opt.url );
+    // const o  = firstFind( tf.scene, o=> (o.type === 'SkinnedMesh') );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Find Skeleton & Push Skinned Meshes to the scene
+    let skel;
+    for( const m of util.traverseFind( tf.scene, o=> (o.type === 'SkinnedMesh') ) ){
+        if( opt.mesh && opt.toon ){
+            const mat = new THREE.MeshToonMaterial( {
+                map       : m.material.map,
+                normalMap : m.material.normalMap,
+            } );
+            m.material = mat;
+        }
+
+        if( opt.mesh )  App.scene.add( m );
+        if( !skel )     skel = m.skeleton;  // First skeleton
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    if( opt.tpose ){
+        const clip = tf.animations.find( i=>i.name.toLowerCase() === 'tpose' );
+        if( clip )  util.poseFromClip( clip, skel );
+        else        console.log( 'TPose animation clip not found' );
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Push Skeleton Helper
+    App.scene.add( skel.bones[0] );
+    if( opt.skelHelper ){
+        App.scene.add( new THREE.SkeletonHelper( skel.bones[0] ) );
+    }
+    
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    return skel;
+}
+
+// #endregion
+
+// #region IK BITS
+
+class IKLink{
+    name   = '';
+    index  = -1;
+    pindex = -1;
+    len    = 0;
+    pos    = new Vec3();
+
+    // swing  = new Vec3( [0,1,0] );
+    // twist  = new Vec3( [0,0,1] );
+    // ortho  = new Vec3( [-1,0,0] );
+
+    constructor(){}
+
+    // q is WorldSpace rotation, function will invert it to compute inv direction
+    setDir( q, swing=[0,1,0], twist=[0,0,1] ){
+        const inv = new Quat( q ).invert();
+        this.swing.fromQuat( inv, swing ).norm();
+        this.twist.fromQuat( inv, twist ).norm();
+        this.ortho.fromCross( this.twist, this.swing ).norm();
+        return this;
+    }
+
+    getSwingQuat( wq ){
+        const swing = new Vec3().fromQuat( wq, this.swing );
+        const twist = new Vec3().fromQuat( wq, this.twist );
+        return new Quat().fromLook( swing, twist );
+    }
+
+    static fromPose( name, pose, swing=[0,1,0], twist=[0,0,1] ){
+        const lnk  = new IKLink();
+        const j    = pose.getJoint( name );
+
+        lnk.index  = j.index
+        lnk.name   = j.name;
+        lnk.pindex = j.pindex;
+
+        const t    = pose.getWorld( j.index );
+        lnk.pos.copy( t.pos );
+
+        // lnk.setDir( t.rot, swing, twist );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // DEBUG
+        // const vv = util.getWPos( b );
+        // const v  = new Vec3();
+        // Debug.pnt.add( vv, 0x00ff00, 0.2 );
+        // Debug.ln.add( vv, v.fromScale( swing, 0.2 ).add(vv), 0xff0000 );
+        // Debug.ln.add( vv, v.fromScale( twist, 0.2 ).add(vv), 0xffff00 );
+        
+        return lnk;
+    }
+}
+
+class IKChain{
+    // #region MAIN
+    links       = []; // List of link
+    len         = 0;  // Total length of chain
+    targetPos   = new Vec3();
+    targetIdx   = -1;
+
+    preConstraints  = []
+    constraints     = []
+
+    constructor(){}
+
+    fromPose( names, pose ){
+        for( const [i,jn] of names.entries() ){
+            this.addLink( IKLink.fromPose( jn, pose ) );
+        }
+
+        this.computeLengths( pose );
+        return this;
+    }
+    // #endregion
+
+    // #region GETTER / SETTERS
+    get parentIdx(){ return this.links[0].pindex; }
+    get rootIdx(){ return this.links[0].index; }
+    get effectIdx(){ return this.links.at(-1).index; }
+
+    addLink( lnk ){ this.links.push( lnk ); return this; }
+
+    setBones( bName, tpose, swing, twist ){
+        for( const [i,name] of bName.entries() ){
+            this.links.push( IKLink.fromName( name, tpose, swing, twist ) );
+        }
+
+        this.computeLengths( tpose );
+        return this;
+    }
+
+    getEffectorPos( pose ){
+        const v3 = new THREE.Vector3();
+        const b  = pose.bones[ this.effectIdx ];
+        return b.getWorldPosition( v3 ).toArray();
+    }
+
+    resetPose( tpose, pose, i, ii ){
+        let lnk, t, p;
+        for( let j=i; j <= ii; j++ ){
+            lnk = this.links[ j ];
+            t   = tpose.bones[ lnk.index ];
+            p   = pose.bones[ lnk.index ];
+
+            p.quaternion.copy( t.quaternion );
+        }
+        return this;
+    }
+    
+    setTarget( pos, idx=-1 ){
+        this.targetPos.copy( pos );
+        this.targetIdx = ( idx === -1 )? this.links.length-1 : idx;
+        return this;
+    }
+    // #endregion
+
+    // #region COMPUTE
+    compouteSwingTwistPoints( pose, twistDir=[0,1,0] ){
+        const va = new THREE.Vector3();
+        const vb = new THREE.Vector3();
+        const tq = new THREE.Quaternion(); 
+        const v  = new Vec3();
+        let la, lb;
+        let ja, jb;
+        let axes;
+
+        for( let i=1; i < this.links.length; i++ ){
+            // Get Links & Joints
+            la = this.links[ i-1 ];
+            lb = this.links[ i ];
+            ja = pose.bones[ la.index ];
+            jb = pose.bones[ lb.index ];
+            
+            // Get worldspace position & rotation
+            ja.getWorldPosition( va );
+            jb.getWorldPosition( vb );
+            ja.getWorldQuaternion( tq );
+
+            // Compute swing / twist direction
+            v.fromSub( vb.toArray(), va.toArray() ).norm();
+            axes = Vec3.look( v, twistDir );
+            
+            la.setDir( tq.toArray(), axes[2], axes[1] );
+
+            // Debug.ln.add( va.toArray(), v.fromScale( axes[2], 0.15 ).add( va.toArray() ), 0x00ff00 );
+            // Debug.ln.add( va.toArray(), v.fromScale( axes[1], 0.15 ).add( va.toArray() ), 0x00ffff );
+            // Debug.pnt.add( va.toArray(), 0x00ff00, 2 );
+        }
+
+        // Last axes gets passed to the leaf joint
+        jb.getWorldQuaternion( tq );
+        lb.setDir( tq.toArray(), axes[2], axes[1] );
+
+        // Debug.pnt.add( vb.toArray(), 0x00ff00, 2 );
+        // Debug.ln.add( vb.toArray(), v.fromScale( axes[2], 0.15 ).add( vb.toArray() ), 0x00ff00 );
+        // Debug.ln.add( vb.toArray(), v.fromScale( axes[1], 0.15 ).add( vb.toArray() ), 0x00ffff );
+    }
+
+    computeLengths( pose ){
+        const v = new THREE.Vector3();
+        let p = pose.joints[ this.links[0].index ].world.pos;
+        let l;
+        let c;
+
+        for( let i=1; i < this.links.length; i++ ){
+            c = pose.joints[ this.links[i].index ].world.pos;
+            l                   = Vec3.dist( c, p );
+            this.len           += l;
+            this.links[i-1].len = l;
+            p                   = c;
+        }
+
+        return this;
+    }
+    // #endregion
+}
+
+class Pose{
+    // #region MAIN
+    srcPose     = null;
+    nameIdx     = new Map();
+    joints      = [];
+    rootOffset  = new Transform();  // Absolute root transform
+    poseOffset  = new Transform();  // Offset applied to pose
+    constructor( skel ){
+        if( skel ) this.fromSkeleton( skel );
+    }
+    // #endregion
+
+    // #region GETTERS / SETTERS
+
+    getJoint( o ){
+        switch( typeof o ){
+            case 'number': return this.joints[ o ];
+            case 'string': {
+                const idx = this.nameIdx.get( o );
+                return ( idx !== undefined )? this.joints[ idx ] : null;
+            }
+        }
+        return null;
+    }
+
+    clone(){
+        const p = new Pose();
+        p.rootOffset.copy( this.rootOffset );
+        p.poseOffset.copy( this.poseOffset );
+
+        for( const j of this.joints ) p.joints.push( j.clone() );
+
+        p.srcPose = this.srcPose ?? this;
+        p.nameIdx = this.nameIdx; // Ref copy, should never change
+        return p;
+    }
+
+    fromSkeleton( skel ){
+        this.nameIdx.clear();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        let j;
+        for( const [i, b] of skel.bones.entries() ){
+            // console.log( i, b );
+            // Create Joint
+            j = new Joint().fromBone( b );
+            j.index = i;
+
+            // Map Name to Index
+            this.nameIdx.set( j.name, j.index );
+
+            // Link up parent-child relationshop
+            if( ( b.parent && b.parent.isBone ) ){
+                j.pindex = this.nameIdx.get( b.parent.name );
+                this.joints[ j.pindex ].children.push( j.index );
+            }
+
+            this.joints[ i ] = j;
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Get pose offset transform
+
+        const b = skel.bones[0];
+        if( b.parent ){
+            const v = new THREE.Vector3();
+            b.parent.getWorldPosition( v );
+            this.poseOffset.pos[ 0 ] = v.x;
+            this.poseOffset.pos[ 1 ] = v.y;
+            this.poseOffset.pos[ 2 ] = v.z;
+
+            b.parent.getWorldScale( v );
+            this.poseOffset.scl[ 0 ] = v.x;
+            this.poseOffset.scl[ 1 ] = v.y;
+            this.poseOffset.scl[ 2 ] = v.z;
+
+            const q = new THREE.Quaternion();
+            b.parent.getWorldQuaternion( q );
+            this.poseOffset.rot[ 0 ] = q.x;
+            this.poseOffset.rot[ 1 ] = q.y;
+            this.poseOffset.rot[ 2 ] = q.z;
+            this.poseOffset.rot[ 4 ] = q.w;
+        }
+
+        this.updateWorld();
+    }
+
+    reset(){
+        if( !this.srcPose ){ console.log( 'Pose.reset - No source available for resetting' ); return; }
+
+        for( let i=0; i < this.joints.length; i++ ){
+            this.joints[i].local.copy(  this.srcPose.joints[i].local );
+        }
+
+        return this;
+    }
+
+    toSkeleton( skel ){
+        let j;
+        for( const [i,b] of skel.bones.entries() ){
+            j = this.joints[ i ];
+            b.position.fromArray( j.local.pos );
+            b.quaternion.fromArray( j.local.rot );
+            b.scale.fromArray( j.local.scl );
+        }
+    }
+
+    setRot( i, rot ){
+        const r = this.joints[ i ].local.rot;
+        r[0]    = rot[0];
+        r[1]    = rot[1];
+        r[2]    = rot[2];
+        r[3]    = rot[3];
+        return this;
+    }
+
+    setPos( i, pos ){
+        const p = this.joints[ i ].local.pos;
+        p[0]    = pos[0];
+        p[1]    = pos[1];
+        p[2]    = pos[2];
+        return this;
+    }
+
+    setScl( i, scl ){
+        const p = this.joints[ i ].local.scl;
+        p[0]    = scl[0];
+        p[1]    = scl[1];
+        p[2]    = scl[2];
+        return this;
+    }
+
+    setScalar( i, s ){
+        const p = this.joints[ i ].local.scl;
+        p[0]    = s;
+        p[1]    = s;
+        p[2]    = s;
+        return this;
+    }
+    
+    // #endregion
+
+    // #region COMPUTE
+    updateWorld(){
+        for( const j of this.joints ){
+            if( j.pindex !== -1 ){
+                // Parent Exists
+                j.world.fromMul( this.joints[ j.pindex ].world, j.local );
+            }else{
+                // No Parent, apply any possible offset
+                j.world
+                    .fromMul( this.rootOffset, this.poseOffset )
+                    .mul( j.local );
+            }
+        }
+
+        return this;
+    }
+
+    getWorld( id, out=new Transform() ){
+        let joint = this.getJoint( id );
+
+        if( !joint ){
+            if( boneId === -1 ) out.fromMul( this.rootOffset, this.poseOffset );
+            else                console.error( 'Pose.getWorld - joint not found', id );
+            return out;
+        }
+
+        // Work up the heirarchy till the root bone
+        out.copy( joint.local );
+        while( joint.pindex !== -1 ){
+            joint = this.joints[ joint.pindex ];
+            out.pmul( joint.local );
+        }
+
+        // Add offset
+        out .pmul( this.poseOffset )
+            .pmul( this.rootOffset );
+
+        return out;
+    }
+    // #endregion
+
+    // #region DEBUGGING
+    debug(){
+        let c;
+        for( const j of this.joints ){
+            Debug.pnt.add( j.world.pos, 0x404040, 0.7 );
+            for( const i of j.children ){
+                c = this.joints[ i ];
+                Debug.ln.add( j.world.pos, c.world.pos, 0x606060 );
+            }
+        }
+        return this;
+    }
+    // #endregion
+}
+
+class Joint{
+    name     = '';
+    index    = -1;
+    pindex   = -1;
+    isRoot   = false;
+    children = [];
+    local    = new Transform();
+    world    = new Transform();
+
+    fromBone( b ){
+        this.name = b.name;
+
+        let v = b.position.toArray();
+        this.local.pos[ 0 ] = v[ 0 ];
+        this.local.pos[ 1 ] = v[ 1 ];
+        this.local.pos[ 2 ] = v[ 2 ];
+
+        v = b.quaternion.toArray();
+        this.local.rot[ 0 ] = v[ 0 ];
+        this.local.rot[ 1 ] = v[ 1 ];
+        this.local.rot[ 2 ] = v[ 2 ];
+        this.local.rot[ 3 ] = v[ 3 ];
+
+        v = b.scale.toArray();
+        this.local.scl[ 0 ] = v[ 0 ];
+        this.local.scl[ 1 ] = v[ 1 ];
+        this.local.scl[ 2 ] = v[ 2 ];
+
+        return this;
+    }
+
+    clone(){
+        const j     = new Joint();
+        j.name      = this.name;
+        j.index     = this.index;
+        j.pindex    = this.pindex;
+        j.isRoot    = this.isRoot;
+        j.children  = [ ...this.children ];
+        j.local.copy( this.local );
+        j.world.copy( this.world );
+        return j;
+    }
+}
+
+// #endregion
+
+// #region SOLVER
+
+function PBDSolver( chain, tpose, pose, iterLimit=35 ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Run Pre-Constraints
+    for( const c of chain.preConstraints ){
+        c.apply( chain, tpose, pose );
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Iterations of main constraints
+    let cnt = 0;
+    for( let i=0; i < iterLimit; i++ ){
+        cnt = 0
+        for( const c of chain.constraints ){
+            cnt += c.apply( chain, tpose, pose );
+        }
+
+        // console.log( 'iter', i, 'cnt', cnt );
+
+        // If all constraints are good, end iterations loop
+        if( cnt === 0 ) break;
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // for( const lnk of chain.links ){
+    //     Debug.pnt.add( lnk.pos, 0xffff00, 2 );
+    // }
+}
+
+function PBDToPose( chain, tpose, pose ){
+    const apTran = new Transform();
+    const acTran = new Transform();
+    const bpTran = new Transform();
+    const bcTran = new Transform();
+
+    const fromDir = new Vec3();
+    const toDir   = new Vec3();
+
+    const rot     = new Quat();
+
+    let aLnk;
+    let bLnk;
+
+    pose.reset();
+
+    for( let i=0; i < chain.links.length-1; i++ ){
+        aLnk = chain.links[ i ];
+        bLnk = chain.links[ i+1 ];
+        
+        pose.getWorld( aLnk.pindex, apTran );
+        pose.getWorld( bLnk.pindex, bpTran );
+
+        acTran.fromMul( apTran, tpose.joints[aLnk.index].local );
+        bcTran.fromMul( bpTran, tpose.joints[bLnk.index].local );
+
+        // Debug.pnt.add( acTran.pos, 0xff00ff, 1.5 );
+        // Debug.pnt.add( bcTran.pos, 0xff00ff, 1.5 );
+        // Debug.pnt.add( bLnk.pos, 0xffff00, 1.5, 0 );
+
+        fromDir.fromSub( bcTran.pos, acTran.pos ).norm();
+        toDir.fromSub( bLnk.pos, acTran.pos ).norm();
+
+        rot .fromSwing( fromDir, toDir )
+            .mul( acTran.rot )
+            .pmulInvert( apTran.rot )
+            .copyTo( pose.joints[ aLnk.index ].local.rot );
+
+        // break
+    }
+
+    pose.updateWorld();
+}
+
+// Just copies the Target Position to one of the points in the chain
+class TargetConstraint{
+    static apply( chain, tpose, pose ){
+        // console.log( 'TargetConstraint', chain.targetIdx )
+
+        if( chain.targetIdx !== -1 ){
+            chain.links[chain.targetIdx].pos.copy( chain.targetPos );
+            // Debug.pnt.add( chain.targetPos, 0xff0000, 1, 6 );
+        }
+    }
+}
+
+// Execute Distance constraint on all the points of the chain
+class ChainDistConstraint{
+    constructor(){
+        this.rootAnchor = true
+    }
+    
+    apply( chain, tpose, pose ){
+        let ii;
+        let wa      = 0;
+        let wb      = 0;
+        let chgCnt  = 0
+
+        for( let i=0; i < chain.links.length-1; i++ ){
+            ii = i+1
+
+            if( i === 0 && this.rootAnchor ){  wa = 0;   wb = 1;   }    // Anchor A
+            else if( i  === chain.targetIdx ){ wa = 0.2; wb = 0.8; }    // Weighty A
+            else if( ii === chain.targetIdx ){ wa = 0.8; wb = 0.2; }    // Weighty B
+            else{                              wa = 0.5; wb = 0.5; }    // Even Weight
+
+            chgCnt += distConstraint( chain.links[i].pos, chain.links[ii].pos, chain.links[i].len, wa, wb );
+        }
+
+        return chgCnt;
+    }
+}
+
+// Compute and Apply co
+function distConstraint( a, b, atLen, aWgt=0.5, bWgt=0.5 ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const dir    = new Vec3().fromSub( a, b );
+    const curLen = dir.len;
+    if( Math.abs( curLen - atLen ) < 0.0001 ) return 0;
+
+    // Normalize length to avoid normalizing the dir vector
+    // this allows use to scale dir to the offset length
+    // needed to pull/push the end points
+    const norm = curLen === 0 ? aLen : ( atLen - curLen ) / curLen;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Scale direction offset distance, then apply weight scaling
+    // Then add/sub to each end of the segment   
+    a[ 0 ] += dir[ 0 ] * norm * aWgt;
+    a[ 1 ] += dir[ 1 ] * norm * aWgt;
+    a[ 2 ] += dir[ 2 ] * norm * aWgt;
+    
+    b[ 0 ] -= dir[ 0 ] * norm * bWgt;
+    b[ 1 ] -= dir[ 1 ] * norm * bWgt;
+    b[ 2 ] -= dir[ 2 ] * norm * bWgt;
+
+    return 1;
+}
+
+// #endregion
+
+// #region RENDERING
+
+function renderChainPoints(){
+    Ref.shapes.reset();
+
+    const ch    = Ref.chain;
+    const jAry  = Ref.pose.joints;
+    let j;
+    for( const lnk of ch.links ){
+        j = jAry[ lnk.index ];
+        Ref.shapes.add( j.world.pos, 0x00ff00, 1 );
+    }
+}
+
+// #endregion
+
+
+</script></body></html>
