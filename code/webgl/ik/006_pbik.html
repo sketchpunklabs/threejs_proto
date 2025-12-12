@@ -5,7 +5,6 @@
 import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
 import { GLTFLoader }           from 'three/GLTFLoader.js';
 import ScreenPicker, { Tasker } from '@lib/misc/ScreenPicker.js';
-// import FixedFrame               from '@lib/misc/FixedFrame.js';
 import ShapeQuads               from '@lib/meshes/ShapeQuads.js';
 import DynLineMesh              from '@lib/meshes/DynLineMesh.js';
 import useTransformControl      from '@lib/useTransformControl.js';
@@ -45,9 +44,8 @@ while
 let App   = useDarkScene( useThreeWebGL2() );
 let Debug = {};
 let Ref   = {
-    gizmo   : useTransformControl( App ).useDetachless().setSize( 0.6 ).hide(),
+    gizmo   : useTransformControl( App ).useDetachless().setSize( 0.9 ).hide(),
     tasks   : new Tasker(),
-    // fframe  : new FixedFrame( 1 ),
     shapes  : new ShapeQuads().forDebugging(102),
     lines   : new DynLineMesh().forDebugging(),
 
@@ -62,41 +60,49 @@ window.addEventListener( 'load', async ()=>{
     App.scene.add( Ref.shapes, Ref.lines );
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    Ref.skel  = await loadCharacter( { url:'../../../res/models/nabba.gltf', mesh:true, tpose:false, skelHelper:false } );
+    Ref.skel  = await loadCharacter( { url:'../../../res/models/nabba.gltf', mesh:true, toon:false, tpose:false, skelHelper:false } );
     Ref.tpose = new Pose( Ref.skel ); 
     Ref.pose  = Ref.tpose.clone();
     
     Ref.tpose.debug()
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    // 6 'Clavicle_L'
-    // 7 'UpperArm_L'
-    // 8 'ForeArm_L'
-    // 9 'Hand_L'
-
     Ref.chain = new IKChain()
-        .fromPose( ['UpperArm_L','ForeArm_L','Hand_L'], Ref.tpose );
+        .fromPose( ['UpperArm_L','ForeArm_L','Hand_L'], Ref.tpose, [0,0,-1] );
 
-    Ref.chain.preConstraints.push( TargetConstraint );
-    Ref.chain.constraints.push( new ChainDistConstraint() );
+    Ref.chain.preConstraints.push( 
+        ApplyTargetPosition,
+    );
+
+    Ref.chain.constraints.push( 
+        new ChainDistConstraint(),
+        new ClampToTargetPlane( 2, true ),
+    );
+
+    Ref.chain.postConstraints.push(
+        new ChainPoleUpdates( 1 ),
+    );
 
     renderChainPoints();
     
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // TESTING
-    // Ref.chain.setTarget( [0.4826145005577306, 1.4959363244000023, -0.06809048191564288] );
-    // Ref.chain.setTarget( [0.42575040170807277, 1.2465171614471495, -0.06811725693771323] );
+    // const TPOS = [0.4826145005577306, 1.4959363244000023, -0.06809048191564288];
+    // const TPOS = [0.42575040170807277, 1.2465171614471495, -0.06811725693771323];
+    // const TPOS = [0.4826145005577306, 1.4359363244000023, -0.06809048191564288];
+    // const TPOS = [-0.113929951675926, 1.1066101265564477, 0.18323451718104505];
+    // const TPOS = [0.3207439780626685, 1.3336028600303462, -0.2586118457509682]; //POLE
+    // Ref.chain.setTarget( TPOS );
+    // Ref.chain.setTarget( TPOS, 1 );
+    // Ref.gizmo.show( TPOS );
+    // Ref.selIdx = 2;
 
     // PBDSolver( Ref.chain, Ref.tpose, Ref.pose );
     // PBDToPose( Ref.chain, Ref.tpose, Ref.pose );
     // Ref.pose.toSkeleton( Ref.skel );
     // renderChainPoints();
 
-    
-    Ref.gizmo.show( [0.5939121117316539, 1.186197261957519, -0.06809048191564288] );
-    Ref.selIdx = 2;
-
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    App.createRenderLoop( onPreRender, onPostRender ).start();
+    App.createRenderLoop( null, onPostRender ).start();
     // App.renderLoop();
     appendGithubLink( false );
 });
@@ -104,10 +110,10 @@ window.addEventListener( 'load', async ()=>{
 function onPreRender( dt, et, ts ){ }
 
 function resolvePDBIK(){
-    PBDSolver( Ref.chain, Ref.tpose, Ref.pose );
-    PBDToPose( Ref.chain, Ref.tpose, Ref.pose );
-    Ref.pose.toSkeleton( Ref.skel );
-    renderChainPoints();
+    PBDSolver( Ref.chain, Ref.tpose, Ref.pose ); // Move and constraint points
+    PBDToPose( Ref.chain, Ref.tpose, Ref.pose ); // Turn points into rotation
+    Ref.pose.toSkeleton( Ref.skel );             // Apply pose to 3js Skeleton
+    renderChainPoints();                         // See points
 }
 
 // #endregion
@@ -124,7 +130,6 @@ Ref.gizmo.onMove = p=>{
     resolvePDBIK()
     Ref.pose.debug();
     // console.log( p );
-
 };
 
 // #endregion
@@ -259,22 +264,50 @@ class IKLink{
 
 class IKChain{
     // #region MAIN
-    links       = []; // List of link
-    len         = 0;  // Total length of chain
-    targetPos   = new Vec3();
-    targetIdx   = -1;
+    links           = []; // List of link
+    len             = 0;  // Total length of chain
+    targetPos       = new Vec3();
+    targetIdx       = -1;
+    
+    attrib          = {};
 
-    preConstraints  = []
-    constraints     = []
+    preConstraints  = [];
+    constraints     = [];
+    postConstraints = [];
 
     constructor(){}
 
-    fromPose( names, pose ){
+    fromPose( names, pose, poleDir=null ){
         for( const [i,jn] of names.entries() ){
             this.addLink( IKLink.fromPose( jn, pose ) );
         }
 
         this.computeLengths( pose );
+
+        if( poleDir ){
+            const a         = pose.getWorld( this.links[0].index );
+            const b         = pose.getWorld( this.links.at(-1).index );
+            const targetDir = new Vec3().fromSub( b.pos, a.pos );
+            const axes      = Vec3.look( targetDir, poleDir );
+            const qi        = new Quat().fromInvert( a.rot );
+
+            // this.attrib.swingDir    = new Vec3().fromQuat( a.rot, axes[2] );
+            // this.attrib.twistDir    = new Vec3().fromQuat( a.rot, axes[1] );
+
+            this.attrib.swingDir    = new Vec3().fromQuat( qi, axes[2] );
+            this.attrib.twistDir    = new Vec3().fromQuat( qi, axes[1] );
+            this.attrib.altTwistDir = this.attrib.twistDir.clone();
+
+            // ~~~~~~
+            // TODO - Remove, for testing
+            // this.attrib.altTwistDir
+            //     .copy( poleDir )
+            //     .axisAngle( [1,0,0], -60 * Math.PI / 180 )
+                
+            // const aa = Vec3.look( targetDir, this.attrib.altTwistDir );
+            // this.attrib.altTwistDir.copy( aa[1] ).transformQuat( qi );
+        }
+
         return this;
     }
     // #endregion
@@ -318,6 +351,8 @@ class IKChain{
         this.targetIdx = ( idx === -1 )? this.links.length-1 : idx;
         return this;
     }
+    
+    
     // #endregion
 
     // #region COMPUTE
@@ -566,12 +601,15 @@ class Pose{
 
     // #region DEBUGGING
     debug(){
+        const LN = 0x707070;
+        const PT = 0x505050;
+
         let c;
         for( const j of this.joints ){
-            Debug.pnt.add( j.world.pos, 0x404040, 0.7 );
+            Debug.pnt.add( j.world.pos, PT, 0.7 );
             for( const i of j.children ){
                 c = this.joints[ i ];
-                Debug.ln.add( j.world.pos, c.world.pos, 0x606060 );
+                Debug.ln.add( j.world.pos, c.world.pos, LN );
             }
         }
         return this;
@@ -627,7 +665,18 @@ class Joint{
 
 // #region SOLVER
 
-function PBDSolver( chain, tpose, pose, iterLimit=35 ){
+function objName( o ){
+    switch( typeof o ){
+        case 'object':
+            if( o.constructor ) return o.constructor.name;
+            break;
+        case 'function':
+            return o.name;
+    }
+    return null;
+}
+
+function PBDSolver( chain, tpose, pose, iterLimit=20 ){
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // Run Pre-Constraints
     for( const c of chain.preConstraints ){
@@ -637,10 +686,16 @@ function PBDSolver( chain, tpose, pose, iterLimit=35 ){
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // Iterations of main constraints
     let cnt = 0;
-    for( let i=0; i < iterLimit; i++ ){
+    let num = 0;
+    let i;
+    for( i=0; i < iterLimit; i++ ){
+        Debug.reset(); // TODO, Temp hack to prevent lots of repeated visual debugging calls
         cnt = 0
+        // console.log( '-------' )
         for( const c of chain.constraints ){
-            cnt += c.apply( chain, tpose, pose );
+            num  = c.apply( chain, tpose, pose );
+            cnt += num;
+            // console.log( objName(c), num );
         }
 
         // console.log( 'iter', i, 'cnt', cnt );
@@ -648,7 +703,15 @@ function PBDSolver( chain, tpose, pose, iterLimit=35 ){
         // If all constraints are good, end iterations loop
         if( cnt === 0 ) break;
     }
+    // console.log( 'ITER', i, iterLimit );
 
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Run Pre-Constraints
+    for( const c of chain.postConstraints ){
+        c.apply( chain, tpose, pose );
+    }
+
+    // console.log( 'Iterations', i );
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // for( const lnk of chain.links ){
     //     Debug.pnt.add( lnk.pos, 0xffff00, 2 );
@@ -656,29 +719,58 @@ function PBDSolver( chain, tpose, pose, iterLimit=35 ){
 }
 
 function PBDToPose( chain, tpose, pose ){
-    const apTran = new Transform();
-    const acTran = new Transform();
-    const bpTran = new Transform();
-    const bcTran = new Transform();
+    const apTran = new Transform(); // Start Parent Transform
+    const acTran = new Transform(); // Start Joint Transform
+    const bpTran = new Transform(); // End Parent Transform
+    const bcTran = new Transform(); // End Joint Transform
 
-    const fromDir = new Vec3();
-    const toDir   = new Vec3();
+    const fromDir = new Vec3(); // Start Vector
+    const toDir   = new Vec3(); // End Vector
 
-    const rot     = new Quat();
+    const rot     = new Quat(); // Working rotation
 
     let aLnk;
     let bLnk;
 
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Apply plane rotation to the first joint in the chain
     pose.reset();
 
+    const v    = new Vec3();
+    
+    aLnk       = chain.links[ 0 ];
+    const data = calcChainPlaneNEW( chain, tpose, pose, false );
+
+    // Apply Swing
+    rot.fromSwing( data.swing, data.tSwing )
+    rot.mul( data.tran.rot )
+
+    // Apply Twist
+    fromDir.fromQuat( rot, chain.attrib.twistDir ).norm();
+    
+    // toDir.fromQuat( rot, chain.attrib.swingDir ).norm();
+    // Debug.ln.add( data.tran.pos, v.fromScaleThenAdd( 0.3, fromDir, data.tran.pos ), 0xff0000 );
+    // Debug.ln.add( data.tran.pos, v.fromScaleThenAdd( 0.2, toDir, data.tran.pos ), 0xff00ff );
+
+    // if( Math.abs(Vec3.dot( fromDir, data.tTwist ) ) < 0.9999 ){
+        rot.pmulSwing( fromDir, data.tTwist );
+    // }
+
+    // Save to localspace
+    rot.pmulInvert( data.ptran.rot )
+       .copyTo( pose.joints[ aLnk.index ].local.rot );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     for( let i=0; i < chain.links.length-1; i++ ){
         aLnk = chain.links[ i ];
         bLnk = chain.links[ i+1 ];
         
         pose.getWorld( aLnk.pindex, apTran );
         pose.getWorld( bLnk.pindex, bpTran );
-
-        acTran.fromMul( apTran, tpose.joints[aLnk.index].local );
+        
+        if( i != 0 ) acTran.fromMul( apTran, tpose.joints[aLnk.index].local );
+        else         acTran.fromMul( apTran, pose.joints[aLnk.index].local );
+        
         bcTran.fromMul( bpTran, tpose.joints[bLnk.index].local );
 
         // Debug.pnt.add( acTran.pos, 0xff00ff, 1.5 );
@@ -688,6 +780,9 @@ function PBDToPose( chain, tpose, pose ){
         fromDir.fromSub( bcTran.pos, acTran.pos ).norm();
         toDir.fromSub( bLnk.pos, acTran.pos ).norm();
 
+        // Debug.ln.add( acTran.pos, v.fromScaleThenAdd( 1.0, fromDir, acTran.pos ) , 0xff00ff );
+        // Debug.ln.add( acTran.pos, v.fromScaleThenAdd( 1.0, toDir, acTran.pos ) , 0xffff00 );
+
         rot .fromSwing( fromDir, toDir )
             .mul( acTran.rot )
             .pmulInvert( apTran.rot )
@@ -696,11 +791,12 @@ function PBDToPose( chain, tpose, pose ){
         // break
     }
 
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     pose.updateWorld();
 }
 
 // Just copies the Target Position to one of the points in the chain
-class TargetConstraint{
+class ApplyTargetPosition{
     static apply( chain, tpose, pose ){
         // console.log( 'TargetConstraint', chain.targetIdx )
 
@@ -708,8 +804,11 @@ class TargetConstraint{
             chain.links[chain.targetIdx].pos.copy( chain.targetPos );
             // Debug.pnt.add( chain.targetPos, 0xff0000, 1, 6 );
         }
+
+        return 0;
     }
 }
+
 
 // Execute Distance constraint on all the points of the chain
 class ChainDistConstraint{
@@ -727,8 +826,8 @@ class ChainDistConstraint{
             ii = i+1
 
             if( i === 0 && this.rootAnchor ){  wa = 0;   wb = 1;   }    // Anchor A
-            else if( i  === chain.targetIdx ){ wa = 0.2; wb = 0.8; }    // Weighty A
-            else if( ii === chain.targetIdx ){ wa = 0.8; wb = 0.2; }    // Weighty B
+            else if( i  === chain.targetIdx ){ wa = 0.3; wb = 0.7; }    // Weighty A
+            else if( ii === chain.targetIdx ){ wa = 0.7; wb = 0.3; }    // Weighty B
             else{                              wa = 0.5; wb = 0.5; }    // Even Weight
 
             chgCnt += distConstraint( chain.links[i].pos, chain.links[ii].pos, chain.links[i].len, wa, wb );
@@ -743,7 +842,9 @@ function distConstraint( a, b, atLen, aWgt=0.5, bWgt=0.5 ){
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     const dir    = new Vec3().fromSub( a, b );
     const curLen = dir.len;
-    if( Math.abs( curLen - atLen ) < 0.0001 ) return 0;
+    // console.log( '---', 'at', atLen,'cur', curLen, 'diff', atLen - curLen );
+    // console.log( a, b );
+    if( Math.abs( atLen - curLen ) < 0.0001 ) return 0;
 
     // Normalize length to avoid normalizing the dir vector
     // this allows use to scale dir to the offset length
@@ -762,6 +863,305 @@ function distConstraint( a, b, atLen, aWgt=0.5, bWgt=0.5 ){
     b[ 2 ] -= dir[ 2 ] * norm * bWgt;
 
     return 1;
+}
+
+
+class ClampToTargetPlane{
+    constructor( targetIdx=-1, showDebug = false ){
+        this.targetIdx = targetIdx;
+        this.showDebug = showDebug;
+    }
+    
+    apply( chain, tpose, pose ){
+        if( chain.targetIdx !== this.targetIdx ) return 0;
+
+        const vv = new Vec3();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const data = calcChainPlaneNEW( chain, tpose, pose, false );
+        const tOrtho = data.tOrtho;
+        const tTwist = data.tTwist;
+        const tran   = data.tran;
+
+        const v = new Vec3();
+        for( let i=1; i < chain.links.length-1; i++ ){
+            // -------------------
+            // Clamp to plane
+            chain.links[i].pos.fromPlaneSnap( null, tOrtho, tran.pos );
+
+            // -------------------
+            // Clamp to +forward & +up quadrant, prevent elbow bending backwards
+            v.fromSub( chain.links[i].pos, tran.pos ).norm();
+            if( Vec3.dot( v, tTwist ) < 0 ){
+                pointNearSegment( chain.links[i].pos, tran.pos, chain.targetPos, chain.links[i].pos );
+            }
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Target / Swing Vector
+        if( this.showDebug ){
+            // swing.scale( 1.1 ).add( tran.pos )
+            // Debug.ln.add( tran.pos, swing, 0xffffff );
+
+            // twist.scale( 0.1 ).add( tran.pos );
+            // Debug.ln.add( tran.pos, twist, 0xffffff );
+
+            // ortho.scale( 0.2 ).add( tran.pos );
+            // Debug.ln.add( tran.pos, ortho, 0xffffff );
+
+            // tSwing.add( tran.pos );
+            // Debug.ln.add( tran.pos, tSwing, 0x00ffff );
+
+            // pSwing.add( tran.pos );
+            // Debug.ln.add( tran.pos, pSwing, 0x00ff00 );
+
+            // tTwist.scale(0.1).add( tran.pos );
+            // Debug.ln.add( tran.pos, tTwist, 0x00ffff );
+
+            // tOrtho.scale(0.2).add( tran.pos );
+            // Debug.ln.add( tran.pos, tOrtho, 0x00ffff );
+        }
+
+        return 0;
+    }
+}
+
+function pointNearSegment( p, aPos, bPos, out=[0,0,0] ){
+    /* closest_point_to_line3D
+    let dx	= bx - ax,
+        dy	= by - ay,
+        dz	= bz - az,
+        t	= ( (px-ax)*dx + (py-ay)*dy + (pz-az)*dz ) / ( dx*dx + dy*dy + dz*dz ) ; */
+
+    const seg   = new Vec3().fromSub( bPos, aPos ); // Vector Length
+    const v     = new Vec3().fromSub( p, aPos ).mul( seg );
+    const t     = ( v[0] + v[1] + v[2] ) / Vec3.len( seg );
+
+    // if( t < 0 || t > 1 ) return null; // Over / Under Shoot Ray
+    
+    out[0] = seg[ 0 ] * t + aPos[ 0 ];
+    out[1] = seg[ 1 ] * t + aPos[ 1 ];
+    out[2] = seg[ 2 ] * t + aPos[ 2 ];
+    return out;
+}
+
+function calcChainPlane( chain, tpose, pose ){
+    const lnk   = chain.links[0];
+    const ptran = pose.getWorld( lnk.pindex );
+    const tran  = new Transform().fromMul( ptran, tpose.joints[lnk.index ].local )
+
+    // Neutral Vectors - Main Plane Def
+    const swing = new Vec3().fromQuat( tran.rot, chain.attrib.swingDir );
+    const twist = new Vec3().fromQuat( tran.rot, chain.attrib.altTwistDir ).norm();
+    const ortho = new Vec3().fromCross( twist, swing ).norm();
+
+    // Target Swing
+    const tSwing = new Vec3().fromSub( chain.targetPos, tran.pos ).norm()
+    
+    // Plane Swing, Snap target to Plane
+    const pSwing = new Vec3().fromPlaneSnap( chain.targetPos, ortho, tran.pos ).sub( tran.pos ).norm();
+
+    // Compute Axes Angle Rotation on plane
+    // The target swing projected into the plane, so twist vector
+    // can be rotated on the plane to better match the target swing vector
+    let rad = Vec3.angle( swing, pSwing );
+    if( Vec3.dot( pSwing, twist ) > 0 ) rad = -rad;
+
+    const rot = new Quat().fromAxisAngle( ortho, rad );
+    // console.log( rad * 180 / Math.PI );
+
+    // Compute the Target Twist & Ortho which is the plane rotated
+    // as much as possible without the twist vector keeping its general
+    // direction while rotating along the target swing
+    // const tTwist = twist.clone().axisAngle( ortho, rad );
+    const tTwist = twist.clone().transformQuat( rot );
+    const tOrtho = new Vec3().fromCross( tTwist, tSwing );
+    tTwist.fromCross( tSwing, tOrtho );
+
+    return [ tOrtho, tTwist, tSwing, ortho, twist, swing, rot  ]
+}
+
+function calcChainPlaneNEW( chain, tpose, pose, useDebug=false ){
+    // const lnk   = chain.links[0];
+    // const ptran = pose.getWorld( lnk.pindex );
+    // const tran  = new Transform().fromMul( ptran, tpose.joints[lnk.index ].local )
+
+    // // Neutral Vectors - Main Plane Def
+    // const swing = new Vec3().fromQuat( tran.rot, chain.attrib.swingDir );
+    // const twist = new Vec3().fromQuat( tran.rot, chain.attrib.altTwistDir ).norm();
+    // const ortho = new Vec3().fromCross( twist, swing ).norm();
+
+    // // Target Swing
+    // const tSwing = new Vec3().fromSub( chain.targetPos, tran.pos ).norm()
+    
+    // // Plane Swing, Snap target to Plane
+    // const pSwing = new Vec3().fromPlaneSnap( chain.targetPos, ortho, tran.pos ).sub( tran.pos ).norm();
+
+    // // Compute Axes Angle Rotation on plane
+    // // The target swing projected into the plane, so twist vector
+    // // can be rotated on the plane to better match the target swing vector
+    // let rad = Vec3.angle( swing, pSwing );
+    // if( Vec3.dot( pSwing, twist ) > 0 ) rad = -rad;
+
+    // const rot = new Quat().fromAxisAngle( ortho, rad );
+    // // console.log( rad * 180 / Math.PI );
+
+    // // Compute the Target Twist & Ortho which is the plane rotated
+    // // as much as possible without the twist vector keeping its general
+    // // direction while rotating along the target swing
+    // // const tTwist = twist.clone().axisAngle( ortho, rad );
+    // const tTwist = twist.clone().transformQuat( rot );
+    // const tOrtho = new Vec3().fromCross( tTwist, tSwing );
+    // tTwist.fromCross( tSwing, tOrtho );
+
+    // return [ tOrtho, tTwist, tSwing, ortho, twist, swing, rot  ]
+
+    // Neutral Transform
+    const lnk   = chain.links[0];
+    const ptran = pose.getWorld( lnk.pindex );
+    const tran  = new Transform().fromMul( ptran, tpose.joints[ lnk.index ].local )
+
+    // Neutral Vectors - Main Plane 
+    const swing  = new Vec3().fromQuat( tran.rot, chain.attrib.swingDir );
+    const twist  = new Vec3().fromQuat( tran.rot, chain.attrib.twistDir ).norm();
+    const ortho  = new Vec3().fromCross( twist, swing ).norm();
+    const atwist = new Vec3().fromQuat( tran.rot, chain.attrib.altTwistDir ).norm();
+    
+    // Target Swing - Shoulder to Target Pos
+    const tSwing = new Vec3().fromSub( chain.targetPos, tran.pos ).norm()
+
+    // Plane Swing, Snap target to Plane
+    const pSwing = new Vec3().fromPlaneSnap( chain.targetPos, ortho, tran.pos ).sub( tran.pos ).norm();
+
+    // Compute Axes Angle Rotation on plane
+    // The target swing projected into the plane, so twist vector
+    // can be rotated on the plane to better match the target swing vector
+    let rad = Vec3.angle( swing, pSwing );
+    if( Vec3.dot( pSwing, twist ) > 0 ) rad = -rad;
+    // console.log( rad * 180 / Math.PI );
+
+    const rot = new Quat().fromAxisAngle( ortho, rad );
+
+    // Create the neutral twist from the target swing vector
+    // This will be needed for twist rotation when aligning bones
+    // const ntTwist = twist.clone().transformQuat( rot );
+    // const ntOrtho = new Vec3().fromCross(ntTwist, tSwing );
+    // ntTwist.fromCross( tSwing, ntOrtho );
+    
+
+    // Compute the Target Twist & Ortho which is the plane rotated
+    // as much as possible without the twist vector keeping its general
+    // direction while rotating along the target swing
+    const tTwist = atwist.clone().transformQuat( rot );
+    const tOrtho = new Vec3().fromCross( tTwist, tSwing );
+    tTwist.fromCross( tSwing, tOrtho );
+
+    if( useDebug ){
+        const vv = new Vec3();
+
+        // Neutral Vectors - Main Plane Def
+        Debug.ln.add( tran.pos, vv.fromScaleThenAdd( 1, swing, tran.pos ), 0xffffff );
+        Debug.ln.add( tran.pos, vv.fromScaleThenAdd( 0.1, ortho, tran.pos ), 0xffffff );
+        Debug.ln.add( tran.pos, vv.fromScaleThenAdd( 0.2, twist, tran.pos ), 0xffffff );
+        Debug.ln.add( tran.pos, vv.fromScaleThenAdd( 0.3, atwist, tran.pos ), 0xffffff, null, true );
+        // Target Swing - Shoulder to Target Pos
+        Debug.ln.add( tran.pos, vv.fromScaleThenAdd( 1, tSwing, tran.pos ), 0x00ffff );
+        // Plane Swing, Snap target to Plane
+        Debug.ln.add( tran.pos, vv.fromScaleThenAdd( 1, pSwing, tran.pos ), 0x00ff00 );
+        // Target Twist & Ortho
+        Debug.ln.add( tran.pos, vv.fromScaleThenAdd( 0.1, tOrtho, tran.pos ), 0x00ffff );
+        Debug.ln.add( tran.pos, vv.fromScaleThenAdd( 0.3, tTwist, tran.pos ), 0x00ffff );
+
+        // Neutral Target Twist
+        // Debug.ln.add( tran.pos, vv.fromScaleThenAdd( 0.1, ntTwist, tran.pos ), 0xff0000 );
+    }
+
+    return {
+        tOrtho, tTwist, tSwing,
+        ortho, twist, swing,
+        // ntOrtho, ntTwist,
+        ptran, tran, rot,
+    };
+}
+
+
+// Execute Distance constraint on all the points of the chain
+class ChainPoleUpdates{
+    constructor( targetIdx=1 ){
+        this.targetIdx = targetIdx;
+        this.showDebug = true;
+    }
+    
+    apply( chain, tpose, pose ){
+        // Only run when the target is active
+        if( chain.targetIdx !== this.targetIdx ) return 0;
+
+        const aLnk = chain.links[0];
+        const bLnk = chain.links[1];
+        const cLnk = chain.links[2];
+        
+        const ba    = new Vec3().fromSub( aLnk.pos, bLnk.pos ).norm();
+        const bc    = new Vec3().fromSub( cLnk.pos, bLnk.pos ).norm();
+
+        if( Math.abs( Vec3.dot(ba, bc) ) > 0.9999 ){
+            console.log( 'Parallel Vectors ')
+            return 0;
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Neutral Transofmr
+        const ptran   = pose.getWorld( aLnk.pindex );
+        const ctran   = new Transform().fromMul( ptran, tpose.joints[ aLnk.index ].local );
+
+        // Compute target vectors, bend in joints will define twist vector
+        const tSwing  = new Vec3().fromSub( cLnk.pos, aLnk.pos ).norm();
+        const tOrtho  = new Vec3().fromCross( bc, ba ).norm();
+        const tTwist  = new Vec3().fromCross( tSwing, tOrtho ).norm();
+
+        // Neutral Vectors of the joint
+        const tJnt   = tpose.joints[ aLnk.index ];
+        const nSwing = new Vec3().fromQuat( tJnt.world.rot, chain.attrib.swingDir ).norm();
+        const nTwist = new Vec3().fromQuat( tJnt.world.rot, chain.attrib.twistDir ).norm();
+        const nOrtho = new Vec3().fromCross( nTwist, nSwing ).norm();
+        
+        // Plane Swing, Snap target to Plane
+        const pSwing = new Vec3().fromPlaneSnap( cLnk.pos, nOrtho, ctran.pos ).sub( ctran.pos ).norm();
+        
+        // Angle of rotation around the plane
+        let rad = Vec3.angle( nSwing, pSwing );
+        if( Vec3.dot( pSwing, nTwist ) < 0 ) rad = -rad;
+
+        const rot = new Quat().fromAxisAngle( nOrtho, rad );
+
+        // Rotate twist vector around the plane
+        nTwist.fromQuat( rot, tTwist );
+        nOrtho.fromCross( nTwist, nSwing );
+        nTwist.fromCross( nSwing, nOrtho );
+
+        // Move to neutral space & save as inverse twist vector
+        rot.fromInvert( tJnt.world.rot );
+        chain.attrib.altTwistDir.fromQuat( rot, nTwist );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if( this.showDebug ){
+            // nTwist.copy( axes[1] );
+
+            const vv   = new Vec3();
+            const tran = pose.getWorld( aLnk.index );
+
+            Debug.ln.add( tran.pos, vv.fromScaleThenAdd( 1, tSwing, tran.pos ), 0xffff00 );
+            Debug.ln.add( tran.pos, vv.fromScaleThenAdd( 0.1, tOrtho, tran.pos ), 0xffff00 );
+            Debug.ln.add( tran.pos, vv.fromScaleThenAdd( 0.3, tTwist, tran.pos ), 0xffff00, null, true );
+
+            Debug.ln.add( tran.pos, vv.fromScaleThenAdd( 1, pSwing, tran.pos ), 0x00ff00 );
+            
+            Debug.ln.add( tran.pos, vv.fromScaleThenAdd( 1, nSwing, tran.pos ), 0xffffff );
+            Debug.ln.add( tran.pos, vv.fromScaleThenAdd( 0.3, nTwist, tran.pos ), 0xffffff, null, true );
+            // Debug.ln.add( tran.pos, vv.fromScaleThenAdd( 0.1, nOrtho, tran.pos ), 0xffffff, null, true );            
+        }
+
+        return 0;
+    }
 }
 
 // #endregion
