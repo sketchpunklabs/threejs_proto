@@ -1,0 +1,1035 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import { GLTFLoader } from 'three/GLTFLoader.js';
+import * as util      from '@lib/util.js';
+
+import Vec3         from '@lib/maths/Vec3.js';
+import Quat         from '@lib/maths/Quat.js';
+import Transform    from '@lib/maths/Transform.js';
+
+import { Pane }     from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+// #endregion
+
+// https://x.com/scottpetrovic/status/2003833306883015060
+// - https://github.com/Mesh2Motion/mesh2motion-app/blob/main/src/retarget/AnimationRetargetService.ts
+// https://x.com/scottpetrovic/status/2003834793507893725
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    twist : 0,
+    rot   : 0,
+    speed : 1,
+};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 20, 5, [0,0.7,0] );
+    Debug = await useVisualDebug( App );
+
+    const url = '../../../res';
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // DOWNLOAD ANIMATION & SETUP RIG FOR ITS SKELETON
+    // let [clips, aSkel, aGrp] = await loadAnimations( `${url}/anim/source-animation.glb` );
+    let [clips, aSkel, aGrp] = await loadAnimations( `${url}/anim/mixamo/Catwalk.gltf` );
+    let aHelper = new THREE.SkeletonHelper( aSkel.bones[0] );
+    App.scene.add( aGrp || aSkel.bones[0], aHelper );
+    // util.logHierarchy( aSkel.bones[0] );
+
+    const aRig = new Rig( aSkel ).fromConfig({
+        pelvis  : { names:[ 'mixamorigHips' ] },
+        spine   : { names:[ 'mixamorigSpine', 'mixamorigSpine1', 'mixamorigSpine2' ] },
+        head    : { names:[ 'mixamorigNeck', 'mixamorigHead' ] },
+        armL    : { names:[ 'mixamorigLeftArm', 'mixamorigLeftForeArm', 'mixamorigLeftHand' ] },
+        armR    : { names:[ 'mixamorigRightArm', 'mixamorigRightForeArm', 'mixamorigRightHand' ] },
+        legL    : { names:[ 'mixamorigLeftUpLeg', 'mixamorigLeftLeg', 'mixamorigLeftFoot' ] },
+        legR    : { names:[ 'mixamorigRightUpLeg', 'mixamorigRightLeg', 'mixamorigRightFoot' ] },
+    });
+
+    // aRig.debugSkelVectors();
+    // aRig.debugTPoseVectors();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // DOWNLOAD CHARACTER & SETUP RIG FOR ITS SKELETON
+    const [tScene, tSkin] = await loadCharacter( {url:`${url}/models/nabba.gltf`, skelHelper:false } );
+    tScene.position.x = -1.5;
+    App.scene.add( tScene );
+    // util.logHierarchy( tSkin.skeleton.bones[0] );
+
+    const tRig = new Rig( tSkin.skeleton ).fromConfig( {
+        pelvis  : { names:[ 'Hips' ] },
+        spine   : { names:[ 'Spine1', 'Spine2', 'Spine3' ] },
+        head    : { names:[ 'Neck', 'Head' ] },
+        armL    : { names:[ 'UpperArm_L', 'ForeArm_L', 'Hand_L' ] },
+        armR    : { names:[ 'UpperArm_R', 'ForeArm_R', 'Hand_R' ] },
+        legL    : { names:[ 'Thigh_L', 'Shin_L', 'Foot_L' ] },
+        legR    : { names:[ 'Thigh_R', 'Shin_R', 'Foot_R' ] },
+    } );
+
+    // const [tScene, tSkin] = await loadCharacter( {url:`${url}/models/target_mixamo_rig.glb`, skelHelper:false } );
+    // tScene.position.x = -1.5;
+    // App.scene.add( tScene );
+    // // util.logHierarchy( tSkin.skeleton.bones[0] );
+
+    // const tRig = new Rig( tSkin.skeleton ).fromConfig( {
+    //     pelvis  : { names:[ 'mixamorigHips' ] },
+    //     spine   : { names:[ 'mixamorigSpine', 'mixamorigSpine1', 'mixamorigSpine2' ] },
+    //     head    : { names:[ 'mixamorigNeck', 'mixamorigHead' ] },
+    //     armL    : { names:[ 'mixamorigLeftArm', 'mixamorigLeftForeArm', 'mixamorigLeftHand' ] },
+    //     armR    : { names:[ 'mixamorigRightArm', 'mixamorigRightForeArm', 'mixamorigRightHand' ] },
+    //     legL    : { names:[ 'mixamorigLeftUpLeg', 'mixamorigLeftLeg', 'mixamorigLeftFoot' ] },
+    //     legR    : { names:[ 'mixamorigRightUpLeg', 'mixamorigRightLeg', 'mixamorigRightFoot' ] },
+    // } );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // SETUP RETARGETER
+    const retarget = new Retargeter()
+        .setSourceRig( aRig )
+        .setTargetRig( tRig )
+        .setClip( clips[0] );
+
+    retarget.additives.push(
+        (Ref.addAxis  = new AxisAdditive( 'armL', 'y', 0 * Math.PI / 180 )),
+        (Ref.addTwist = new ChainTwistAdditive( 'armR', 0 * Math.PI / 180 )),
+    );
+
+    // retarget.update( 0.001 ); // TEST
+
+    Ref.retarget = retarget; // ENABLE RUNTIME
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.createRenderLoop( onPreRender ).start();
+    // App.renderLoop();
+
+    appendGithubLink( false );
+    buildUI();
+});
+
+
+function onPreRender( dt, et ){
+    if( Ref.retarget ){
+        Debug.reset();
+        Ref.retarget.update( dt );
+    }
+}
+
+async function buildUI(){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const p = new Pane();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const f2 = p.addFolder({ title: 'Animation', expanded: true });
+    f2.addBinding( Ref, 'speed', { min: 0.01, max: 1, step: 0.01, label: 'Speed' } ).on( 'change', e=>{
+        // Ref.addTwist.angle = e.value * Math.PI / 180;
+        Ref.retarget.action.timeScale = e.value;
+    });
+
+
+    const f = p.addFolder({ title: 'Right Arm Additives', expanded: true });
+    f.addBinding( Ref, 'twist', { min: -180, max: 180, step: 1, label: 'Twist' } ).on( 'change', e=>{
+        Ref.addTwist.angle = e.value * Math.PI / 180;
+    });
+
+    const f1 = p.addFolder({ title: 'Left Arm Additives', expanded: true });
+    f1.addBinding( Ref, 'rot', { min: -180, max: 180, step: 1, label: 'YAxis' } ).on( 'change', e=>{
+        Ref.addAxis.angle = e.value * Math.PI / 180;
+    });
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.pane = p;
+}
+
+// #endregion
+
+// #region LOADING
+    async function loadCharacter( props={} ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // LOAD
+        const opt = { skel:true, skelHelper:false, phong:undefined, toon:false, tpose:false, ...props };
+        const tf  = await new GLTFLoader().loadAsync( opt.url );
+
+        // const o  = util.firstFind( tf.scene, o=> (o.type === 'SkinnedMesh') );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Find Skeleton & Push Skinned Meshes to the scene
+        let skinned;
+        let mat = null;
+        for( const m of util.traverseFind( tf.scene, o=> (o.type === 'SkinnedMesh') ) ){
+            if( opt.phong != null ) mat = new THREE.MeshPhongMaterial( { color: opt.phong } );
+            if( opt.toon )          mat = new THREE.MeshToonMaterial( { map: m.material.map, normalMap: m.material.normalMap } );
+
+            if( mat )       m.material = mat;
+            if( !skinned )  skinned    = m;  // First skeleton
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if( opt.tpose ){
+            const clip = tf.animations.find( i=>i.name.toLowerCase() === 'tpose' );
+            if( clip )  util.poseFromClip( clip, skel );
+            else        console.log( 'TPose animation clip not found' );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Push Skeleton Helper
+        // App.scene.add( skel.bones[0] );
+        if( opt.skelHelper && skinned ){
+            App.scene.add( new THREE.SkeletonHelper( skinned.skeleton.bones[0] ) );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        return [ tf.scene, skinned ];
+    }
+
+    async function loadAnimations( url ){
+        const tf = await new GLTFLoader().loadAsync( url );
+        const [ skel, grp ] = parseGLTFSkeleton( tf );
+        return [ tf.animations ?? [], skel, grp ];
+    }
+
+    // 3JS's GLTF Parser is not able to handle files that
+    // contains animations & skeletons BUT no skinned meshes.
+    // This function parses out the animation's skeleton from
+    // the JSON data within the GLB. Basically, pull out all
+    // bindpose that the animation is based on.
+    function parseGLTFSkeleton( obj ){
+        const json   = obj.parser.json;         // GLTF Json Data
+        const n      = json.nodes;              // Shortcut to nodes
+        const joints = json.skins[0].joints;    // Shortcut to skeleton joint node indices
+
+        const map    = {};  // Map Node Index to Bone Index
+        const bones  = [];  // Collection of bones to build skeleton
+
+        let j;  // GLTF Joint
+        let b;  // 3JS Bone
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Create Bones
+        for( const [i,ni] of joints.entries() ){
+            j = n[ni]
+            if( !j.isBone ) continue;
+
+            // NOTE: Remove periods & colons, clip removes it from track names
+            // which causes name mismatch errors trying to run animation on skeleton
+            b         = new THREE.Bone();
+            b.name    = j.name.replaceAll('.', '').replaceAll(':','');
+            map[ ni ] = i;
+
+            // console.log( b.name )
+
+            if( j.rotation )    b.quaternion.fromArray( j.rotation );
+            if( j.translation ) b.position.fromArray( j.translation );
+            if( j.scale )       b.scale.fromArray( j.scale );
+
+            bones.push( b );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Create Parent-Child Relationship
+        for( const [i,ni] of joints.entries() ){
+            j = n[ni];
+            if( j.isBone && j.children ){
+                b = bones[i];
+                for( const c of j.children ) b.add( bones[ map[c] ] );
+            }
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const skel = new THREE.Skeleton( bones );
+
+        // const hlpr = new THREE.SkeletonHelper( bones[0] );
+        // App.scene.add( bones[0], hlpr );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Ancestors transforms as Groups
+        // NOTE: Blender tends to add parent nodes that transform the skeleton's root
+        const nFind = ( ni )=>{
+            for( const [i, o] of n.entries() ){
+                if( o.children && o.children.includes( ni ) ) return i;
+            }
+            return null;
+        };
+
+        const groups = [];
+        let ni       = joints[0];
+
+        do{
+            if( ( ni = nFind( ni ) ) !== null ){
+                j = n[ni];
+
+                if( j.translation || j.rotation || j.scale ){
+                    const g = new THREE.Group();
+                    g.name = j.name;
+
+                    if( j.translation ) g.position.fromArray( j.translation );
+                    if( j.rotation )    g.quaternion.fromArray( j.rotation );
+                    if( j.scale )       g.scale.fromArray( j.scale );
+
+                    // Add last transform group as a child to the new one
+                    if( groups.length > 0 ) g.add( groups.at( -1 ) );
+                    groups.push( g );
+                }
+            }
+        }while( ni !== null );
+
+        let grp = null;
+        if( groups.length > 0 ){
+            groups[0].add( skel.bones[0] ); // Root lives under most inner group
+            grp = groups.at( -1 );          // Save outer most group for adding to scene
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        return [ skel, grp ];
+    }
+// #endregion
+
+// #region RIG
+// Setup a standard definition of what a Humanoid is. The rig
+// allows to work with different skeletons with various joint
+// naming convention. This makes it easier to build a system
+// that speaks a single language of whats what.
+
+class Rig{
+    constructor( skel ){
+        this.skel   = skel;
+        this.chains = {};
+        this.tpose  = new Pose( skel );
+        this.scalar = 1;
+        // this.tpose.debug();
+    }
+
+    fromConfig( cfg={} ){
+        for( const [k,v] of Object.entries( cfg ) ){
+            switch( k ){
+                case 'pelvis'   : this.buildItem( k, v.names, [0,0,1], [0,1,0] ).buildScalar( k ); break;
+                case 'spine'    : this.buildItem( k, v.names, [0,1,0], [0,0,1] ); break;
+                case 'head'     : this.buildItem( k, v.names, [0,0,1], [0,1,0] ); break;
+
+                case 'armL'     : this.buildItem( k, v.names, [1,0,0], [0,0,-1] ); break;
+                case 'armR'     : this.buildItem( k, v.names, [-1,0,0], [0,0,-1] ); break;
+
+                case 'legL'     : this.buildItem( k, v.names, [0,0,1], [0,-1,0] ); break;
+                case 'legR'     : this.buildItem( k, v.names, [0,0,1], [0,-1,0] ); break;
+            }
+        }
+        return this;
+    }
+
+    buildItem( k, names, swing, twist ){
+        const ary = [];
+        let j;
+
+        for( const n of names ){
+            j = this.tpose.getJoint( n );
+            if( !j ){ console.log( 'Error - Rig.buildLimb : Joint name not found in tpose, ', n ); continue; }
+
+            ary.push( new RigItem().fromJoint( j, swing, twist ) );
+        }
+
+        this.chains[ k ] = ary;
+        return this;
+    }
+
+    buildScalar( k ){
+        const ch    = this.chains[ k ];
+        const j     = this.tpose.joints[ ch[0].idx ];
+        this.scalar = j.world.pos[ 1 ];
+        return this;
+    }
+
+    debugSkelVectors(){
+        // const bAry = this.skel.bones;
+        const tran = new Transform();
+        const v    = new Vec3();
+
+        for( const [chName,ch] of Object.entries( this.chains ) ){
+            for( const itm of ch ){
+                getWorld( this.skel, itm.idx, tran );
+                Debug.pnt.add( tran.pos, 0xffff00, 0.8 );
+
+                v.fromQuat( tran.rot, itm.swing ).norm().scale( 0.1 ).add( tran.pos );
+                Debug.ln.add( tran.pos, v, 0xffff00 );
+
+                v.fromQuat( tran.rot, itm.twist ).norm().scale( 0.1 ).add( tran.pos );
+                Debug.ln.add( tran.pos, v, 0xff00ff );
+            }
+        }
+    }
+
+    debugTPoseVectors(){
+        // const bAry = this.skel.bones;
+        const tran = new Transform();
+        const v    = new Vec3();
+
+        for( const [chName,ch] of Object.entries( this.chains ) ){
+            for( const itm of ch ){
+                this.tpose.getWorld( itm.idx, tran );
+                Debug.pnt.add( tran.pos, 0xffff00, 0.8 );
+
+                v.fromQuat( tran.rot, itm.swing ).norm().scale( 0.1 ).add( tran.pos );
+                Debug.ln.add( tran.pos, v, 0xffff00 );
+
+                v.fromQuat( tran.rot, itm.twist ).norm().scale( 0.1 ).add( tran.pos );
+                Debug.ln.add( tran.pos, v, 0xff00ff );
+            }
+        }
+    }
+}
+
+// Rig data about a single joint
+class RigItem{
+    constructor(){
+        this.idx   = -1;                // Joint Index
+        this.pidx  = -1;                // Parent Joint Index
+        this.swing = new Vec3( 0,0,1 ); // Swing Direction - Z
+        this.twist = new Vec3( 0,1,0 ); // Twist Direction - Y
+    }
+
+    fromJoint( j, swing=null, twist=null ){
+        this.idx  = j.index;
+        this.pidx = j.pindex;
+
+        // Compute inverse direction on the current joint rotation
+        if( swing || twist ){
+            const q = new Quat().fromInvert( j.world.rot );
+            if( swing ) this.swing.fromQuat( q, swing );
+            if( twist ) this.twist.fromQuat( q, twist );
+        }
+
+        return this;
+    }
+}
+
+// #endregion
+
+// #region POSE
+// Threejs does not have a method to clone a skeleton that works correctly.
+// Pose allows to make copies of a skeleton state. This is great to cache
+// the bindpose plus have a working space for computing a new pose before
+// commiting the results to the skeleton
+
+class Pose{
+    // #region MAIN
+    srcPose     = null;
+    nameIdx     = new Map();
+    joints      = [];
+    rootOffset  = new Transform();  // Absolute root transform
+    poseOffset  = new Transform();  // Offset applied to pose
+    constructor( skel ){
+        if( skel ) this.fromSkeleton( skel );
+    }
+    // #endregion
+
+    // #region GETTERS / SETTERS
+
+    getJoint( o ){
+        switch( typeof o ){
+            case 'number': return this.joints[ o ];
+            case 'string': {
+                const idx = this.nameIdx.get( o );
+                return ( idx !== undefined )? this.joints[ idx ] : null;
+            }
+        }
+        return null;
+    }
+
+    clone(){
+        const p = new Pose();
+        p.rootOffset.copy( this.rootOffset );
+        p.poseOffset.copy( this.poseOffset );
+
+        for( const j of this.joints ) p.joints.push( j.clone() );
+
+        p.srcPose = this.srcPose ?? this;
+        p.nameIdx = this.nameIdx; // Ref copy, should never change
+        return p;
+    }
+
+    fromSkeleton( skel ){
+        this.nameIdx.clear();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        let j;
+        for( const [i, b] of skel.bones.entries() ){
+            // console.log( i, b );
+            // Create Joint
+            j = new Joint().fromBone( b );
+            j.index = i;
+
+            // Map Name to Index
+            this.nameIdx.set( j.name, j.index );
+
+            // Link up parent-child relationshop
+            if( ( b.parent && b.parent.isBone ) ){
+                j.pindex = this.nameIdx.get( b.parent.name );
+                this.joints[ j.pindex ].children.push( j.index );
+            }
+
+            this.joints[ i ] = j;
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Get pose offset transform
+
+        const b = skel.bones[0];
+        if( b.parent ){
+            const v = new THREE.Vector3();
+            b.parent.getWorldPosition( v );
+            this.poseOffset.pos[ 0 ] = v.x;
+            this.poseOffset.pos[ 1 ] = v.y;
+            this.poseOffset.pos[ 2 ] = v.z;
+
+            b.parent.getWorldScale( v );
+            this.poseOffset.scl[ 0 ] = v.x;
+            this.poseOffset.scl[ 1 ] = v.y;
+            this.poseOffset.scl[ 2 ] = v.z;
+
+            const q = new THREE.Quaternion();
+            b.parent.getWorldQuaternion( q );
+            this.poseOffset.rot[ 0 ] = q.x;
+            this.poseOffset.rot[ 1 ] = q.y;
+            this.poseOffset.rot[ 2 ] = q.z;
+            this.poseOffset.rot[ 3 ] = q.w;
+        }
+
+        this.updateWorld();
+    }
+
+    reset(){
+        if( !this.srcPose ){ console.log( 'Pose.reset - No source available for resetting' ); return; }
+
+        for( let i=0; i < this.joints.length; i++ ){
+            this.joints[i].local.copy(  this.srcPose.joints[i].local );
+        }
+
+        return this;
+    }
+
+    toSkeleton( skel ){
+        let j;
+        for( const [i,b] of skel.bones.entries() ){
+            j = this.joints[ i ];
+            b.position.fromArray( j.local.pos );
+            b.quaternion.fromArray( j.local.rot );
+            b.scale.fromArray( j.local.scl );
+        }
+    }
+
+    setRot( i, rot ){
+        const r = this.joints[ i ].local.rot;
+        r[0]    = rot[0];
+        r[1]    = rot[1];
+        r[2]    = rot[2];
+        r[3]    = rot[3];
+        return this;
+    }
+
+    setPos( i, pos ){
+        const p = this.joints[ i ].local.pos;
+        p[0]    = pos[0];
+        p[1]    = pos[1];
+        p[2]    = pos[2];
+        return this;
+    }
+
+    setScl( i, scl ){
+        const p = this.joints[ i ].local.scl;
+        p[0]    = scl[0];
+        p[1]    = scl[1];
+        p[2]    = scl[2];
+        return this;
+    }
+
+    setScalar( i, s ){
+        const p = this.joints[ i ].local.scl;
+        p[0]    = s;
+        p[1]    = s;
+        p[2]    = s;
+        return this;
+    }
+
+    // #endregion
+
+    // #region COMPUTE
+    updateWorld(){
+        for( const j of this.joints ){
+            if( j.pindex !== -1 ){
+                // Parent Exists
+                j.world.fromMul( this.joints[ j.pindex ].world, j.local );
+            }else{
+                // No Parent, apply any possible offset
+                j.world
+                    .fromMul( this.rootOffset, this.poseOffset )
+                    .mul( j.local );
+            }
+        }
+
+        return this;
+    }
+
+    getWorld( id, out=new Transform() ){
+        let joint = this.getJoint( id );
+
+        if( !joint ){
+            if( id === -1 ) out.fromMul( this.rootOffset, this.poseOffset );
+            else            console.error( 'Pose.getWorld - joint not found', id );
+            return out;
+        }
+
+        // Work up the heirarchy till the root bone
+        out.copy( joint.local );
+        while( joint.pindex !== -1 ){
+            joint = this.joints[ joint.pindex ];
+            out.pmul( joint.local );
+        }
+
+        // Add offset
+        out .pmul( this.poseOffset )
+            .pmul( this.rootOffset );
+
+        return out;
+    }
+    // #endregion
+
+    // #region DEBUGGING
+    debug(){
+        const LN = 0x707070;
+        const PT = 0x505050;
+
+        let c;
+        for( const j of this.joints ){
+            Debug.pnt.add( j.world.pos, PT, 0.7 );
+            for( const i of j.children ){
+                c = this.joints[ i ];
+                Debug.ln.add( j.world.pos, c.world.pos, LN );
+            }
+        }
+        return this;
+    }
+    // #endregion
+}
+
+class Joint{
+    name     = '';
+    index    = -1;
+    pindex   = -1;
+    isRoot   = false;
+    children = [];
+    local    = new Transform();
+    world    = new Transform();
+
+    fromBone( b ){
+        this.name = b.name;
+
+        let v = b.position.toArray();
+        this.local.pos[ 0 ] = v[ 0 ];
+        this.local.pos[ 1 ] = v[ 1 ];
+        this.local.pos[ 2 ] = v[ 2 ];
+
+        v = b.quaternion.toArray();
+        this.local.rot[ 0 ] = v[ 0 ];
+        this.local.rot[ 1 ] = v[ 1 ];
+        this.local.rot[ 2 ] = v[ 2 ];
+        this.local.rot[ 3 ] = v[ 3 ];
+
+        v = b.scale.toArray();
+        this.local.scl[ 0 ] = v[ 0 ];
+        this.local.scl[ 1 ] = v[ 1 ];
+        this.local.scl[ 2 ] = v[ 2 ];
+
+        return this;
+    }
+
+    clone(){
+        const j     = new Joint();
+        j.name      = this.name;
+        j.index     = this.index;
+        j.pindex    = this.pindex;
+        j.isRoot    = this.isRoot;
+        j.children  = [ ...this.children ];
+        j.local.copy( this.local );
+        j.world.copy( this.world );
+        return j;
+    }
+}
+
+// #endregion
+
+// #region RETARGET
+
+class Retargeter{
+    // #region MAIN
+        constructor(){
+            this.mixer      = new THREE.AnimationMixer( new THREE.Object3D() );
+            this.clip       = null; // Working Aniumation
+            this.action     = null; // Its Action
+
+            this.srcRig     = null; // Rig & Skeleton of the animation
+            this.tarRig     = null; // Rig & Skeleton of target character
+
+            this.pose       = null; // Clone of Target Skeleton Pose, Working Pose
+
+            this.additives  = [];   // Changes after the retargeting
+        }
+    // #endregion
+
+    // #region SETTERS
+        setSourceRig( rig ){ this.srcRig = rig; return this; }
+        setTargetRig( rig ){ this.tarRig = rig; return this; }
+        setClip( clip ){
+            this.clip = clip;
+
+            if( this.action !== null ){
+                this.action.stop(); // TODO - Find how to clear out memory instead of just stopping it
+                this.action = null;
+            }
+
+            return this;
+        }
+    // #endregion
+
+    // #region METHODS
+        update( dt ){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // PREPARE
+            if( !this.action ){
+                this.action = this.mixer.clipAction( this.clip, this.srcRig.skel.bones[0] );
+                this.action.play();
+            }
+
+            if( !this.pose ) this.pose = this.tarRig.tpose.clone();
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Run Animation
+            this.mixer.update( dt );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Compute vectors from animation source
+            // then align target joints to it
+            this.applyScaledTranslation( 'pelvis' );
+            this.applyChain( 'pelvis' );
+            this.applyEndInterp( 'spine' );
+            this.applyChain( 'head' );
+
+            this.applyChain( 'armL' );
+            this.applyChain( 'armR' );
+            this.applyChain( 'legL' );
+            this.applyChain( 'legR' );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Run Addtives
+            for( let i of this.additives )i.apply( this );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Apply working pose to 3JS skeleton for rendering
+            this.pose.toSkeleton( this.tarRig.skel );
+        }
+
+        // Apply SwingTwist to each joint of a chain, 1 to 1 mappings
+        applyChain( k ){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            const src = this.srcRig.chains[ k ];
+            const tar = this.tarRig.chains[ k ];
+            if( !src || !tar ) return;
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            const cnt = src.length;
+            const v   = new THREE.Vector3();
+            const q   = new THREE.Quaternion();
+
+            const p      = new Vec3();
+            const sPos   = new Vec3();
+            const sRot   = new Quat();
+            const tRot   = new Quat();
+            const rot    = new Quat();
+
+            const sSwing = new Vec3(); // Source Swing
+            const sTwist = new Vec3(); // Source Twist
+            const nSwing = new Vec3();
+            const nTwist = new Vec3();
+
+            const ptran  = new Transform();
+            const ctran  = new Transform();
+
+            let b;
+            let j;
+
+            for( let i=0; i < src.length; i++ ){
+
+                // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                // Get source swing / twist vectors
+                // Pose exists in 3JS skeleton, so need to get its
+                // Data threw 3JS methods
+                b = this.srcRig.skel.bones[ src[i].idx ];
+                b.getWorldPosition( v );
+                b.getWorldQuaternion( q );
+                sPos.copyObj( v );
+                sRot.copyObj( q );
+
+                sSwing.fromQuat( sRot, src[i].swing );
+                sTwist.fromQuat( sRot, src[i].twist );
+
+                // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                // Get Target Neutral Transform for the joint
+                // ( neutralTwistDir x targetTwistDir ) * ( neutralSwingDir x targetSwingDir ) * neutralRot
+                j = this.tarRig.tpose.joints[ tar[i].idx ];
+
+                // neutral = currentPose.joint.world * tpose.joint.local
+                this.pose.getWorld( j.pindex, ptran );  // Current transform of parent joint
+                ctran.fromMul( ptran, j.local );        // Applied to TPose transform
+
+                // ----------------------------
+                // SWING
+                nSwing.fromQuat( ctran.rot, tar[i].swing ); // Get swing direction
+                rot .fromSwing( nSwing, sSwing )            // Rotation to match swing directions
+                    .mul( ctran.rot );                      // Apply to neutral rotation
+
+                nSwing.fromQuat( rot, tar[i].swing ); // For Debugging
+
+                // ----------------------------
+                // TWIST
+                nTwist.fromQuat( rot, tar[i].twist );   // Get twist from swing rotation
+                tRot.fromSwing( nTwist, sTwist );       // Rotation to match twist vectors
+                rot.pmul( tRot );                       // Apply to swing rotation
+
+                nTwist.fromQuat( rot, tar[i].twist ); // For Debugging
+
+                // ----------------------------
+                rot.pmulInvert( ptran.rot );            // To LocalSpace
+                this.pose.setRot( tar[i].idx, rot );    // Save to working pose
+
+                // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                // Visualize computed target vectors from source animation
+                Debug.pnt.add( sPos, 0xffff00, 1 );
+                Debug.ln.add( sPos, p.fromScaleThenAdd( 0.1, sSwing, sPos ), 0xffff00 );
+                Debug.ln.add( sPos, p.fromScaleThenAdd( 0.1, sTwist, sPos ), 0xff00ff );
+
+                // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                // Visualize target vectors over mesh
+                Debug.pnt.add( ctran.pos, 0x00ff00, 1 );
+                Debug.ln.add( ctran.pos, p.fromScaleThenAdd( 0.15, nSwing, ctran.pos ), 0xffff00 );
+                Debug.ln.add( ctran.pos, p.fromScaleThenAdd( 0.1, nSwing, ctran.pos ), 0xffffff );
+                Debug.ln.add( ctran.pos, p.fromScaleThenAdd( 0.15, nTwist, ctran.pos ), 0xff00ff );
+                Debug.ln.add( ctran.pos, p.fromScaleThenAdd( 0.1, nTwist, ctran.pos ), 0xff0000 );
+            }
+        }
+
+        // Interp start & end SwingTwist vectors over a chain
+        applyEndInterp( k ){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            const src = this.srcRig.chains[ k ];
+            const tar = this.tarRig.chains[ k ];
+            if( !src || !tar ) return;
+
+            const dTran = new Transform(); // Debug
+            const vv = new Vec3(); // Debug
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            const aTran     = getWorld( this.srcRig.skel, src[0].idx );
+            const aSwing    = new Vec3().fromQuat( aTran.rot, src[0].swing );
+            const aTwist    = new Vec3().fromQuat( aTran.rot, src[0].twist );
+
+            const bTran     = getWorld( this.srcRig.skel, src.at(-1).idx );
+            const bSwing    = new Vec3().fromQuat( bTran.rot, src.at(-1).swing );
+            const bTwist    = new Vec3().fromQuat( bTran.rot, src.at(-1).twist );
+
+            // Visualize data over source skeleton
+            Debug.pnt.add( aTran.pos, 0xffff00, 1.2 );
+            Debug.pnt.add( bTran.pos, 0xffff00, 1.2 );
+
+            Debug.ln.add( aTran.pos, vv.fromScaleThenAdd( 0.1, aSwing, aTran.pos ), 0xffff00 );
+            Debug.ln.add( aTran.pos, vv.fromScaleThenAdd( 0.1, aTwist, aTran.pos ), 0xff00ff );
+            Debug.ln.add( bTran.pos, vv.fromScaleThenAdd( 0.1, bSwing, bTran.pos ), 0xffff00 );
+            Debug.ln.add( bTran.pos, vv.fromScaleThenAdd( 0.1, bTwist, bTran.pos ), 0xff00ff );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            const tDir  = new Vec3();
+            const dir   = new Vec3();
+            const iMax  = tar.length - 1;
+            let itm, t, j;
+
+            for( let i=0; i <= iMax; i++ ){
+                t   = i / iMax;
+                itm = tar[ i ];
+
+                // Lerp Target Vectors
+                tDir.fromLerp( aSwing, bSwing, t ).norm();
+                dir.fromLerp( aTwist, bTwist, t ).norm();
+
+                // Make joint vectors match target vectors
+                const rot = applySwingTwist( itm, tDir, dir, this.tarRig.tpose, this.pose );
+                this.pose.setRot( itm.idx, rot );
+
+                // -----------------------
+                this.pose.getWorld( itm.idx, dTran );
+                Debug.pnt.add( dTran.pos, 0x00ff00, 1, 1 );
+                Debug.ln.add( dTran.pos, vv.fromQuat( dTran.rot, itm.swing ).scale(0.1).add(dTran.pos), 0xffff00 );
+                Debug.ln.add( dTran.pos, vv.fromQuat( dTran.rot, itm.twist ).scale(0.1).add(dTran.pos), 0xff00ff );
+            }
+        }
+
+        // Compute offset translation & scale it to fit better on target
+        applyScaledTranslation( k ){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Make sure we have our src & target
+            const src = this.srcRig.chains[ k ][0];
+            const tar = this.tarRig.chains[ k ][0];
+            if( !src || !tar ) return;
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Compute offset position change from animation
+            const scl     = this.tarRig.scalar / this.srcRig.scalar;    // Scale from Src to Tar
+            const tJoint  = this.srcRig.tpose.joints[ src.idx ];        // TPose Src Joint
+            const srcTran = getWorld( this.srcRig.skel, src.idx );      // WS Tranform of Src Bone
+
+            // ( animated.joint.world.pos - tpose.joint.world.pos ) * ( tarHipHeight / srcHipHeight )
+            const offset  = new Vec3()
+                .fromSub( srcTran.pos, tJoint.world.pos )
+                .scale( scl );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Neutral Transform
+            const ptran = this.pose.getWorld( tar.pidx );
+            const ctran = new Transform().fromMul( ptran, this.tarRig.tpose.joints[ tar.idx ].local );
+
+            // Add scaled offset translation
+            const pos   = new Vec3().fromAdd( ctran.pos, offset );
+
+            // Save to local space
+            this.pose.setPos( tar.idx, ptran.toLocalPos( pos ) );
+        }
+    // #endregion
+}
+
+// Apply rotation to the first join in the chain
+// by using one of the inverse direction as the
+// rotational axis
+class AxisAdditive{
+    constructor( chName, axis='y', rad=0 ){
+        this.chainName = chName;
+        this.onAxis    = axis;
+        this.angle     = rad;
+    }
+
+    apply( rt ){
+        if( this.angle === 0 ) return;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const ch    = rt.tarRig.chains[ this.chainName ];
+        const itm   = ch[0];
+        const ptran = rt.pose.getWorld( itm.pidx );
+        const ctran = new Transform().fromMul( ptran, rt.pose.joints[ itm.idx ].local ); // Less computive
+        // const ctran = rt.pose.getWorld( itm.idx );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const axis  = new Vec3();
+        switch( this.onAxis ){
+            case 'y': axis.fromQuat( ctran.rot, itm.twist ); break;
+            default:
+                console.log( 'ERROR : AxisAdditive - Axis not implemented', this.onAxis );
+                return;
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const q = new Quat()
+            .fromAxisAngle( axis, this.angle )  // Compute WS Rotation
+            .mul( ctran.rot )                   // Apply to joint
+            .pmulInvert( ptran.rot );           // To LocalSpace
+
+        rt.pose.setRot( itm.idx, q );
+    }
+}
+
+// Compute a rotation axis between the first & last
+// points of the chain, the apply the twist rotation
+// to the first joint of the chain
+class ChainTwistAdditive{
+    constructor( chName, rad=0 ){
+        this.chainName = chName;
+        this.angle     = rad;
+    }
+
+    apply( rt ){
+        if( this.angle === 0 ) return;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const ch    = rt.tarRig.chains[ this.chainName ];
+        const itm0  = ch[0];
+        const itm1  = ch.at( -1 );
+        const ptran = rt.pose.getWorld( itm0.pidx );
+        const ctran = new Transform().fromMul( ptran, rt.pose.joints[ itm0.idx ].local ); // Chain Start Transform
+        const etran = rt.pose.getWorld( itm1.idx ); // Chain End Transform
+
+        // Debug.pnt.add( ctran.pos, 0xff0000, 2, 0 );
+        // Debug.pnt.add( etran.pos, 0xffff00, 2, 0 );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const axis  = new Vec3().fromSub( etran.pos, ctran.pos ).norm();
+        const q     = new Quat()
+            .fromAxisAngle( axis, this.angle )  // Compute WS Rotation
+            .mul( ctran.rot )                   // Apply to joint
+            .pmulInvert( ptran.rot );           // To LocalSpace
+
+        rt.pose.setRot( itm0.idx, q );
+    }
+}
+
+// Run 3KJS's GetWorld functions & return as a Transform Object
+function getWorld( skel, idx, t=new Transform() ){
+    const b = skel.bones[ idx ];
+    const p = b.getWorldPosition( new THREE.Vector3() );
+    const q = b.getWorldQuaternion( new THREE.Quaternion() );
+
+    t.pos[0] = p.x;
+    t.pos[1] = p.y;
+    t.pos[2] = p.z;
+
+    t.rot[0] = q.x;
+    t.rot[1] = q.y;
+    t.rot[2] = q.z;
+    t.rot[3] = q.w;
+
+    // SCALE - Not Needed for this proto
+    return t;
+}
+
+// Make a rotation's invert directions match the target directions
+// Create neutral transfroms for each joint as a starting point
+// which is the current pose's parent joint worldspace transform applied
+// to the local space tpose transform of the joint.
+// This gives the transform of the joint as if itself has not change
+// but its heirarchy has.
+function applySwingTwist( itm, tSwing, tTwist, tpose, pose ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Compute Neutral Transform of the joint
+    // curentPose.parentJoint.world.rot * tPose.joint.local.rot
+    const j     = tpose.joints[ itm.idx ];
+    const ptran = pose.getWorld( j.pindex );                    // Get WS of current pose of parent joint
+    const ctran = new Transform().fromMul( ptran, j.local );    // Apply to Tpose's locaa for neutral rotation
+    const dir   = new Vec3();
+    const sRot  = new Quat();
+    const tRot  = new Quat();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // SWING
+    dir.fromQuat( ctran.rot, itm.swing );   // Get Worldspace direction
+    sRot.fromSwing( dir, tSwing )           // Compute rot current dir to target dir
+        .mul( ctran.rot );                  // PMul result to neutral rotation
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Twist
+    dir.fromQuat( sRot, itm.twist );        // Get WS twist direction after swring rotation
+    tRot.fromSwing( dir, tTwist )           // Compute rot to make twist vectors match
+        .mul( sRot )                        // twist * ( swing * neutral )
+        .pmulInvert( ptran.rot );           // To Localspace
+
+    return tRot;
+}
+
+// #endregion
+
+</script></body></html>
