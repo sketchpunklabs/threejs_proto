@@ -1,0 +1,318 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+    import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+    import * as Util            from '@lib/util.js';
+    import CheckerCrossMaterial from '@lib/shader/CheckerCrossMaterial.js';
+    import Vec3                 from '@lib/maths/Vec3.js';
+
+    import { GLTFLoader }       from 'three/GLTFLoader.js';
+// #endregion
+
+/*
+### REF
+- Original Attempt
+  - https://x.com/SketchpunkLabs/status/1661120535613300743
+  - https://github.com/sketchpunklabs/ossos/blob/ossos_next/prototypes/animation/002_compute_root_motion.html
+  - https://github.com/sketchpunklabs/ossos/blob/ossos_next/prototypes/animation/003_root_motion.html
+  - https://github.com/sketchpunklabs/ossos/blob/ossos_next/prototypes/animation/003_root_motion_grid.html
+- Inspiration for Another Attempt
+  - https://x.com/meby_central/status/2008125473579221446
+  - https://mebycentral.com/starters/stride-calibrator/
+*/
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 45, 20, 5, [0,1,0] );
+    Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const url = '../../../res';
+    const dl  = await Promise.all([ //allSettled
+        loadChar( {path:`${url}/models/mannequin.gltf`} ),
+        loadAnimation( { path:`${url}/anim/kaykit_char_animations.gltf` }),
+    ]);
+
+    // Can not properly clone skeleton of a skinned mesh, so reparse
+    // Another copy to use for animating on the modified clip
+    const extra = await loadChar( {path:`${url}/models/mannequin.gltf`} );
+
+    // ---------------------------
+    const { tf, skel } = dl[0];
+    App.scene.add( tf.scene );
+    // App.scene.add( new THREE.SkeletonHelper( skel.bones[0] ) );
+
+    // ---------------------------
+    const anim      = dl[1];
+    const cpWalk    = anim[90]; // 90, 91, 93, 94
+    const cpRun     = anim[54]; // 54, 55, 56
+
+    const mainClip  = cpWalk;
+    // const mainClip  = cpRun;
+
+    Ref.mixer       = new THREE.AnimationMixer();
+    Ref.action      = Ref.mixer.clipAction( mainClip, tf.scene );
+    Ref.action.play();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.compute = new RootMotionCompute();
+    // Ref.compute.hOffset = 0.03;
+    Ref.compute
+        .setCharacter( tf.scene )
+        .setClip( mainClip )
+        .gen();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Clone Character using generated clip
+    extra.tf.scene.position.x = -2;
+    App.scene.add( extra.tf.scene );
+
+    Ref.cmixer  = new THREE.AnimationMixer();
+    Ref.caction = Ref.cmixer.clipAction( Ref.compute.clone, extra.tf.scene );
+    Ref.caction.play();
+
+    const scl = 0.2;
+    Ref.mixer.timeScale  = scl;
+    Ref.cmixer.timeScale = scl;
+
+    Ref.skClone = extra.skel;
+    Ref.posPrev = new Vec3();
+    Ref.cmixer.addEventListener( 'loop', e=>{ Ref.posPrev.zero(); }); // reset on new loop
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Motion Floor
+    Ref.floor = CheckerCrossMaterial.createMesh( {scl:1} );
+    Ref.floor.position.y = 0.005;
+
+    App.scene.add( Ref.floor );
+    Ref.offset = [0,0];
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.createRenderLoop( onPreRender ).start();
+    appendGithubLink( false );
+});
+
+function onPreRender( dt, et ){
+    if( Ref.mixer )  Ref.mixer.update( dt );
+    if( Ref.cmixer ) Ref.cmixer.update( dt );
+
+    // Process offsets for checker floor plane
+    if( Ref.skClone ){
+        const pos = Ref.skClone.bones[0].position.toArray();
+        const vel = new Vec3().fromSub( pos, Ref.posPrev );
+        Ref.posPrev.copy( pos );
+
+        Ref.offset[0] = ( Ref.offset[0] + vel[0] ) % 10;
+        Ref.offset[1] = ( Ref.offset[1] + vel[2] ) % 10;
+
+        Ref.floor.material.setOffset( Ref.offset[0], Ref.offset[1] );
+    }
+}
+// #endregion
+
+// #region LOADING
+    async function loadChar( props={} ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // LOAD
+        const opt = { skel:true, matswap:null, onSkinned: null, tpose:false, ...props };
+        const tf  = await new GLTFLoader().loadAsync( opt.path );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        let skel = null
+        let mat  = null;
+        for( const m of Util.traverseFind( tf.scene, o=> (o.type === 'SkinnedMesh') ) ){
+            // ------------------------------------
+            switch( typeof opt.matswop ){
+                case 'string':
+                    switch( opt.matswop ){
+                        case 'toon': m.material = new THREE.MeshToonMaterial( { map: m.material.map, normalMap: m.material.normalMap } ); break;
+                    }
+                    break;
+            }
+
+            // ------------------------------------
+            if( opt.onSkinned ) opt.onSkinned( m );
+
+            // ------------------------------------
+            if( !skel ) skel = m.skeleton;  // First skeleton
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        return { tf, skel };
+    }
+
+    async function loadAnimation( state ){
+        const tf = await new GLTFLoader().loadAsync( state.path );
+        return tf.animations;
+    }
+// #endregion
+
+
+class RootMotionCompute{
+    mixer       = new THREE.AnimationMixer();
+    char        = null; // General Ref to char
+    skel        = null; // Character Skeleton
+    clip        = null; // Main animation source
+    clone       = null; // Clone & Modified Clip
+    action      = null; // Clip's mixer action
+
+    footL       = null; // Joint Ref of foot
+    footR       = null;
+
+    minHeight   = 0;    // Height of the foot in its bind pose
+    hOffset     = 0.00; // Extra height to add to fine tune ground detection
+    lPoints     = [];   // Points of all the frames
+    rPoints     = [];
+    frames      = [];   // Computed positions from ground movement
+
+    trackName   = 'root.position';  // Track to replace or add to cloned clip
+
+    setCharacter( ch, lName='footl', rName='footr' ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const mesh = Util.firstFind( ch, o=>(o.type === 'SkinnedMesh') );
+        this.skel  = mesh.skeleton;
+        this.char  = ch;
+
+        this.footL = this.skel.bones.find( i=>(i.name === lName) );
+        this.footR = this.skel.bones.find( i=>(i.name === rName) );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const v  = new THREE.Vector3();
+        const lh = this.footL.getWorldPosition( v ).y;
+        const rh = this.footL.getWorldPosition( v ).y;
+        this.minHeight = ( lh + rh ) / 2; // Average
+        // skel.bones.forEach( (o,i)=>console.log( o.name, i ) ); //footr 19
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        return this;
+    }
+
+    setClip( c ){ this.clip = c; return this; }
+
+    // Get the timestamp array with the most frames
+    findLongestTime(){
+        // Get max frames
+        let fMax  = -Infinity;
+        let times = null;
+        for( let [i,t] of this.clip.tracks.entries() ){
+            if( t.times.length > fMax ){
+                fMax  = t.times.length;
+                times = t.times;
+            }
+        }
+
+        return times;
+    }
+
+    // Begin generating root motion
+    gen(){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if( !this.clip ){ console.log('ERROR - No Clip'); return this; }
+        if( !this.action ){
+            this.action = this.mixer.clipAction( this.clip, this.char );
+            this.action.play();
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const times = this.findLongestTime();
+        const lv    = new THREE.Vector3();
+        const rv    = new THREE.Vector3();
+
+        for( let t of times ){
+            this.mixer.setTime( t );
+
+            this.lPoints.push( this.footL.getWorldPosition( lv ).toArray() );
+            this.rPoints.push( this.footR.getWorldPosition( rv ).toArray() );
+
+            Debug.pnt.add( lv.toArray(), 0x00ff00, 0.9 );
+            Debug.pnt.add( rv.toArray(), 0xff0000, 0.9 );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.computePath();
+        this.createClip();
+    }
+
+    // Compute the root positions from feet velocities
+    computePath(){
+        const ymin = this.minHeight + this.hOffset;
+        const vel  = new Vec3();
+        const pos  = new Vec3();
+
+        let isLft  = false;
+        let isRit  = false;
+        let foot   = -1;
+
+        // 4 debugging
+        const v    = new Vec3();
+
+        for( let i=0; i < this.lPoints.length; i++ ){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Determine which foot is on control
+            if( this.lPoints[i][1] <= ymin ){
+                if( !isLft ){ isLft = true; foot  = 0; }
+            }else isLft = false
+
+            if( this.rPoints[i][1] <= ymin ){
+                if( !isRit ){ isRit = true; foot  = 1; }
+            }else isRit = false;
+
+            if( !isLft && !isRit ) foot = -1;
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // C0mpute Velocity & Position
+            if( i > 0 ){
+                switch( foot ){
+                    case 0  : vel.fromSub( this.lPoints[i-1], this.lPoints[i] ); vel[1] = 0; break;
+                    case 1  : vel.fromSub( this.rPoints[i-1], this.rPoints[i] ); vel[1] = 0; break;
+                    // default : vel.zero(); break; // No foot on ground, clear velocity
+                }
+            }
+
+            pos.add( vel );                     // Move to the next position
+            this.frames.push( pos.clone() );    // Save copy for later processing
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            Debug.ln.add( pos, v.fromAdd( pos, [0,ymin,0] ), 0xffff00 );
+        }
+
+        return this;
+    }
+
+    // Clone clip & add new track that contains root motion
+    createClip(){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const clone = this.clip.clone();
+
+        // Remove Track if it exists
+        const idx = clone.tracks.findIndex( i=>(i.name === this.trackName ) );
+        if( idx !== -1 ) clone.tracks.splice( idx, 1 );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const times  = this.findLongestTime();                  // Reuse the time array from another track
+        const values = new Float32Array( times.length * 3 );    // Vector for each time frame
+
+        // Flatten vector array
+        let i = 0;
+        for( let v of this.frames ){
+            values[ i++ ] = v[0];
+            values[ i++ ] = v[1];
+            values[ i++ ] = v[2];
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Create new track to apply root motion
+        const track = new THREE.VectorKeyframeTrack( this.trackName, times, values, THREE.InterpolateLinear );
+        clone.tracks.push( track );
+
+        this.clone = clone;
+    }
+}
+
+</script></body></html>
