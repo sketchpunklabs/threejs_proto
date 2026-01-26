@@ -1,0 +1,192 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+    import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+    import * as Util            from '@lib/util.js';
+    // import { GLTFLoader }       from 'three/GLTFLoader.js';
+
+    // import HotKeys              from '@lib/misc/HotKeys.js';
+    import KeyboardInput        from '@lib/input/KeyboardInput.js';
+    import Cursor3DMaterial     from '@lib/shader/Cursor3DMaterial.js';
+
+    import Vec3                 from '@lib/maths/Vec3.js';
+    import Quat                 from '@lib/maths/Quat.js';
+    import Radian               from '@lib/maths/Radian.js';
+    // import FSemiImplicitEuler   from '@lib/maths/springs/FSemiImplicitEuler.js';
+    import FImplicitEuler       from '@lib/maths/springs/FImplicitEuler.js';
+
+    import { Pane }             from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 45, 20, 7, [0,0,0] );
+    Debug = await useVisualDebug( App );
+
+    Ref.ki = new KeyboardInput();
+    // Ref.hk = new HotKeys().reg( 'x', ()=>{
+    //     Debug.reset();
+    //     Ref.ctrl.update( 0.01, App.camera );
+    // });
+
+    Ref.cursor = Cursor3DMaterial.createMesh( {factor:0} );
+    App.scene.add( Ref.cursor );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // const url = '../../../res';
+    // const dl  = await Promise.all([ //allSettled
+    //     loadChar( {path:`${url}/models/mannequin.gltf`} ),
+    // ]);
+
+    // // ---------------------------
+    // const { tf, skel } = dl[0];
+    // App.scene.add( tf.scene );
+    //
+    //
+    Ref.ctrl = new Controller();
+    Ref.ctrl.model = Ref.cursor;
+
+    Ref.ctrl.update( 0.01, App.camera, {x:0, y:0} );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.createRenderLoop( onPreRender ).start();
+    appendGithubLink( false );
+    buildUI();
+});
+
+function onPreRender( dt, et ){
+    Debug.reset();
+    Ref.ctrl.update( dt, App.camera, Ref.ki.getWASD() );
+}
+
+async function buildUI(){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const p    = new Pane( );
+    const Data = {
+        Move: 'Use WASD Keys'
+    };
+
+    const f = p.addFolder({ title: 'Instructions', expanded: true });
+    f.addBinding( Data, 'Move', { readonly: true, });
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.pane = p;
+}
+// #endregion
+
+// #region LOADING
+    async function loadChar( props={} ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // LOAD
+        const opt = { skel:true, matswap:null, onSkinned: null, tpose:false, ...props };
+        const tf  = await new GLTFLoader().loadAsync( opt.path );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        let skel = null
+        let mat  = null;
+        for( const m of Util.traverseFind( tf.scene, o=> (o.type === 'SkinnedMesh') ) ){
+            // ------------------------------------
+            switch( typeof opt.matswop ){
+                case 'string':
+                    switch( opt.matswop ){
+                        case 'toon': m.material = new THREE.MeshToonMaterial( { map: m.material.map, normalMap: m.material.normalMap } ); break;
+                    }
+                    break;
+            }
+
+            // ------------------------------------
+            if( opt.onSkinned ) opt.onSkinned( m );
+
+            // ------------------------------------
+            if( !skel ) skel = m.skeleton;  // First skeleton
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        return { tf, skel };
+    }
+// #endregion
+
+class Controller{
+// #region MAIN
+    model       = null; // Root of model to apply rotation & translation
+    maxSpeed    = 5;    // Make Speed of movement
+
+    vel         = new FImplicitEuler( { osc:1 } );  // Normalized velocity
+    dir         = new FImplicitEuler( { osc:2 } );  // Radian angle of rotation
+
+    fwd         = new Vec3();   // View Forward Direction
+    rit         = new Vec3();   // View Right Direction
+    look        = new Vec3();   // Character Look Direction
+    constructor(){}
+// #endregion
+
+// #region CALC
+    updateCharDir( ip ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // No Input, slow down to a stop
+        if( ip.x === 0 && ip.y === 0 ){
+            this.vel.target = 0;
+            return;
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Compute rotation angle & look direction from INPUT
+        const fwd = new Vec3().fromScale( this.fwd, ip.y );
+        const rit = new Vec3().fromScale( this.rit, ip.x );
+        this.look.fromAdd( fwd, rit ).norm();
+
+        // Compute angle of the look direction from world forward
+        let rad = Vec3.angle( [0,0,1], this.look );
+        if( Vec3.dot( [1,0,0], this.look ) < 0 ) rad = -rad;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Fix angle to ignore boundary for smooth shortest path rotation
+        this.dir.target = Radian.continuousTarget( this.dir.value, rad );
+        this.vel.target = 1; // Speed up
+    }
+
+    updateViewAxis( camera ){
+        // Compute the XZ plane direction in relation to camera view
+        const q = new Quat().copyObj( camera.quaternion );
+        this.fwd.fromQuat( q, [0,0,1] ).negate().sy(0).norm();
+        this.rit.fromCross( this.fwd, [0,1,0] ).norm();
+
+        Debug.ln.add( [0,0,0], this.fwd, 0x00ffff );
+        Debug.ln.add( [0,0,0], this.rit, 0xffff00 );
+    }
+// #endregion
+
+// #region RENDER LOOP
+    update( dt, camera, ip ){
+        this.updateViewAxis( camera );  // Compute View Directions
+        this.updateCharDir( ip );       // Look direction for rotation & translation
+
+        this.dir.update( dt );          // Run Float Spring
+        this.vel.update( dt );
+
+        // Make model face same direction as camera
+        const rot = new Quat().fromAxisAngle( [0,1,0], this.dir.value );
+        this.model.quaternion.fromArray( rot );
+
+        // 4Debugging
+        const dir  = new Vec3().fromQuat( rot, [0,0,1] ).norm();
+        Debug.ln.add( [0,0,0], dir, 0xff00ff );
+        Debug.ln.add( [0,0,0], this.look, 0xffffff );
+
+        // Move modal toward the direction it is looking
+        if( ! this.vel.isDone || this.vel.target > 0 ){
+            const move = new Vec3().fromScale( this.look, this.maxSpeed * dt * this.vel.value );
+            this.model.position.x += move[0];
+            this.model.position.z += move[2];
+        }
+    }
+// #endregion
+}
+
+</script></body></html>
