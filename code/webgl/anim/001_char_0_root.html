@@ -40,7 +40,7 @@ https://godotengine.org/asset-library/asset/3934
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Animation Tree
 https://docs.godotengine.org/en/latest/tutorials/animation/animation_tree.html
-https://www.youtube.com/watch?v=iElHZhOxGYA 
+https://www.youtube.com/watch?v=iElHZhOxGYA
 https://www.youtube.com/watch?v=km4SGFzpEc0
 https://godotforums.org/d/33975-programmatically-setup-animation-trees/2
 https://kidscancode.org/godot_recipes/4.x/animation/using_animation_sm/index.html
@@ -92,28 +92,25 @@ window.addEventListener( 'load', async ()=>{
         loadAnimations( `${url}/anim_land_traverse.gltf` ),
     ]);
 
-    
-    
+    // aryAnim.forEach( (o,i)=>console.log( i, o.name ) );
+
     // Add character to scene
     App.scene.add( root );
     Ref.skel = skinned.skeleton;
     Ref.root = root;
 
     // Execute Animation
-    const clip = aryAnim[19]; 
+    const clip = aryAnim[19];
     Ref.mixer  = new THREE.AnimationMixer( skinned );
     Ref.action = Ref.mixer.clipAction( clip );
     Ref.action.play();
-    
+
     await TEST();
 
     Ref.frame0 = clipFramePosition( clip, 'origin', 0 );
     Ref.frameX = clipFramePosition( clip, 'origin', -1 );
 
-
     // console.log( Ref.frame0, Ref.frameX );
-
-    
 
     // skinned.skeleton.bones.forEach( (v,i)=>console.log( i, v.name ) );
     // aryAnim.forEach( (v,i)=>console.log( i, v.name ) );
@@ -142,7 +139,7 @@ function onPreRender( dt, et ){
             // NEW LOOP, RESET PREV
 
             // Delta between last pos in prev loop to last frame
-            DELTA.fromSub( Ref.frameX, PREV ); 
+            DELTA.fromSub( Ref.frameX, PREV );
             DELTA[1] = 0;
 
             // Copy current postion as new PREV for next frame
@@ -155,13 +152,13 @@ function onPreRender( dt, et ){
 
             // Add Both deltas !!!!
             DELTA2.add( DELTA );
-            
+
             Ref.root.position.x += DELTA2[0];
             Ref.root.position.z += DELTA2[2];
         }else{
             // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
             // CURRENT LOOP
-            
+
             // Compute position delta
             CURR.copyObj( rBone.position );
             CURR[1] = 0;
@@ -198,8 +195,8 @@ async function loadCharacter( props={} ){
     let skinned;
     let mat = null;
     for( const m of util.traverseFind( tf.scene, o=> (o.type === 'SkinnedMesh') ) ){
-        if( opt.phong != null ) mat = new THREE.MeshPhongMaterial( { color: opt.phong } ); 
-        if( opt.toon ) mat = new THREE.MeshToonMaterial( { map: m.material.map, normalMap: m.material.normalMap } ); 
+        if( opt.phong != null ) mat = new THREE.MeshPhongMaterial( { color: opt.phong } );
+        if( opt.toon ) mat = new THREE.MeshToonMaterial( { map: m.material.map, normalMap: m.material.normalMap } );
 
         if( mat )       m.material = mat;
         // if( !skel )     skel = m.skeleton;  // First skeleton
@@ -219,7 +216,7 @@ async function loadCharacter( props={} ){
     if( opt.skelHelper ){
         App.scene.add( new THREE.SkeletonHelper( skel.bones[0] ) );
     }
-    
+
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     return [ tf.scene, skinned ];
 }
@@ -264,7 +261,7 @@ async function TEST(){
     App.scene.add( root );
 
     // Execute Animation
-    const clip = aryAnim[19]; 
+    const clip = aryAnim[19];
     Ref.mixer2  = new THREE.AnimationMixer( skinned );
     Ref.action2 = Ref.mixer2.clipAction( clip );
     Ref.action2.play();

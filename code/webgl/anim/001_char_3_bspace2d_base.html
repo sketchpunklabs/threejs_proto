@@ -1,0 +1,501 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import KeyboardInput    from '@lib/input/KeyboardInput.js';
+import { Pane }         from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    blend: {x: 0, y: 0},
+};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0,40, 5, [0,0.0,0] );
+    Debug   = await useVisualDebug( App );
+    Ref.ki  = new KeyboardInput();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.blendSpace = new BlendSpace2D();
+
+    // Ref.blendSpace.blend = [-0.5,-0.5];
+    Ref.blendSpace.mode  = BlendSpace2D.QUAD;
+    // Ref.blendSpace.mode  = BlendSpace2D.DIAMOND;
+    // Ref.blendSpace.mode  = BlendSpace2D.CORNERS;
+    // Ref.blendSpace.mode  = BlendSpace2D.TRI;
+
+    drawBlendSpace();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.createRenderLoop( onPreRender ).start();
+    // App.renderLoop();
+
+    appendGithubLink( false );
+    buildUI();
+});
+
+
+function onPreRender( dt, et ){
+    const joy = Ref.ki.getWASD();
+    if( joy.x !== 0 || joy.y !== 0 ){
+        const b = Ref.blendSpace.blend;
+        const s = 1.2;
+        b[0]    = Math.min(1, Math.max(-1,  joy.x * s * dt + b[0] ) );
+        b[1]    = Math.min(1, Math.max(-1, -joy.y * s * dt + b[1] ) );
+
+        Ref.blendSpace.blend = b;
+        drawBlendSpace();
+    }
+}
+
+async function buildUI(){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const state = {
+        sel     : 0,
+        Move    : 'Use WASD Keys',
+    }
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const p = new Pane( {} );
+
+    const f = p.addFolder({ title: '2D BlendSpace', expanded: true });
+    f.addBinding( state, 'sel', {
+        label   : 'Modes',
+        options : {
+            Quadrants   : 0,
+            Diamond     : 1,
+            Corners     : 2,
+            Triangle    : 3,
+        },
+    }).on( 'change', e=>{
+        Ref.blendSpace.mode = e.value;
+        drawBlendSpace();
+    });
+
+    const f2 = p.addFolder({ title: 'Info', expanded: true });
+    f2.addBinding( state, 'Move', { readonly: true, });
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.pane = p;
+}
+
+const COL = {
+    orange  : 0xFF790E,
+    red     : 0xFF6167,
+    green   : 0x11FFAD,
+    blue    : 0x33C3FF,
+    yellow  : 0xffff00,
+    cyan    : 0x00ffff,
+};
+
+function lerpColor( a, b, t ){
+    const ca = new THREE.Color( a );
+    const cb = new THREE.Color( b );
+    ca.lerp( cb, t );
+    return ca.getHex();
+}
+
+function drawBlendSpace(){
+    Debug.reset();
+    const bs = Ref.blendSpace;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Show available slots for mode
+    const aryActive = [];
+    let col = 0;
+    let size = 0;
+    for( const i of bs.slots ){
+        if( !i.use ) continue;
+
+        if( i.active ){
+            aryActive.push( i );
+            col  = lerpColor( COL.red, 0x00ff00, i.wgt );
+            size = (1-i.wgt) * 5 + i.wgt * 8;
+
+            Debug.pnt.add( [i.pos[0], 0, i.pos[1]], col, size, 10 );
+        }else{
+            Debug.pnt.add( [i.pos[0], 0, i.pos[1]], 0x999999, 3 );
+        }
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Show blend coordinate
+    const blend = Ref.blendSpace.blend;
+    const ba    = [blend[0], 0, blend[1]];
+    const bb    = [blend[0], 0.5, blend[1]];
+    Debug.pnt.add( ba, COL.blue, 3 );
+    Debug.ln.add( ba, bb, COL.blue );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Draw Triangle
+    if( aryActive.length >= 3 ){
+        for( let i=0; i < 3; i++ ){
+            const ii = ( i + 1 ) % 3;
+            const a  = aryActive[i].pos;
+            const b  = aryActive[ii].pos;
+            Debug.ln.add( [a[0],0,a[1]], [b[0],0,b[1]], 0x707070 );
+        }
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Draw Linear
+    if( aryActive.length === 2 ){
+        const a  = aryActive[0].pos;
+        const b  = aryActive[1].pos;
+        Debug.ln.add( [a[0],0,a[1]], [b[0],0,b[1]], 0x707070 );
+    }
+}
+// #endregion
+
+// #region LOADING
+    async function loadCharacter( props={} ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // LOAD
+        const opt = { skel:true, skelHelper:false, phong:undefined, toon:false, tpose:false, ...props };
+        const tf  = await new GLTFLoader().loadAsync( opt.url );
+        // const o  = firstFind( tf.scene, o=> (o.type === 'SkinnedMesh') );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Find Skeleton & Push Skinned Meshes to the scene
+        // let skel;
+        let skinned;
+        let mat = null;
+        for( const m of util.traverseFind( tf.scene, o=> (o.type === 'SkinnedMesh') ) ){
+            if( opt.phong != null ) mat = new THREE.MeshPhongMaterial( { color: opt.phong } );
+            if( opt.toon ) mat = new THREE.MeshToonMaterial( { map: m.material.map, normalMap: m.material.normalMap } );
+
+            if( mat )       m.material = mat;
+            // if( !skel )     skel = m.skeleton;  // First skeleton
+            if( !skinned )  skinned = m;  // First skeleton
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if( opt.tpose ){
+            const clip = tf.animations.find( i=>i.name.toLowerCase() === 'tpose' );
+            if( clip )  util.poseFromClip( clip, skel );
+            else        console.log( 'TPose animation clip not found' );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Push Skeleton Helper
+        // App.scene.add( skel.bones[0] );
+        if( opt.skelHelper ){
+            App.scene.add( new THREE.SkeletonHelper( skel.bones[0] ) );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        return [ tf.scene, skinned ];
+    }
+
+    async function loadAnimations( url ){
+        const tf = await new GLTFLoader().loadAsync( url );
+        return tf.animations ?? [];
+    }
+// #endregion
+
+
+// Triangles in CCW
+// 1st & 4th points can be swopped as the first point of the triangle
+const ZQUADRANT = [
+    { tri:[8,7,5,6] }, // BL - C, L,  BM, BL
+    { tri:[8,5,3,4] }, // BR - C, BM, R,  BR
+    { tri:[8,1,7,0] }, // TL - C, TM, L,  TL
+    { tri:[8,3,1,2] }, // TR - C, R,  RM, TR
+];
+
+// Triangles for Corners Mode
+const TCORNERS = [
+    { tri:[8,0,6] }, // L
+    { tri:[8,6,4] }, // B
+    { tri:[8,4,2] }, // R
+    { tri:[8,2,0] }, // T
+];
+
+class BlendSpaceSlot{
+    use    = true;
+    active = false;
+    pos    = [0,0];
+    wgt    = 0;
+    constructor( v ){
+        this.pos[0] = v[0];
+        this.pos[1] = v[1];
+    }
+}
+
+class BlendSpace2D{
+// #region STATIC CONSTANTS
+    static QUAD    = 0;
+    static DIAMOND = 1;
+    static CORNERS = 2;
+    static TRI     = 3;
+// #endregion
+
+// #region MAIN
+    #blend = [0,0]; // Blend Cordinates in XY
+    #mode  = BlendSpace2D.QUAD; // What configration being used
+    slots  = [
+        new BlendSpaceSlot([-1, 1]), // TL 0
+        new BlendSpaceSlot([ 0, 1]), // TM 1
+        new BlendSpaceSlot([ 1, 1]), // TR 2
+        new BlendSpaceSlot([ 1, 0]), // R  3
+        new BlendSpaceSlot([ 1,-1]), // BR 4
+        new BlendSpaceSlot([ 0,-1]), // BM 5
+        new BlendSpaceSlot([-1,-1]), // BL 6
+        new BlendSpaceSlot([-1, 0]), // L  7
+        new BlendSpaceSlot([ 0, 0]), // C  8
+    ];
+    constructor(){}
+    setSlot( si ){ return this; }
+// #endregion
+
+// #region GETTERS / SETTERS
+    get blend(){ return this.#blend.slice(); }
+    set blend( v ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Set blend with a small deadzone
+        const b = this.#blend;
+        b[0]    = ( Math.abs( v[0] ) < 0.0001 )? 0 : v[0];
+        b[1]    = ( Math.abs( v[1] ) < 0.0001 )? 0 : v[1];
+
+        // Clear all slots as not active
+        for( const s of this.slots ) s.active = false;
+
+        // Exit early on dead center
+        if( b[0] === 0 && b[1] === 0 ){
+            console.log( 'DEAD CENTER' );
+            this.slots[8].active = true;
+            this.slots[8].wgt    = 1;
+            return;
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.modeSlotUpdate();
+    }
+
+    set mode( v ){
+        this.#mode = v;
+        for( const i of this.slots ) i.use = false;
+
+        switch( this.#mode ){
+            case BlendSpace2D.QUAD:
+                for( const i of this.slots ) i.use = true;
+                break;
+
+            case BlendSpace2D.DIAMOND:
+                for( const i of [1,3,5,7,8] ) this.slots[i].use = true;
+                break;
+
+            case BlendSpace2D.CORNERS:
+                for( const i of [0,2,4,6,8] ) this.slots[i].use = true;
+                break;
+
+            case BlendSpace2D.TRI:
+                for( const i of [0,2,5] ) this.slots[i].use = true;
+                break;
+        }
+    }
+// #endregion
+
+// #region SLOT MODES
+    modeSlotUpdate(){
+        switch( this.#mode ){
+            case BlendSpace2D.QUAD      : this.modeQuadrant(); break;
+            case BlendSpace2D.TRI       : this.modeTriangle(); break;
+            case BlendSpace2D.DIAMOND   : this.modeDiamond(); break;
+            case BlendSpace2D.CORNERS   : this.modeCorners(); break;
+        }
+    }
+
+    modeTriangle(){ this.applyBaryWeight( this.slots[0], this.slots[2], this.slots[5] ); }
+
+    modeQuadrant(){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Find which of the 4 quadrants of the space
+        const qc = quadrantFromCoord( this.#blend );
+        const q  = ZQUADRANT[ qc ];
+        // console.log( 'QUADRANT', this.#blend, qc );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Get triangle of the square quadrant
+        const p1  = this.slots[ q.tri[1] ];
+        const p2  = this.slots[ q.tri[2] ];
+
+        // Check diagnal to see which triangle to access
+        // Array is setup where the 1st & 4th pnts can be swopped as the first
+        // point of a triangle
+        const p0  = ( Math.abs( this.#blend[0] ) + Math.abs( this.#blend[1] ) < 1 )
+            ? this.slots[ q.tri[0] ]    // Triangle connected to center
+            : this.slots[ q.tri[3] ];   // Triangle outer corner
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Get triangle weight
+        this.applyBaryWeight( p0, p1, p2 );
+    }
+
+    modeDiamond(){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Find which of the 4 quadrants of the space
+        const qc = quadrantFromCoord( this.#blend );
+        const q  = ZQUADRANT[ qc ];
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Get triangle of the square quadrant
+        const p0  = this.slots[ q.tri[0] ];
+        const p1  = this.slots[ q.tri[1] ];
+        const p2  = this.slots[ q.tri[2] ];
+        const b   = this.#blend;
+
+        // Check the slope of the triangle
+        if( Math.abs(b[0]) + Math.abs(b[1]) < 1 ){
+            // Inside triange connected to origin, weight between 3 points
+            this.applyBaryWeight( p0, p1, p2 );
+        }else{
+            // outside triangle, get weight between two points not origin
+            this.applyLinearWeight( p1, p2 );
+        }
+    }
+
+    modeCorners(){
+        const p = this.#blend;
+        const a = this.slots[ 8 ]; // Center is the first point of all triangles
+
+        let b, c;
+        for( const i of TCORNERS ){
+            b = this.slots[ i.tri[1] ];
+            c = this.slots[ i.tri[2] ];
+            if( isPointInTriangle( p, a.pos, b.pos, c.pos ) ){
+                this.applyBaryWeight( a, b, c );
+                return;
+            }
+        }
+    }
+// #endregion
+
+// #region WEIGHTS
+    applyBaryWeight( a, b, c ){
+        const wgt = barycentricWeights( this.#blend, a.pos, b.pos, c.pos );
+        a.wgt     = wgt[0];
+        a.active  = true;
+        b.wgt     = wgt[1];
+        b.active  = true;
+        c.wgt     = wgt[2];
+        c.active  = true;
+    }
+
+    applyLinearWeight( a, b ){
+        const wgt = linearWeight( this.#blend, a.pos, b.pos );
+        a.wgt     = wgt[0];
+        a.active  = true;
+        b.wgt     = wgt[1];
+        b.active  = true;
+    }
+// #endregion
+
+// #region RENDER LOOP
+    update(){}
+// #endregion
+}
+
+
+// Standard Z-order - 0:BL, 1:BR, 2:TL, 3:TR
+function quadrantFromCoord( v ){
+    // Determine the binary indicators ( 0 or 1 )
+    const Fx = ( Math.sign( v[0] ) >= 0 )? 1 : 0;
+    const Fy = ( Math.sign( v[1] ) >= 0 )? 1 : 0;
+
+    // 0: TL, 1: TR, 2: BR, 3: BL
+    // return ( Fy * Fx ) + (( 1 - Fy ) * ( 3 - Fx ));
+
+    // NOTE- For fun lets use morton as its a simpler equation
+    // Morton Code ( Z-order ) = ( Fy * 2 ) + Fx
+    // This interleaves the bits: [Fy, Fx]
+    return ( Fy << 1 ) | Fx; // Using bitwise shift/OR for efficiency
+}
+
+// NOTES: CCW, D will be Positive, CW D will be negative
+function barycentricWeights( t, p1, p2, p3 ){
+    const tx = t[0];
+    const ty = t[1];
+    const x1 = p1[0];
+    const y1 = p1[1];
+    const x2 = p2[0];
+    const y2 = p2[1];
+    const x3 = p3[0];
+    const y3 = p3[1];
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Calculate Twice the Signed Area of the main triangle (D)
+    // D = (x2 - x1)(y3 - y1) - (x3 - x1)(y2 - y1)
+    const D = (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1);
+
+    // If D is zero, the triangle is degenerate (points are collinear).
+    // We handle this by returning zero weights or a simple linear interpolation,
+    // but for this function, we'll return zero weights and log an error.
+    if( Math.abs( D ) < 1e-6 ){
+        console.error( 'Triangle is degenerate (collinear points). Cannot compute Barycentric Coordinates.' );
+        return [0,0,0];
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Calculate Numerators (N1, N2, N3) which are related to twice the area
+    // of the sub-triangles created by the target point T.
+
+    // Weight for P1 (omega_1) is based on the area of triangle T P2 P3
+    // N1 = (x2 - Tx)(y3 - Ty) - (x3 - Tx)(y2 - Ty)
+    const n1 = (x2 - tx) * (y3 - ty) - (x3 - tx) * (y2 - ty);
+
+    // Weight for P2 (omega_2) is based on the area of triangle T P3 P1
+    // N2 = (x3 - Tx)(y1 - Ty) - (x1 - Tx)(y3 - Ty)
+    const n2 = (x3 - tx) * (y1 - ty) - (x1 - tx) * (y3 - ty);
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Compute the final weights by dividing by D
+    // w3 can be calculated using the sum property: w1 + w2 + w3 = 1
+    const w1 = n1 / D;
+    const w2 = n2 / D;
+    const w3 = 1.0 - w1 - w2;
+    return [ w1, w2, w3 ];
+}
+
+function linearWeight( v, p1, p2 ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Project position onto segment
+    const ABx = p2[0] - p1[0];  // p2 - p1
+    const ABy = p2[1] - p1[1];
+    const AVx = v[0]  - p1[0];  // v - p1
+    const AVy = v[1]  - p1[1];
+
+    const dot    = AVx * ABx + AVy * ABy;   // Calculate Dot Product (AV * AB)
+    const magSqr = ABx * ABx + ABy * ABy;   // Squared Magnitude of AB
+
+    // Check for zero length ( p1 and p1 are the same point)
+    if( magSqr === 0 ){
+        // If points are the same, t is 1 if T is at the same spot, 0 otherwise (or handle as an error)
+        const t = ( AVx === 0 && AVy === 0 )? 1.0 : 0.0;
+        return [ 1.0-t, t ];
+    }
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const t = Math.max( 0, Math.min( 1, dot / magSqr ) );
+    return [ 1.0-t, t ];
+}
+
+function isPointInTriangle( p, a, b, c ){
+    const [px, py] = p;
+    const [x0, y0] = a;
+    const [x1, y1] = b;
+    const [x2, y2] = c;
+
+    // Barycentric coordinate calculation
+    const area = 0.5 * (-y1 * x2 + y0 * (-x1 + x2) + x0 * (y1 - y2) + x1 * y2);
+    const s    = 1 / (2 * area) * (y0 * x2 - x0 * y2 + (y2 - y0) * px + (x0 - x2) * py);
+    const t    = 1 / (2 * area) * (x0 * y1 - y0 * x1 + (y0 - y1) * px + (x1 - x0) * py);
+
+    return s >= 0 && t >= 0 && (s + t) <= 1;
+}
+
+</script></body></html>

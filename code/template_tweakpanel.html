@@ -26,7 +26,7 @@ window.addEventListener( 'load', async _=>{
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     Debug.pnt.add( [0,0.5,0], 0x00ff00, 5, 2 );
     Debug.ln.add( [0,0.5,0], [0,1,0], 0xffffff );
-    
+
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // App.createRenderLoop( onPreRender ).start();
     App.renderLoop();
@@ -35,7 +35,7 @@ window.addEventListener( 'load', async _=>{
 
 function onPreRender( dt, et ){}
 
-async function buildUI(){    
+async function buildUI(){
     appendGithubLink( false );
     // ! https://github.com/tallneil/tweakpane-plugin-inputs
     // https://github.com/dgxyzw/tweakpane-plugin-gradient
@@ -44,7 +44,7 @@ async function buildUI(){
     // https://github.com/donmccurdy/tweakpane-plugin-thumbnail-list?tab=readme-ov-file
     // https://github.com/tweakpane/plugin-camerakit
     // https://github.com/0b5vr/tweakpane-plugin-rotation
-    // https://github.com/cocopon/tweakpane/issues/508  Example of reset control 
+    // https://github.com/cocopon/tweakpane/issues/508  Example of reset control
     // https://github.com/0b5vr/tweakpane-plugin-profiler
     // https://github.com/brunoimbrizi/tweakpane-plugin-chromatic
     // https://github.com/LuchoTurtle/tweakpane-plugin-file-import
@@ -83,7 +83,7 @@ async function buildUI(){
     // f2.addBinding( Ref, 'Yellow', { readonly: true, });
     // f2.addBinding( Ref, 'L_click', { readonly: true, });
     // f2.addBinding( Ref, 'R_click', { readonly: true, });
-    
+
     // f0.addBinding( Ref, 'showGizmo', {  label: 'Gizmo' } ).on( "change", e=>{
     //     if( e.value ) Gizmo.show();
     //     else          Gizmo.hide();
@@ -104,6 +104,17 @@ async function buildUI(){
     //     expanded    : true,
     //     x           : { step:0.01, min:-1, max:1 },
     //     y           : { step:0.01, min:-1, max:1, inverted:true },
+    // });
+
+    // state.sel = 0
+    // f.addBinding( state, 'sel', {
+    //     label   : 'Modes',
+    //     options : {
+    //         Quadrants   : 0,
+    //         Diamond     : 1,
+    //         Corners     : 2,
+    //         Triangle    : 3,
+    //     },
     // });
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
