@@ -1,0 +1,551 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+    import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+    import { GLTFLoader } from 'three/GLTFLoader.js';
+    import * as util    from '@lib/util.js';
+
+    import Vec3         from '@lib/maths/Vec3.js';
+    import Quat         from '@lib/maths/Quat.js';
+
+    import { Pane }     from '@tp/tweakpane/tweakpane-4.0.4.min.js';
+
+    import CheckerCrossMaterial from '@lib/shader/CheckerCrossMaterial.js';
+// #endregion
+
+// #region MAIN
+    let App   = useDarkScene( useThreeWebGL2() );
+    let Debug = {};
+    let Ref   = {};
+
+    window.addEventListener( 'load', async ()=>{
+    	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    	App.sphericalLook( 90, 20, 5, [0,1.0,0] );
+        Debug = await useVisualDebug( App );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // LOAD CHAR & ANIMATION
+        const url   = '../../../res/models/mewtwo/';
+        const [ [ root, skinned ], aryAnim ] = await Promise.all([
+            loadCharacter( { url: `${url}/mewtwo.gltf`, phong:0xffffff } ),
+            loadAnimations( `${url}/anim_land_traverse.gltf` ),
+        ]);
+
+        const cIdle = aryAnim.find( i=>(i.name==='defaultidle01') ); //defaultwait_loop
+        const cWalk = aryAnim.find( i=>(i.name==='walk_loop') );
+        const cRun  = aryAnim.find( i=>(i.name==='run_loop') );
+
+        // Add character to scene
+        App.scene.add( root );
+        Ref.skel = skinned.skeleton;
+        Ref.root = root;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        //  SETUP BLEND SPACE
+        Ref.blendSpace = new BlendSpace1D( Ref.skel, 'origin' );
+        Ref.blendSpace
+            .addClip( cIdle )
+            .addClip( cWalk )
+            .addClip( cRun, 0.53 ); // Offset to make the left foot match, needed for good blending
+
+        Ref.blendSpace.blend = 0;
+        // Ref.blendSpace.update( 0.9 );
+
+        // debugging position data
+        // for( let i=0; i < 100; i++ ){
+            // Ref.i = i;
+            // Ref.blendSpace.update( 0.0323 );
+            // const itm  = Ref.blendSpace.stack[0];
+            // const tIdx = 3;
+            // console.log( 'Time', itm.action.time );
+            // console.log( 'Name', itm.action._propertyBindings[ tIdx ].binding.path );
+            // console.log( 'Calc', actionFramePosition( itm.action, tIdx ) );
+            // console.log( 'Bone', Ref.skel.bones[1].name, Ref.skel.bones[1].position.toArray() );
+            // console.log( 'BoneWorld', Ref.skel.bones[1].getWorldPosition( new THREE.Vector3() ).toArray() );
+            // console.log( 'Buf', Array.from(itm.action._interpolants[ tIdx ].resultBuffer.slice(0,3)) );
+            // console.log( '---------------------------' )
+
+            // break;
+        //     if( i === 86 ){
+        //         console.log(i, Ref.blendSpace.velocity[2] );
+        //         console.log( '-------------------------' );
+        //     }
+        // }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Motion Floor
+        Ref.floor = CheckerCrossMaterial.createMesh( {scl:2} );
+        Ref.floor.position.y = 0.005;
+
+        App.scene.add( Ref.floor );
+        Ref.offset = [0,0];
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        App.createRenderLoop( onPreRender ).start();
+        // App.renderLoop();
+        appendGithubLink( false );
+        buildUI();
+    });
+
+
+    function onPreRender( dt, et ){
+        if( Ref.blendSpace ){
+            Ref.blendSpace.update( dt );
+
+            const vel     = Ref.blendSpace.velocity;
+            Ref.offset[0] = ( Ref.offset[0] + vel[0] ) % 10;
+            Ref.offset[1] = ( Ref.offset[1] + vel[2] ) % 10;
+            Ref.floor.material.setOffset( Ref.offset[0], Ref.offset[1] );
+        }
+    }
+
+    async function buildUI(){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const DATA  = { blend : 0 };
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const p = new Pane( {} );
+        p.on( 'change', e=>{ Ref.blendSpace.blend = e.value });
+
+        const f = p.addFolder({ title: '1D BlendSpace', expanded: true });
+        f.addBinding( DATA, 'blend', { min: 0.0, max: 2, step: 0.01, label: 'Blend' } );
+
+        const f2 = p.addFolder({ title: 'Debug', expanded: false });
+        f2.addButton({ title: '0.2' }).on( 'click', ()=>{ DATA.blend = 0.2; f.refresh(); } );
+        f2.addButton({ title: '0.8' }).on( 'click', ()=>{ DATA.blend = 1.2; f.refresh(); } );
+        f2.addButton({ title: '1.5' }).on( 'click', ()=>{ DATA.blend = 1.5; f.refresh(); } );
+        f2.addButton({ title: '1.7' }).on( 'click', ()=>{ DATA.blend = 1.7; f.refresh(); } );
+        f2.addButton({ title: '2.0' }).on( 'click', ()=>{ DATA.blend = 2.0; f.refresh(); } );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        Ref.pane = p;
+    }
+// #endregion
+
+// #region LOADING
+    async function loadCharacter( props={} ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // LOAD
+        const opt = { skel:true, skelHelper:false, phong:undefined, toon:false, tpose:false, ...props };
+        const tf  = await new GLTFLoader().loadAsync( opt.url );
+        // const o  = firstFind( tf.scene, o=> (o.type === 'SkinnedMesh') );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Find Skeleton & Push Skinned Meshes to the scene
+        // let skel;
+        let skinned;
+        let mat = null;
+        for( const m of util.traverseFind( tf.scene, o=> (o.type === 'SkinnedMesh') ) ){
+            if( opt.phong != null ) mat = new THREE.MeshPhongMaterial( { color: opt.phong } );
+            if( opt.toon ) mat = new THREE.MeshToonMaterial( { map: m.material.map, normalMap: m.material.normalMap } );
+
+            if( mat )       m.material = mat;
+            // if( !skel )     skel = m.skeleton;  // First skeleton
+            if( !skinned )  skinned = m;  // First skeleton
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if( opt.tpose ){
+            const clip = tf.animations.find( i=>i.name.toLowerCase() === 'tpose' );
+            if( clip )  util.poseFromClip( clip, skel );
+            else        console.log( 'TPose animation clip not found' );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Push Skeleton Helper
+        // App.scene.add( skel.bones[0] );
+        if( opt.skelHelper ){
+            App.scene.add( new THREE.SkeletonHelper( skel.bones[0] ) );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        return [ tf.scene, skinned ];
+    }
+
+    async function loadAnimations( url ){
+        const tf = await new GLTFLoader().loadAsync( url );
+        return tf.animations ?? [];
+    }
+// #endregion
+
+// #region BLEND SPACE 1D
+    class BlendSpaceItem{
+        constructor( act, tOff, rName ){
+            this.action      = act;
+            this.timeOffset  = tOff;
+            this.rootMotion  = new RootMotion( act, rName );
+        }
+    }
+
+    class BlendSpace1D{
+        mixer       = new THREE.AnimationMixer( new THREE.Object3D() );
+        rootName    = '';           // Bone Name that supplies root motion
+        boneIdx     = -1;           // Index to root motion bone
+        skel        = null;         // Skeleton that animation gets applied to
+        stack       = new Array();  // Animation Stack
+        #blend      = 0;            // Blend value
+        velocity    = new Vec3();   // Root motion velocity results
+
+        constructor( skel, rName ){
+            this.skel     = skel;
+            this.rootName = rName;
+            this.boneIdx  = skel.bones.findIndex( i=>( i.name === rName ) );
+        }
+
+        addClip( clip, timeOffset=0, root=null ){
+            const act = this.mixer.clipAction( clip, root || this.skel.bones[0] );
+            act.enabled = false;
+
+            const itm = new BlendSpaceItem( act, timeOffset, this.rootName );
+            this.stack.push( itm );
+
+            return this;
+        }
+
+        // #region GETTERS / SETTERS
+        set blend( v ){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Compute Weights between two actions
+            const max   = this.stack.length - 1;
+            let bi      = 0;                // Index to 2nd Action
+            let ai      = Math.floor( v );  // Index to 1st Action
+            let bt      = v - ai;           // Weight for 2nd Action
+            let at      = 0;                // Weight for 1st Action
+
+            if( ai >= max ){        // If over, default to fully weighted final action
+                ai = bi = max;
+                at = bt = 1;
+            }else{
+                bi = ai + 1;
+                at = 1.0 - bt;
+            }
+
+            this.#blend = v;
+            // console.log( 'Idx', ai, 'T', at, 'bIdx', bi, 'T', bt );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            const a = this.stack[ ai ];
+            const b = this.stack[ bi ];
+
+            // console.log( a.action._clip.name, b.action._clip.name );
+
+            if( ai === bi ){
+                // -----------------------------
+                // Single action
+                a.action.enabled = true;
+                a.action.setEffectiveTimeScale( 1 );
+                a.action.setEffectiveWeight( 1 );
+                a.action.play();
+
+                a.rootMotion.reset();
+            }else{
+                // console.log( a.action.enabled, b.action.enabled, a.timeOffset, b.timeOffset );
+                // Set time for newly activated action
+                if( a.action.enabled && !b.action.enabled ){
+                    // -----------------------------
+                    // Blend B into A
+                    b.action.reset();
+                    b.rootMotion.reset();
+
+                    console.log( 'B to A' );
+
+                    const time    = ( a.action.time - a.timeOffset ) % a.action._clip.duration;
+                    const ratio   = time / a.action._clip.duration;
+                    b.action.time = b.action._clip.duration * ratio + b.timeOffset;
+
+                }else if( !a.action.enabled && b.action.enabled ){
+                    // -----------------------------
+                    // Blend A Into B
+                    a.action.reset();
+                    a.rootMotion.reset();
+                    console.log( 'A to B' );
+
+                    const time    = ( b.action.time - b.timeOffset ) % b.action._clip.duration;
+                    const ratio   = time / b.action._clip.duration;
+                    a.action.time = a.action._clip.duration * ratio + a.timeOffset;
+
+                }else if( !a.action.enabled && !b.action.enabled ){
+                    // -----------------------------
+                    // No blending, start at the same time
+                    console.log( 'RESET BOTH' );
+                    a.action.reset();
+                    a.rootMotion.reset();
+
+                    b.action.reset();
+                    b.rootMotion.reset();
+
+                    a.action.time = a.timeOffset;
+                    b.action.time = b.timeOffset;
+                }
+
+                // -----------------------------
+                // Compute weight sync with time scale
+                const dur  = a.action._clip.duration * at +
+                             b.action._clip.duration * bt;      // Get Weighted Duration
+                const aScl = a.action._clip.duration / dur;     // Calc scale for each weighted action
+                const bScl = b.action._clip.duration / dur;
+
+                // Set 1st Action
+                a.action.enabled = true;
+                a.action.setEffectiveTimeScale( aScl );
+                a.action.setEffectiveWeight( at );
+                a.action.play();
+
+                // Set 2nd Action
+                b.action.enabled = true;
+                b.action.setEffectiveTimeScale( bScl );
+                b.action.setEffectiveWeight( bt );
+                b.action.play();
+
+                // -----------------------------
+                // Need to reset root motions with correct time & starting position
+                a.rootMotion.resetPos();
+                b.rootMotion.resetPos();
+            }
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Disable actions
+            for( const [i,e] of this.stack.entries() ){
+                if( i !== ai && i !== bi ){
+                    e.action.enabled = false;
+                    // e.action.stop();
+                    // console.log( 'stop', e.action._clip.name );
+                }
+            }
+        }
+        // #endregion
+
+        // Main Update to run mixer
+        update( dt ){
+            this.mixer.update( dt );    // Create next frame
+            this.updateRootMotion();    // Compute motion of root since last update
+            this.applyInPlace();        // Clear XZ Plane
+        }
+
+        applyInPlace(){
+            const b = this.skel.bones[ this.boneIdx ];
+            b.position.x = 0;
+            b.position.z = 0;
+        }
+
+        // Process & Blend Root Motion Velocity
+        updateRootMotion(){
+            const v = new Vec3();
+            let wgt = 0;
+            this.velocity.xyz(0,0,0);
+
+            for( let i of this.stack ){
+                // Skip distabled actions or actions with no weight
+                if( i.action.enabled && ( wgt = i.action.getEffectiveWeight() ) > 0 ){
+                    i.rootMotion.update();
+                    v.fromScale( i.rootMotion.velocity, wgt );
+                    this.velocity.add( v );
+                }
+            }
+        }
+    }
+// #endregion
+
+// #region ROOT MOTION
+    // NOTE: action._interpolants[].resultBuffer can not be trusted with the correct final data
+    // Compute the frame blended vec3 position of a clip track using action timing
+    function actionFramePosition( act, trackIdx, out=[0,0,0] ){
+        const clip = act._clip;
+        const trk  = clip.tracks[ trackIdx ];
+        const iMax = trk.times.length - 1;      // Make Frame Index
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Find which frame animation is currently on
+        let ai = 0;
+        let bi = 1;
+        for( let i=iMax; i > 0; i-- ){
+            if( act.time >= trk.times[i] ){
+                ai = i;
+                bi = i+1;
+                break;
+            }
+        }
+
+        if( ai >= iMax ){
+            out[ 0 ] = trk.values[ ai + 0 ];
+            out[ 1 ] = trk.values[ ai + 1 ];
+            out[ 2 ] = trk.values[ ai + 2 ];
+            return out;
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Blend Vec3 between two frames
+        const t   = ( act.time - trk.times[ai] ) / ( trk.times[ai] + trk.times[bi] );
+        const ti  = 1 - t;
+        const aii = ai * 3;
+        const bii = bi * 3;
+
+        out[ 0 ] = trk.values[ aii + 0 ] * ti + trk.values[ bii + 0 ] * t;
+        out[ 1 ] = trk.values[ aii + 1 ] * ti + trk.values[ bii + 1 ] * t;
+        out[ 2 ] = trk.values[ aii + 2 ] * ti + trk.values[ bii + 2 ] * t;
+        return out;
+    }
+
+    // Get position of a joint at at a frame in animation clip
+    function clipFramePosition( clip, name, fIdx ){
+        const n = name + '.position';
+        const t = clip.tracks.find( i=>{ return i.name === n } ); // Find Track
+        const v = new Vec3();
+
+        if( t ){
+            // Calc Reverse Indexing
+            if( fIdx < 0 ) fIdx = ( t.values.length / 3 ) + fIdx;
+
+            // Get the position out of raw flat data buffer
+            const i = fIdx * 3;
+            v[0]    = t.values[ i + 0 ];
+            v[1]    = t.values[ i + 1 ];
+            v[2]    = t.values[ i + 2 ];
+        }
+
+        return v;
+    }
+
+    class RootMotion{
+    // #region MAIN
+        posFirst = [0,0,0];     // Position of First Frame, Used for Wrap Around Velocity Math
+        posLast  = [0,0,0];     // Position of Last Frame
+        posPrev  = new Vec3();  // Prev Local Position
+        posCurr  = new Vec3();  // Current Local Position
+        velocity = new Vec3();  // Local Velocity since last update position
+
+        prevTime = -Infinity;   // Last action time
+
+        action   = null;        // Animation action to monitor
+        rootName = '';          // Name of joint that holds the motion
+        idxTrack = -1;          // Index to the position track of bone
+        idxBone  = -1;          // Index to skeleton bone of motion
+
+        constructor( act, rName ){
+            if( act && rName ) this.setAction( act, rName );
+        }
+    // #endregion
+
+    // #region GETTERS/SETTERS
+        setAction( act, rName ){
+            this.action   = act;
+            this.rootName = rName;
+            this.prevTime = -Infinity;
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Find the Track Index that will contain
+            // animated root positionchanges
+            const key      = `${rName}.position`;
+            this.idxTrack  = act._clip.tracks.findIndex( v=>(v.name === key) );
+
+            // console.log( this.action._interpolants[3] );
+            // console.log( this.action._propertyBindings[3] ); // find .binding.path = origin.position
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Cache the position of the first & last frame
+            this.posFirst = clipFramePosition( act._clip, rName, 0 );
+            this.posLast  = clipFramePosition( act._clip, rName, -1 );
+            this.posPrev.copy( this.posFirst );
+
+            console.log( "LAST", this.posLast[2], this.action._clip.name );
+        }
+    // #endregion
+
+    // #region METHODS
+        // Reset object to start fresh with the action that has been reset as well.
+        reset(){
+            this.prevTime = -Infinity;
+            this.posPrev.copy( this.posFirst );
+            this.posCurr.copy( this.posFirst );
+            this.velocity.xyz( 0, 0, 0 );
+            return this;
+        }
+
+        resetPos(){
+            // NOTE: resultBuffer can't be trusted when there is weight on the action
+            // this.posCurr.copy( this.action._interpolants[ this.idxTrack ].resultBuffer );
+
+            actionFramePosition( this.action, this.idxTrack, this.posCurr );
+            this.posPrev.copy( this.posCurr );
+            this.prevTime = this.action.time;
+            return this;
+        }
+    // #endregion
+
+    // #region MAIN METHODS
+        // Compute the current local position & velocity since last update
+        update(){
+            // if( Ref.i == 86 ) console.log( '~~~~~~~~~~~~~~~~~~~~~~~~~~~~~', this.action._clip.name, this.idxTrack );
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            const time = this.action.time;
+            this.posPrev.copy( this.posCurr );      // Move to Prev
+            actionFramePosition( this.action, this.idxTrack, this.posCurr );
+
+            // this.posCurr.copy( this.action          // Get current pos created by mixer
+            //     ._interpolants[ this.idxTrack ]
+            //     .resultBuffer );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            if( time < this.prevTime ){
+                // NEW LOOP
+                // wrap_around = ( curr - first ) + ( last - prev )
+
+                // Delta between last pos in prev loop to last frame
+                const delta = new Vec3();
+                delta.fromSub( this.posLast, this.posPrev );
+
+                // Delta between first pos of new loop from first frame
+                this.velocity
+                    .fromSub( this.posCurr, this.posFirst ) // Delta Between curr pos from first frame
+                    .add( delta );                          // Add End Delta
+
+                // if( Ref.i == 86 ){
+                //     console.log( 'WRAP-deltaA', delta[2] );
+                //     console.log( 'WRAP-deltaB', new Vec3().fromSub( this.posCurr, this.posFirst )[2] );
+                // }
+            }else{
+                // CURRENT LOOP
+                this.velocity.fromSub( this.posCurr, this.posPrev );
+            }
+
+            // if( Ref.i == 86 ){
+            //     console.log( this.velocity );
+
+            //     console.log( 'prev', this.posPrev[2] );
+            //     console.log( 'curr', this.posCurr[2] );
+            //     console.log( 'ptime', this.prevTime );
+            //     console.log( 'time', time );
+
+            //     console.log( 'First', this.posFirst[2] );
+            //     console.log( 'Last', this.posLast[2] );
+            // }
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            this.prevTime = time;   // Keep track of time to know when new starts
+            return this;
+        }
+
+        // Apply velocity to object & clear motion from bone
+        apply( obj, skel ){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Make sure we have the root bone
+            if( this.idxBone === -1 ){
+                this.idxBone = skel.bones.findIndex( i=>(i.name === this.rootName ) );
+            }
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Remove root motion - Creates in place animation
+            skel.bones[ this.idxBone ].position.x = 0;
+            skel.bones[ this.idxBone ].position.z = 0;
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Add velocity to 3D object
+            obj.position.x += this.velocity[0];
+            obj.position.z += this.velocity[2];
+        }
+    // #endregion
+    }
+// #endregion
+
+</script></body></html>
