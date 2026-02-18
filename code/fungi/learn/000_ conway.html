@@ -1,0 +1,559 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+
+// #endregion
+
+// https://codelabs.developers.google.com/your-first-webgpu-app#0
+// #region MAIN
+    const Ref = {};
+
+    window.addEventListener( 'load', async ()=>{
+        // const ubo = new Ubo([
+        //     { name:'time', type:GTYPE.f32,  init:22 },
+        //     { name:'num',  type:GTYPE.f32,  init:100 },
+        //     { name:'vec',  type:GTYPE.vec3, init:[1,2,3] },
+        // ]);
+        //
+        const GRID_SIZE = 20;
+
+        const gpu = new WGpu( { clearColor: 0x3a3a3a } );
+        if( await gpu.bind() ){
+            // gpu.debugAdapter();
+            // console.log( 'has bgra8unorm-storage', gpu.hasFeature( 'bgra8unorm-storage' ) );
+        }
+
+        const cellState = new Uint32Array( GRID_SIZE * GRID_SIZE );
+        // const cellBuf   = gpu.device.createBuffer({
+        //     label : 'cellState',
+        //     size  : cellState.byteLength,
+        //     usage : GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        // });
+        // for( let i=0; i < cellState.length; i+= 3 ) cellState[i] = 1;
+        // gpu.device.queue.writeBuffer( cellBuf, 0, cellState );
+
+        const cellBufs = [
+            gpu.device.createBuffer({
+                label   : 'CellA',
+                size    : cellState.byteLength,
+                usage   : GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            }),
+            gpu.device.createBuffer({
+                label   : 'CellB',
+                size    : cellState.byteLength,
+                usage   : GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            }),
+        ];
+        for( let i=0; i < cellState.length; i+= 3 ) cellState[i] = i % 2; // 1
+        gpu.device.queue.writeBuffer( cellBufs[0], 0, cellState );
+
+        for( let i=0; i < cellState.length; i++ ) cellState[i] = i % 2;
+        gpu.device.queue.writeBuffer( cellBufs[1], 0, cellState );
+
+
+        const vert = new Float32Array([ -0.8,-0.8,0.8,-0.8,0.8,0.8,  -0.8,-0.8,0.8,0.8,-0.8,0.8 ] );
+        const vBuf = gpu.createVertBuf( vert );
+        const vertBufferLayout = {
+            arrayStride : 8, // Vec2, 8 bytes
+            attributes  : [ { format: 'float32x2', offset:0, shaderLocation:0 } ],
+        };
+
+        const ubo  = new Ubo([ { name:'gridSize',  type:GTYPE.vec2, init:[GRID_SIZE,GRID_SIZE] } ]);
+        const uBuf = gpu.device.createBuffer({
+            label   : 'ubo',
+            size    : ubo._buf.byteLength,
+            usage   : GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        gpu.device.queue.writeBuffer( uBuf, 0, ubo._buf );
+
+        const WORKGROUP = 8;
+        const compMod = gpu.device.createShaderModule({
+            label   : 'Compute',
+            code    : `
+            @group(0) @binding(0) var<uniform> grid: vec2f;
+
+            @group(0) @binding(1) var<storage> cellStateIn: array<u32>;
+            @group(0) @binding(2) var<storage, read_write> cellStateOut: array<u32>;
+
+            fn cellIndex( cell: vec2u ) -> u32 {
+                // return cell.y * u32( grid.x ) + cell.x;
+                // Wrap Around
+                return ( cell.y % u32(grid.y) ) * u32(grid.x) +
+                       ( cell.x % u32(grid.x) );
+            }
+
+            fn cellActive( x: u32, y: u32 ) -> u32{
+                return cellStateIn[ cellIndex( vec2(x,y) ) ];
+            }
+
+            @compute
+            @workgroup_size( ${WORKGROUP}, ${WORKGROUP}, 1 )
+            fn cs_main( @builtin(global_invocation_id) cell: vec3u ){
+                let idx = cellIndex( cell.xy );
+
+                // if( cellStateIn[ idx ] == 1 ){
+                //     cellStateOut[ idx ] = 0;
+                // }else{
+                //     cellStateOut[ idx ] = 1;
+                // }
+                // cellStateOut[ idx ] = select( 1u, 0u, cellStateIn[ idx ] == 1 );
+
+                // Determine how many active neighbors this cell has.
+                let activeNeighbors = cellActive(cell.x+1, cell.y+1) +
+                                      cellActive(cell.x+1, cell.y) +
+                                      cellActive(cell.x+1, cell.y-1) +
+                                      cellActive(cell.x, cell.y-1) +
+                                      cellActive(cell.x-1, cell.y-1) +
+                                      cellActive(cell.x-1, cell.y) +
+                                      cellActive(cell.x-1, cell.y+1) +
+                                      cellActive(cell.x, cell.y+1);
+
+                // Conway's game of life rules:
+                switch activeNeighbors {
+                    // Active cells with 2 neighbors stay active.
+                    case 2  : { cellStateOut[ idx ] = 1; } //cellStateIn[ idx ]
+                    // Cells with 3 neighbors become or stay active.
+                    case 3  : { cellStateOut[ idx ] = 1; }
+                    // Cells with < 2 or > 3 neighbors become inactive.
+                    default : { cellStateOut[ idx ] = 0; }
+                }
+            }`,
+        });
+
+        const bgLayout = gpu.device.createBindGroupLayout({
+            label   :  'ComputeLayout',
+            entries : [
+                { binding:0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT, buffer:{}  }, // buffer:{ type:'uniform' } Uniform
+                { binding:1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.COMPUTE, buffer:{ type:'read-only-storage' } }, // In Buffer
+                { binding:2, visibility: GPUShaderStage.COMPUTE, buffer: { type:'storage' } }, // Out buffer
+            ],
+        });
+
+        const mod = gpu.createShader( `
+            @group(0) @binding(0) var<uniform> grid: vec2f;
+            @group(0) @binding(1) var<storage> cellState: array<u32>;
+
+            struct VertexInput{
+                @location(0) pos: vec2f,
+                @builtin(instance_index) instance: u32,
+            };
+
+            struct VertexOutput{
+                @builtin(position) pos: vec4f,
+                @location(0) cell: vec2f,
+            };
+
+            @vertex
+            fn vMain( input: VertexInput )-> VertexOutput {
+                let i           = f32( input.instance );
+                // let cell        = vec2f( i, i );
+                let cell        = vec2f( i % grid.x, floor( i / grid.x ) );
+                let state       = f32( cellState[input.instance] );
+
+                let cellOffset  = cell / grid * 2;
+                // let gridPos     = ( input.pos + 1 ) / grid - 1 + cellOffset;
+                let gridPos     = ( input.pos * state + 1 ) / grid - 1 + cellOffset;
+
+                var output: VertexOutput;
+                output.pos  = vec4f( gridPos, 0, 1 );
+                output.cell = cell;
+                return output;
+            }
+
+            struct FragInput{
+                @location(0) cell: vec2f,
+            };
+
+            @fragment
+            // fn fMain( @location(0) cell: vec2f ) -> @location(0) vec4f {
+            fn fMain( input: FragInput ) -> @location(0) vec4f {
+                let c = input.cell / grid;
+                return vec4f( c, 1-c.x, 1 );
+            }
+        `);
+
+        const pipeLayout = gpu.device.createPipelineLayout({
+            label            : 'PipeLayout',
+            bindGroupLayouts : [ bgLayout ],
+        });
+
+        const pipeline = gpu.device.createRenderPipeline({
+            label       : 'Some Pipeline',
+            layout      : pipeLayout, //'auto',
+            vertex      : { module: mod, entryPoint:"vMain", buffers:[ vertBufferLayout ] },
+            fragment    : { module: mod, entryPoint:"fMain", targets:[ { format: gpu.format } ] },
+            primitive   : { topology: "triangle-list" },
+        });
+
+        const compute = gpu.device.createComputePipeline({
+            label   : 'ComputePL',
+            layout  : pipeLayout,
+            compute : {
+                module      : compMod,
+                entryPoint  : 'cs_main',
+            },
+        });
+
+
+        // const bindGroup = gpu.device.createBindGroup({
+        //     label   : 'ForUBO',
+        //     layout  : pipeline.getBindGroupLayout( 0 ),
+        //     entries : [
+        //         { binding: 0, resource: { buffer:uBuf }, },
+        //         { binding: 1, resource: { buffer:cellBuf } },
+        //     ],
+        // });
+
+        // for layout AUTO
+        // const bindGroups = [
+        //     gpu.device.createBindGroup({
+        //         label   : "GrpA",
+        //         layout  : pipeline.getBindGroupLayout( 0 ),
+        //         entries : [
+        //             { binding:0, resource:{ buffer:uBuf } },
+        //             { binding:1, resource:{ buffer:cellBufs[0] } },
+        //         ]
+        //     }),
+        //     gpu.device.createBindGroup({
+        //         label   : "GrpB",
+        //         layout  : pipeline.getBindGroupLayout( 0 ),
+        //         entries : [
+        //             { binding:0, resource:{ buffer:uBuf } },
+        //             { binding:1, resource:{ buffer:cellBufs[1] } },
+        //         ]
+        //     }),
+        // ];
+
+        const bindGroups = [
+            gpu.device.createBindGroup({
+                label   : "GrpA",
+                layout  : bgLayout,
+                entries : [
+                    { binding:0, resource:{ buffer:uBuf } },
+                    { binding:1, resource:{ buffer:cellBufs[0] } },
+                    { binding:2, resource:{ buffer:cellBufs[1] } },
+                ]
+            }),
+            gpu.device.createBindGroup({
+                label   : "GrpB",
+                layout  : bgLayout,
+                entries : [
+                    { binding:0, resource:{ buffer:uBuf } },
+                    { binding:1, resource:{ buffer:cellBufs[1] } },
+                    { binding:2, resource:{ buffer:cellBufs[0] } },
+                ]
+            }),
+        ];
+
+        // const { encoder, pass } = gpu.beginPass();
+
+        // pass.setPipeline( pipeline );
+        // pass.setVertexBuffer( 0, vBuf );
+        // pass.setBindGroup( 0, bindGroup );
+        // pass.draw( vert.length / 2, GRID_SIZE * GRID_SIZE ); // 6 Verts
+
+        // pass.end();
+        // const cmdBuffer = encoder.finish();
+        // gpu.queue( cmdBuffer );
+
+        let step = 0;
+        const updateGrid = ()=>{
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            const encoder = gpu.device.createCommandEncoder();
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            const cpass   = encoder.beginComputePass();
+            cpass.setPipeline( compute );
+            cpass.setBindGroup( 0, bindGroups[ step % 2 ] );
+
+            const wgCount = Math.ceil( GRID_SIZE / WORKGROUP );
+            cpass.dispatchWorkgroups( wgCount, wgCount );
+            cpass.end();
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            step++;
+            const pass    = encoder.beginRenderPass({
+                colorAttachments: [{
+                    view        : gpu.ctx.getCurrentTexture().createView(),
+                    loadOp      : 'clear',
+                    storeOp     : 'store',
+                    clearValue  : [0,0,0,1],
+                }]
+            });
+
+            pass.setPipeline( pipeline );
+            pass.setBindGroup( 0, bindGroups[ step % 2 ] );
+            pass.setVertexBuffer( 0, vBuf );
+            pass.draw( vert.length / 2, GRID_SIZE * GRID_SIZE );
+            pass.end();
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            gpu.device.queue.submit( [ encoder.finish() ] );
+        };
+
+        // updateGrid();
+        setInterval( updateGrid, 200 );
+    });
+// #endregion
+
+// #region FUNGI
+    class WGpu{
+        canvas      = null;
+        adapter     = null;
+        device      = null;
+        ctx         = null;
+        format      = null;
+        clearColor  = [0,0,0,1]; //{ r:0, g:0, b:0, a: 1 };
+
+        constructor( props={} ){
+            if( props[ 'clearColor' ] ) this.setClearColor( props.clearColor )
+        }
+
+        // #region GETTERS
+            hasFeature( k ){ return this.adapter.features.has( k ); }
+
+            setClearColor( hex ){
+                const NORMALIZE_RGB = 1 / 255;
+                // this.clearColor.r = ( hex >> 16 & 255 ) * NORMALIZE_RGB;
+                // this.clearColor.g = ( hex >> 8  & 255 ) * NORMALIZE_RGB;
+                // this.clearColor.b = ( hex & 255 )       * NORMALIZE_RGB;
+                this.clearColor[0] = ( hex >> 16 & 255 ) * NORMALIZE_RGB;
+                this.clearColor[1] = ( hex >> 8  & 255 ) * NORMALIZE_RGB;
+                this.clearColor[2] = ( hex & 255 )       * NORMALIZE_RGB;
+                return this;
+            }
+
+            commandEncoder(){ return this.device.createCommandEncoder(); }
+            createView(){ return this.ctx.getCurrentTexture().createView() }
+
+            beginPass(){
+                const encoder = this.device.createCommandEncoder();
+                const pass    = encoder.beginRenderPass({
+                    colorAttachments:[
+                        {   view        : this.ctx.getCurrentTexture().createView(),
+                            clearValue  : this.clearColor,
+                            loadOp      : 'clear',
+                            storeOp     : 'store', }
+                    ]
+                });
+                return { encoder, pass };
+            }
+
+            createVertBuf( verts ){
+                const buf = this.device.createBuffer({
+                    label   : 'Vertices',
+                    size    : verts.byteLength,
+                    usage   : GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+                });
+
+                this.device.queue.writeBuffer( buf, 0, verts ); // offset 0
+                return buf;
+            }
+
+            createShader( str ){
+                const mod = this.device.createShaderModule({
+                    label : 'Some Shader',
+                    code  : str,
+                });
+
+                return mod;
+            }
+        // #endregion
+
+        // #region METHODS
+            queue( ...ary ){ this.device.queue.submit( ary ); return this; }
+
+            async bind( elm=null ){
+                // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                if( !navigator.gpu ){ console.log( 'WebGPU not supported on this browser.' ); return false; }
+
+                // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                // HANDLE CANVAS ELEMENT
+                if( elm ){
+                    // Canvas passed in
+                    if( elm instanceof HTMLCanvasElement ) this.canvas = elm;
+                    else{
+                        // Container passed in instead
+                        this.canvas = document.createElement( 'canvas' );
+                        this.canvas.style.width     = '100%';
+                        this.canvas.style.height    = '100%';
+                        elm.appendChild( this.canvas );
+                    }
+                }else{
+                    // Nothing, create canvas on body
+                    this.canvas = document.createElement( 'canvas' );
+                    this.canvas.style.width     = '100vw';
+                    this.canvas.style.height    = '100vh';
+                    document.body.appendChild( this.canvas );
+                }
+
+                // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                // ADAPTER
+                this.adapter = await navigator.gpu.requestAdapter({
+                    featureLevel            : 'core', // Use modern APIs like Vulkan, D12, Meta
+                                                // 'compatibility', // Run on older hardware like OpenGL ES & D11
+                    powerPerference         : 'low-power', //'high-performance',
+                    forceFallbackAdapter    : false, // Hardware only, avoid software emulators
+                    xrCompatible            : false, // Turn True if needing to do things like VR
+                });
+
+                if( !this.adapter ){ console.log( 'No GPUAdapter found.' ); return false; }
+
+                // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                // DEVICE
+                this.device = await this.adapter.requestDevice({
+                    requiredFeatures    : [],
+                    requiredLimits      : {},
+                    defaultQueue        : { label: 'main_queue' },
+                });
+
+                // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                this.format = navigator.gpu.getPreferredCanvasFormat();
+                this.ctx    = this.canvas.getContext( 'webgpu' );
+                this.ctx.configure( { device: this.device, format: this.format } );
+
+                return true;
+            }
+        // #endregion
+
+        // #region DEBUGGING
+            async debugAdapter(){
+                console.log( '~~~ GPU ADAPTER ~~~~~~~~~~~~~~~');
+
+                const kInfo = ['architecture','description','device','isFallbackAdapter','subgroupMaxSize','subgroupMinSize','vendor'];
+                console.log( '### INFO');
+                for( const k of kInfo ) console.log( `- ${k} : ${this.adapter.info[k]}` );
+
+                console.log( '### LIMITS');
+                const kLimit = [
+                    'maxBindGroups','maxBindGroupsPlusVertexBuffers','maxBindingsPerBindGroup','maxBufferSize','maxColorAttachmentBytesPerSample','maxColorAttachments',
+                    'maxComputeInvocationsPerWorkgroup','maxComputeWorkgroupSizeX','maxComputeWorkgroupSizeY','maxComputeWorkgroupSizeZ','maxComputeWorkgroupStorageSize',
+                    'maxComputeWorkgroupsPerDimension','maxDynamicStorageBuffersPerPipelineLayout','maxDynamicUniformBuffersPerPipelineLayout','maxInterStageShaderVariables',
+                    'maxSampledTexturesPerShaderStage','maxSamplersPerShaderStage','maxStorageBufferBindingSize','maxStorageBuffersPerShaderStage','maxStorageTexturesPerShaderStage',
+                    'maxTextureArrayLayers','maxTextureDimension1D','maxTextureDimension2D','maxTextureDimension3D','maxUniformBufferBindingSize','maxUniformBuffersPerShaderStage',
+                    'maxVertexAttributes','maxVertexBufferArrayStride','maxVertexBuffers','minStorageBufferOffsetAlignment','minUniformBufferOffsetAlignment'
+                ];
+                for( const k of kLimit ) console.log( `- ${k} : ${this.adapter.limits[k]}` );
+
+                console.log( '### features');
+                for( const k of this.adapter.features ) console.log( `- ${k}` );
+            }
+        // #endregion
+    }
+
+    const GTYPE = {
+        f32   : 0,
+        i32   : 1,
+        vec2  : 2,
+        vec3  : 3,
+        vec4  : 4,
+        mat4  : 5,
+    };
+
+    const GTYPEDEF = [ // Stride is 16 when in an array
+        { size: 4,  align: 4,  stride: 16, elm: 1,  tary:Float32Array },  // f32
+        { size: 4,  align: 4,  stride: 16, elm: 1,  tary:Int32Array },    // i32
+        { size: 8,  align: 8,  stride: 16, elm: 2,  tary:Float32Array },  // vec2
+        { size: 12, align: 16, stride: 16, elm: 3,  tary:Float32Array },  // vec3
+        { size: 16, align: 16, stride: 16, elm: 4,  tary:Float32Array },  // vec4
+        { size: 64, align: 16, stride: 64, elm: 16, tary:Float32Array },  // mat4
+    ];
+
+    class Ubo{
+        _items = {};
+        _buf   = null;
+
+        constructor( cfg ){
+            this._build( cfg );
+
+            // Wrap Ubo in a Proxy
+            return new Proxy( this, {
+                get: ( tar, prop, receiver )=>{
+                    const v = tar._getValue( prop );
+                    return ( v !== undefined )? v
+                        : ( prop in tar )? tar[ prop ] : undefined; // Internal Properties of object
+                },
+
+                set: ( tar, prop, value, receiver )=>{
+                    tar._setValue( prop, value );
+                    return true;
+                },
+            });
+        }
+
+        _build( cfg ){
+            let offset = 0;
+            let isAry  = false;
+            let def;
+            let align;
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            for( const i of cfg ){
+                def     = GTYPEDEF[ i.type ];
+                isAry   = ( i?.count > 1 );
+
+                // Less then 16 will align to 16 when array
+                align   = !isAry? def.align : Math.max( def.align, 16 );
+
+                // STD140 - Add padding for arrays or F32:Vec3 issue
+                // F32 > Vec3 ::  4/16 = ceil(0.25) = 1 * 16 = 16 starting position for vec3, adds 12b padding to f32
+                // Vec3 > F32 ::  12/4 = ceil(3) = 3 * 4 = 12 starting position for f32, no padding
+                offset  = Math.ceil( offset / align ) * align;
+
+                this._items[ i.name ] = {
+                    type    : i.type,
+                    offset  : offset,
+                    isArray : isAry,
+                    size    : def.size,
+                    stride  : !isAry ? def.size : Math.max( def.size, def.stride ),
+                    count   : i?.count || 1,
+                    view    : null,
+                };
+
+
+                offset += !isAry ? def.size
+                                 : def.stride * (i.count-1) + def.size;
+            }
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // CREATE BUFFER & VIEWS
+            const bsize = Math.ceil( offset / 16 ) * 16;
+            this._buf    = new ArrayBuffer( bsize );
+
+            let itm;
+            for( const i of cfg ){
+                itm      = this._items[ i.name ];
+                def      = GTYPEDEF[ itm.type ];
+                itm.view = new def.tary( this._buf, itm.offset, def.elm * itm.count );
+
+                if( i.init != null ) this._setValue( i.name, i.init );
+            }
+        }
+
+        _setValue( name, value ){
+            const itm = this._items[ name ];
+            if( !itm ) return;
+
+            switch( itm.type ){
+                case GTYPE.f32:
+                case GTYPE.i32  : itm.view[0] = value; return;
+                default         : itm.view.set( value );
+            }
+            return this;
+        }
+
+        _getValue( name ){
+            const itm = this._items[ name ];
+            if( !itm ) return undefined;
+
+            switch( itm.type ){
+                case GTYPE.f32:
+                case GTYPE.i32  : return itm.view[ 0 ];
+                default         : return itm.view;
+            }
+        }
+    }
+// #endregion
+
+</script></body></html>

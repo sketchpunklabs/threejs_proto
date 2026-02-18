@@ -1,0 +1,51 @@
+### Look Into
+- MegaBuffers
+- Indirect Rendering
+
+### Ideas to Make
+- Spline Based Terrain Editor ( Compute Shaders )
+  - Splines to generate terrain like a height map stencil
+  - https://assetstore.unity.com/packages/tools/terrain/terrasplines-spline-terrain-editor-343912
+  - Compute shader can apply stacks of splines & brushes as height maps over a grid plane, like height maps
+  - Test Ideas
+    - Point inside polygon
+    - Point distance from curve, do gradient
+    - SDFs
+      - Polygon & winding number algorithm : https://www.shadertoy.com/view/WdSGRd
+      - https://vladjuckov.github.io/beziers-sdf/
+
+### API
+- Context
+  - Adapter
+  - Device
+  - Format
+  - Canvas
+- Buffer
+- Geometry
+  - Attributes ( Array of Buffers )
+  - Indices
+  - Instanced??
+  - Disposable ( Data is not kept )
+  - BoundingBox
+  - Mesh Type ( Triangles, lines, etc )?
+- RawShader
+  - Unique Uniform Spec
+  - Source
+  - Mesh Type
+  - Instanced??
+- Material
+  - Link to shader
+  - Contains UBO if needed
+- Obj3D
+  - Transform Data
+  - Parent-Child
+  - World Matrix
+  - order or layer?
+- Mesh extends Obj3D
+  - Material
+  - Geometry
+- Scene
+  - Array<Obj3D>
+- PerspectiveCamera extends Obj3D
+  - Projection Mat4
+- Renderer( scene, camera )
