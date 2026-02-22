@@ -1,0 +1,164 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+    import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+    import FixedFrame       from '@lib/misc/FixedFrame.js';
+
+    import Vec3             from '@lib/maths/Vec3.js';
+    import Quat             from '@lib/maths/Quat.js';
+    import Capsule          from '@lib/maths/primitives/Capsule.js';
+    import Plane            from '@lib/maths/primitives/Plane.js';
+    import capsule_plane    from '@lib/maths/primitives/intersect/capsule_plane.js';
+    import { PrimitiveType, CollisionType } from '@lib/maths/primitives/consts.js';
+// #endregion
+
+// #region MAIN
+    let App   = useDarkScene( useThreeWebGL2() );
+    let Debug = {};
+    let Ref   = {};
+
+    window.addEventListener( 'load', async ()=>{
+    	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    	App.sphericalLook( 0, 20, 2, [0,0.5,0] );
+        Debug = await useVisualDebug( App );
+        Ref.fixed = new FixedFrame( 1, onFixedFrame );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const geo  = new THREE.CapsuleGeometry( 0.25, 0.5, 2, 8 );
+        geo.translate( 0, 0.5, 0 ); // Height * 0.5 + radius
+
+        const mat  = new THREE.MeshBasicMaterial( { color: 0x707070,  wireframe: true } );
+        const mesh = new THREE.Mesh( geo, mat );
+        App.scene.add( mesh );
+
+        // mesh.position.y = -1.2;
+        // mesh.position.x = -0.2;
+        mesh.rotation.x = Math.PI * -0.75;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        const cap = new Capsule().fromGround( 0.25, 1 )
+            .quat( mesh.quaternion.toArray() )
+            .translate( mesh.position.toArray() );
+
+        Debug.pnt.add( cap.posA, 0x00ff00, 1 );
+        Debug.pnt.add( cap.posB, 0xff0000, 1 );
+
+        const pln = new Plane();
+        // pln.pos[1] = 0.2;
+        pln._calc();
+
+        const result = {};
+        if( capsule_plane( cap, pln, result ) ){
+            console.log( 'hit', result );
+            if( result.depth !== 0 ){
+                mesh.position.x += result.separation[0];
+                mesh.position.y += result.separation[1];
+                mesh.position.z += result.separation[2];
+            }
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        App.createRenderLoop( onPreRender ).start();
+        // App.renderLoop();
+    });
+
+    function onPreRender( dt, et, ts ){
+        // console.log( ts );
+        Ref?.fixed.update( ts );
+    }
+
+    function onFixedFrame( ts ){
+        // console.log( ts );
+    }
+// #endregion
+
+// #region LOREM
+// #endregion
+
+// #region LOREM
+    class Collider{
+        obj         = null;
+        prim        = null;
+        isStatic    = false;
+        vel         = new Vec3();
+        pos         = new Vec3();
+        rot         = new Quat();
+        constructor( obj, prim ){
+            this.obj  = obj;
+            this.prim = prim;
+        }
+
+        syncObj(){}
+    }
+
+    class Physics{
+        gravity   = new Vec3( 0, -9.8, 0 );
+        items     = [];
+
+        constructor(){}
+
+        addCollider( obj, prim, isStatic=true ){
+            const c = new Collider( obj, prim );
+            c.isStatic = isStatic;
+
+            this.items.push( c );
+            return this;
+        }
+
+        update( dt ){
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Integration Step
+            const g = new Vec3().fromScale( this.gravity, dt );
+            const v = new Vec3();
+            for( const i of this.items ){
+                if( i.isStatic ) continue;
+
+                i.vel.add( g );
+                v.fromScale( i.vel, dt );
+                i.pos.add( v );
+            }
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            for( let i=0; i < this.items.length; i++ ){
+                for( let j=i+1; j < this.items.length; j++ ){
+                    handleCollisions( this.items[i], this.items[j] );
+                }
+            }
+
+        }
+    }
+
+    function handleCollisions( a, b ){
+        switch( a.prim.type + b.prim.type ){
+            case CollisionType.PlaneCapsule: fnCollision_PlaneCapsule( a, b ) break;
+        }
+    }
+
+    function fnCollision_PlaneCapsule( a, b ){
+        const [ cap, pln ] = ( a.prim.type === PrimitiveType.Capsule )? [a,b]:[b,a];
+        const result       = {};
+
+        console.log( 'PlaneCapsule Collision', cap, pln );
+        if( capsule_plane( cap.prim, pln.prim, result ) ){
+            console.log( result )
+
+            // Position Correction, Projection
+            // cap.pos.add( result.separation );
+
+            // Velocity Reflection, Impule
+            // const dot = Vec3.dot( cap.vel, pln.norm );
+            // if( dot < 0 ){
+                // 0.2 is the "bounciness" (restitution)
+                // impulse = hitNorm * ( -1.2 * dot );
+                // vel    += impulse;
+
+                // Simple Friction (Optional)
+                // This slows down movement parallel to the floor
+                // tan = vel - ( hitNorm * dot )
+                // vel = vel - ( tan * 0.1 ) // 0.1 riction
+            // }
+        }
+    }
+// #endregion
+</script></body></html>
