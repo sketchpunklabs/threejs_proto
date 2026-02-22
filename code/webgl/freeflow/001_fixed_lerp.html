@@ -1,0 +1,174 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+    import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+    import { GLTFLoader } from 'three/GLTFLoader.js';
+    import * as util    from '@lib/util.js';
+
+    import Pose         from '@lib/anim/Pose.js';
+    import Clip         from '@lib/anim/Clip.js';
+    import PoseSampler  from '@lib/anim/PoseSampler.js';
+
+    import FixedFrame   from '@lib/misc/FixedFrame.js';
+// #endregion
+
+// #region MAIN
+    let App   = useDarkScene( useThreeWebGL2() );
+    let Debug = {};
+    let Ref   = {};
+
+    window.addEventListener( 'load', async ()=>{
+    	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    	App.sphericalLook( 45, 20, 5, [0,1.0,0] );
+        Debug     = await useVisualDebug( App );
+        Ref.fixed = new FixedFrame( 15, onFixedFrame );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // LOAD CHAR & ANIMATION
+        const url   = '../../../res/models/mewtwo/';
+        const [ [ charRoot, skinned ], aryAnim ] = await Promise.all([
+            loadCharacter( { url: `${url}/mewtwo.gltf`, toon:false, phong:0xffffff } ),
+            loadAnimations( `${url}/anim_land_traverse.gltf` ),
+        ]);
+
+        // aryAnim.forEach( i=>console.log( i.name ) );
+        const skel  = skinned.skeleton;
+        const pose  = new Pose( skel, ['origin','waist'] );
+        // pose.debug( Debug );
+        // pose.logHierarchy();
+        App.scene.add( charRoot );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // const cAnim = aryAnim.find( i=>(i.name==='defaultidle01') ); //defaultwait_loop
+        const cAnim = aryAnim.find( i=>(i.name==='walk_loop') );
+        // const cAnim = aryAnim.find( i=>(i.name==='run_loop') );
+        const clip  = new Clip().fromClip3JS( cAnim, pose );
+        const samp  = new PoseSampler( clip );
+
+        samp.setMotionMask( 0,1,0 );
+        // samp.timeStep( 0.5 );
+        // samp.updatePose( pose );
+        // pose.toSkeleton( skel );
+
+        const stepper = new PoseStepper( pose );
+        samp.updatePose( stepper.to ); // Set initial pose
+
+        // const dt = 0.5; // In Sec
+        // samp.timeStep( dt );
+        // stepper.next( dt*1000, dt*1000 ); // in miliseconds
+        // samp.updatePose( pStepper.to );
+        // stepper.update( (dt+0.5) * 1000, pose ).toSkeleton( skel );
+        // stepper.to.toSkeleton( skel );
+
+        Ref.samp    = samp;
+        Ref.pose    = pose;
+        Ref.skel    = skel;
+        Ref.clip    = clip;
+        Ref.stepper = stepper;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        App.createRenderLoop( onPreRender ).start();
+        appendGithubLink( false );
+    });
+
+    // MAIN RENDER LOOP : Ref.fixed = new FixedFrame( 15, onFixedFrame );
+    function onPreRender( dt, et, ts ){
+        Ref.fixed.update( ts );         // Run Fixed frame if time
+        Ref.stepper
+            .update( ts, Ref.pose )     // Move Lerp Forward
+            .toSkeleton( Ref.skel );    // Render Pose
+    }
+
+    function onFixedFrame( dt, ts ){
+        Ref.samp.timeStep( dt );                // Move Animation Forward
+        Ref.stepper.next( ts, dt*1000 );        // Swop Pose & Set Lerp Timing
+        Ref.samp.updatePose( Ref.stepper.to );  // Set Next pose
+    }
+// #endregion
+
+// #region LOADING
+    async function loadCharacter( props={} ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // LOAD
+        const opt = { skel:true, skelHelper:false, phong:undefined, toon:false, tpose:false, ...props };
+        const tf  = await new GLTFLoader().loadAsync( opt.url );
+        // const o  = firstFind( tf.scene, o=> (o.type === 'SkinnedMesh') );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Find Skeleton & Push Skinned Meshes to the scene
+        // let skel;
+        let skinned;
+        let mat = null;
+        for( const m of util.traverseFind( tf.scene, o=> (o.type === 'SkinnedMesh') ) ){
+            if( opt.phong != null ) mat = new THREE.MeshPhongMaterial( { color: opt.phong } );
+            if( opt.toon ) mat = new THREE.MeshToonMaterial( { map: m.material.map, normalMap: m.material.normalMap } );
+
+            if( mat )       m.material = mat;
+            // if( !skel )     skel = m.skeleton;  // First skeleton
+            if( !skinned )  skinned = m;  // First skeleton
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if( opt.tpose ){
+            const clip = tf.animations.find( i=>i.name.toLowerCase() === 'tpose' );
+            if( clip )  util.poseFromClip( clip, skel );
+            else        console.log( 'TPose animation clip not found' );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Push Skeleton Helper
+        // App.scene.add( skel.bones[0] );
+        if( opt.skelHelper ){
+            App.scene.add( new THREE.SkeletonHelper( skel.bones[0] ) );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        return [ tf.scene, skinned ];
+    }
+
+    async function loadAnimations( url ){
+        const tf = await new GLTFLoader().loadAsync( url );
+        return tf.animations ?? [];
+    }
+// #endregion
+
+// PoseCascade might be a good name for the object that crossfades to the next Sampler in a stack
+
+class PoseStepper{
+    poses       = [];   // Hold a FROM & TO Pose
+    tStamp      = 0;    // DOMHighResTimeStamp from requestAnimationFrame
+    tDuration   = 0;    // In MilliSeconds
+    idx         = 0;    // Index to which pose is FROM
+    constructor( pose ){
+        this.poses.push( pose.clone(), pose.clone() );
+    }
+
+    get from(){ return this.poses[ this.idx ]; }
+    get to(){ return this.poses[ (this.idx + 1) % 2 ]; }
+
+    setTime( ts, tDur ){
+        this.tStamp    = ts;
+        this.tDuration = tDur;
+        return this;
+    }
+
+    // Pose swop & reset timing for next interpolation
+    next( ts, tDur ){
+        this.idx = ( this.idx + 1 ) % 2;
+        if( ts !== undefined && tDur !== undefined ) this.setTime( ts, tDur );
+        return this;
+    }
+
+    // Lerp betweem FROM & TO poses based on timestamp
+    update( ts, pose ){
+        const a = this.poses[ this.idx ];
+        const b = this.poses[ (this.idx + 1) % 2 ];
+        const t = Math.min( 1.0, ( ts - this.tStamp ) / this.tDuration );
+
+        pose.fromLerp( a, b, t );
+        return pose;
+    }
+}
+
+</script></body></html>
