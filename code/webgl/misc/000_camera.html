@@ -1,0 +1,39 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+import facedCube           	from '@lib/meshes/FacedCube.js';
+
+import OrbitCam             from '@lib/misc/OrbitCam.js';
+// #endregion
+
+/*
+// Fit to Box
+https://github.com/yomotsu/camera-controls/blob/02e1e9b87a42d461e7142705e93861c81739bbd5/src/CameraControls.ts#L1908
+*/
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2( {camCtrl:false} ) );
+let Debug = {};
+let Ref   = {};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	// App.sphericalLook( 0, 20, 6 );
+    Debug       = await useVisualDebug( App );
+    Ref.orbit   = new OrbitCam( App.renderer ).sphericalLook( 0, 20, 6, [0,0,0] );
+    App.camera  = Ref.orbit.camera;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.cube = facedCube( [0,0.5,0] );
+    App.scene.add( Ref.cube );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+});
+
+function onPreRender( dt, et ){}
+// #endregion
+</script></body></html>

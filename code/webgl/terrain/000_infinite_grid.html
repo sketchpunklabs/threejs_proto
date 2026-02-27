@@ -1,0 +1,256 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2(), { grid:false } );
+let Debug = {};
+let Ref   = {};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 30, 10 );
+    Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const geo  = new THREE.PlaneGeometry( 2, 2 );
+
+    geo.rotateX( -Math.PI / 2 );
+    // geo.translate( 0, 0.0001, 0 );
+    // geo.scale( 3,1,3 );
+
+    const mat  = new CustomMaterial();
+    const mesh = new THREE.Mesh( geo, mat );
+    // mesh.position.y = 0.5;
+    mesh.frustumCulled  = false;
+    App.scene.add( mesh );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+});
+
+function onPreRender( dt, et ){}
+// #endregion
+
+// https://www.youtube.com/watch?v=RqrkVmj-ntM
+// https://github.com/emeiri/ogldev/blob/master/DemoLITION/Framework/Shaders/GL/infinite_grid.fs
+class CustomMaterial extends THREE.RawShaderMaterial {
+  constructor( props={} ){
+        super();
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Merge custom props with default options
+        // const opts = Object.assign({
+        //     offset : [ 0, 1, 0 ],
+        //     color  : new THREE.Color( '#00ff00' ),
+        // }, props );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.name             = 'CustomMaterial';
+        this.glslVersion      = THREE.GLSL3;
+        this.depthTest        = true
+        this.side             = THREE.DoubleSide;
+        this.transparent      = true;
+        // this.alphaToCoverage  = true;
+        // this.lights           = false;
+        // this.blending         = THREE.NormalBlending;
+
+        this.uniforms = {
+          gridScl   : { type:'float', value: 100 },
+          minPixels : { type:'float', value: 2 },
+          cellSize  : { type:'float', value: 0.025 },
+
+          colOuter  : { type:'vec3', value: new THREE.Color(0xa0a0a0) },
+          colInner  : { type:'vec3', value: new THREE.Color(0x969696) },
+        };
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.vertexShader = `
+        in vec3 position;
+        // in vec3 normal;
+        // in vec2 uv;
+
+        uniform highp float gridScl;
+
+        uniform highp vec3 cameraPosition;
+        // uniform mat4 modelMatrix;       // To WorldSpace
+        uniform mat4 viewMatrix;        // To ViewSpace
+        uniform mat4 projectionMatrix;  // To NDC ( Normalized Device Coordinate Space ) aka ScreenSpace
+
+        out vec3 fwPos;
+
+        void main(){
+            // vec4 wpos   = modelMatrix * vec4( position, 1.0 );
+            // fragUV      = uv;
+            // fragWNorm   = ( modelMatrix * vec4( normal, 0.0 ) ).xyz;
+
+            vec4 spos    = vec4( position * gridScl, 1.0 ); // Scale Plane
+            spos.x      += cameraPosition.x;                // Keep plane under camera
+            spos.z      += cameraPosition.z;
+
+            fwPos        = spos.xyz;                        // WorldSpace Position
+
+            gl_Position  = projectionMatrix * viewMatrix * spos;
+        }`;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.fragmentShader = `precision mediump float;
+        in vec3 fwPos;
+        out vec4 outColor;
+
+        uniform highp vec3 cameraPosition;
+        uniform highp float gridScl;
+        uniform float minPixels; // Min pixels between grid cells
+        uniform float cellSize;
+        uniform vec3 colOuter;
+        uniform vec3 colInner;
+
+
+        float log10( float x ){ return log( x ) / log( 10.0 ); }
+
+
+        void main(){
+            outColor = vec4( vec3(0.0), 1.0 );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Change in X & Z across pixels, Doing both dX + dY for x and z
+            // to keep a correct messurement while rotating around the camera.
+            // As x becomes z & vice versa
+            vec2 dvx = vec2( dFdx( fwPos.x ), dFdy( fwPos.x ) );
+            vec2 dvy = vec2( dFdx( fwPos.z ), dFdy( fwPos.z ) );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Length of change
+            float lx  = length( dvx );
+            float ly  = length( dvy );
+            vec2  dvl = vec2( lx, ly );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // LOD
+
+            // dFdy( fwPos.z ) / cellSize
+            // - If around 1, every pixel draw a border
+            // - if < 1, dont draw border, inside a cell basically
+            // - If > 1, bad, more then 1 border per pixel, meaning a collapsed cell
+            // ( dFdy( fwPos.z ) / cellSize ) * minPixeleBetweenCells
+            // - Bare min is 2
+            // - If > 1,  Switch LOD size
+            // - if <= 1, stay at current LOD size
+            // Note: can do ( length( vec2(lx,ly) ) / cellSize ) for stable lod on two axes
+            // Note: Log10, Negative if input < 1, 0 if 1, 1 if 10, 2 if 100, etc
+            //       Basically gives you the factor ( or power ) of 10 of the input
+
+            float LOD   = max( 0.0, log10( ( length(dvl) * minPixels ) / cellSize ) + 1.0 ); // Add one to clearly see LOD change
+            float lod0  = cellSize * pow( 10.0, floor( LOD ) );
+            float lod1  = lod0 * 10.0;
+            float lod2  = lod1 * 10.0;
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Grid Cell for LOD0
+            // dvl *= 4.0; // Thickness;
+            float thick = 3.0;
+
+            // vec2 mask0 = mod( fwPos.xz, cellSize ) / dvl; // Main Gradient
+            vec2 mask0 = mod( fwPos.xz, lod0 ) / ( dvl * 2.0 );   // Main Gradient from first LOD
+            mask0      = clamp( mask0, 0.0, 1.0 );      // Clamp values as thickness will cause values to go over 1
+            mask0      = mask0 * 2.0 - 1.0;             // Remap 0:1 to -1:1
+            mask0      = abs( mask0 );                  // With remap & abs, draw between cells instead of just in a one cell
+            mask0      = 1.0 - mask0;                   // Invert so lines are white instead of black
+
+            float fmask0 = max( mask0.x, mask0.y );
+            // outColor.rgb = vec3( mask0.y );
+            // outColor.rgb = vec3( max( mask0.x, mask0.y ) );
+            // outColor.a   =  max( mask0.x, mask0.y );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Two more LODs
+            vec2 mask1   = 1.0 - abs( clamp( mod( fwPos.xz, lod1 ) / ( dvl * thick ), 0.0, 1.0 ) * 2.0 - 1.0 );
+            vec2 mask2   = 1.0 - abs( clamp( mod( fwPos.xz, lod2 ) / ( dvl * thick ), 0.0, 1.0 ) * 2.0 - 1.0 );
+
+            float fmask1 = max( mask1.x, mask1.y );
+            float fmask2 = max( mask2.x, mask2.y );
+
+            // outColor.rgb = vec3( max( mask1.x, mask1.y ) );
+            // outColor.a   =  max( mask1.x, mask1.y );
+
+            // outColor.rgb = vec3( max( mask2.x, mask2.y ) );
+            // outColor.a   =  max( mask2.x, mask2.y );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            float lod_fade = fract( LOD ); // Fraction of how much to the next level
+            // vec3 colOuter = vec3( 0.4 );
+            // vec3 colInner = vec3( 0.3 );
+
+            if( fmask2 > 0.0 ){
+                outColor.rgb = colOuter;
+                outColor.a   = fmask2;
+            }else{
+                if( fmask1 > 0.0 ){
+                    outColor.rgb = mix( colOuter, colInner, lod_fade );
+                    outColor.a   = fmask1;
+                }else{
+                    outColor.rgb = colInner;
+                    outColor.a   = fmask0 * ( 1.0 - lod_fade ); // 1 minus to better render lod0 by fading it away
+                }
+            }
+
+            // Fade the lowest lod as it its further away from the camera
+            // float fallOff = clamp( length( fwPos.xz - cameraPosition.xz ) / cellSize, 0.0, 1.0 );
+            // outColor.a *= fallOff;
+
+            float fallOff = 1.0 - clamp( length( fwPos - cameraPosition ) / gridScl, 0.1, 1.0 );
+            outColor.a *= fallOff;
+
+            // if( abs( min( dvl.x, dvl.y ) ) > 0.006 ) outColor.rgb = vec3( 1.0, 0.0, 0.0 );
+            // if( mask0.y > 0.9 ) outColor.rgb = vec3( 1.0, 0.0, 0.0 );
+        }`;
+    }
+
+  // #region SETTERS
+//   setOffset( v ){
+//     this.uniforms.offset.value = v;
+//     return this;
+//   }
+  // #endregion
+}
+
+/*
+// https://www.youtube.com/watch?v=RqrkVmj-ntM
+
+// float lod0 = mod( fragLPos.z, cellSize );
+// outColor = vec4( vec3( lod0 ), 1.0 );
+
+// float lod0 = mod( fragLPos.z, cellSize ) / dFdy( 4.0 * fragLPos.z );
+// outColor = vec4( vec3( 1.0, 1.0, 1.0 ) , 1.0 - abs(lod0) );
+
+// vec2 dvy = vec2( dFdx( fragLPos.z ), dFdy( fragLPos.z ) );
+// float ly = length( dvy );
+// float lod0 = mod( fragLPos.z, cellSize ) / ( 4.0 * ly );
+// outColor = vec4( vec3( 1.0 ) , 1.0 - lod0 );
+
+//
+// dFdy( fragLPos.z ) = the change of z in screen space.
+vec2 dvx = vec2( dFdx( fragLPos.x ), dFdy( fragLPos.x ) );
+vec2 dvy = vec2( dFdx( fragLPos.z ), dFdy( fragLPos.z ) );
+float ly = length( dvy );
+float lx = length( dvx );
+vec2 dudv = vec2( lx, ly );
+dudv *= 4.0;
+
+// vec2 dv = mod( fragLPos.xz, cellSize ) / dudv; // Dots
+// vec2 dv = vec2(1.0) - mod( fragLPos.xz, cellSize ) / dudv;  // Working Gfrid
+// float lod0 = max( dv.x, dv.y );
+
+vec2 dv = mod( fragLPos.xz, cellSize ) / dudv;
+dv = vec2(1.0) - abs(clamp(dv,vec2(0.0),vec2(1.0)) * 2.0 - vec2( 1.0 )); // abs( clamp(v) * 2 - 1 ) 0:1 to -1:1
+float lod0 = max( dv.x, dv.y );
+
+outColor = vec4( vec3( 1.0 ) , lod0 );
+
+// outColor = vec4( colMajor, lod0 );
+// outColor  = vec4( fragLPos, 1.0 );
+ */
+</script></body></html>

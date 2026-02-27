@@ -1,0 +1,196 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2(), { grid:false } );
+let Debug = {};
+let Ref   = {};
+
+// TODO- Try to recreate this one
+// https://github.com/pmndrs/drei/blob/58a4ea64874a335fa5fcd3e19b263b1a01a6ebe0/src/core/Grid.tsx
+// https://github.com/Fyrestar/THREE.InfiniteGridHelper?tab=readme-ov-file
+// https://github.com/Fyrestar/THREE.InfiniteGridHelper/blob/master/InfiniteGridHelper.js
+// https://codepen.io/Fyrestar/pen/wLxjYj
+//
+// THIS ONE LOOKS GREAT
+// https://codesandbox.io/p/sandbox/sew669?file=%2Fsrc%2FApp.js%3A148%2C1-160%2C79
+// const gridConfig = {
+//     cellSize: 0.5,
+//     cellThickness: 0.5,
+//     cellColor: '#6f6f6f',
+//     sectionSize: 3,
+//     sectionThickness: 1,
+//     sectionColor: '#9d4b4b',
+//     fadeDistance: 30,
+//     fadeStrength: 1,
+//     followCamera: false,
+//     infiniteGrid: true
+//   }
+//   return <Grid position={[0, -0.01, 0]} args={[10.5, 10.5]} {...gridConfig} />
+//   Nice coloring, Fading and Infinite
+// https://github.com/pmndrs/drei/blob/58a4ea64874a335fa5fcd3e19b263b1a01a6ebe0/src/core/Grid.tsx
+
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 20, 4 );
+    Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const geo  = new THREE.PlaneGeometry( 2, 2 );
+
+    geo.rotateX( -Math.PI / 2 );
+    geo.translate( 0, 0.001, 0 );
+    // geo.scale( 3,1,3 );
+
+    const mat  = new CustomMaterial();
+    const mesh = new THREE.Mesh( geo, mat );
+    // mesh.position.y = 0.5;
+    mesh.frustumCulled  = false;
+    App.scene.add( mesh );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+});
+
+function onPreRender( dt, et ){}
+// #endregion
+
+// https://www.youtube.com/watch?v=RqrkVmj-ntM
+// https://github.com/emeiri/ogldev/blob/master/DemoLITION/Framework/Shaders/GL/infinite_grid.fs
+class CustomMaterial extends THREE.RawShaderMaterial {
+  constructor( props={} ){
+        super();
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Merge custom props with default options
+        // const opts = Object.assign({
+        //     offset : [ 0, 1, 0 ],
+        //     color  : new THREE.Color( '#00ff00' ),
+        // }, props );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.name             = 'CustomMaterial';
+        this.glslVersion      = THREE.GLSL3;
+        this.depthTest        = true
+        this.side             = THREE.DoubleSide;
+        this.transparent      = true;
+        // this.alphaToCoverage  = true;
+        // this.lights           = false;
+        // this.blending         = THREE.NormalBlending;
+
+        this.uniforms = {
+          gridScl   : { type:'float', value: 100 },
+
+          fadeRange   : { type:'float', value: 20 },
+          fadePow     : { type:'float', value: 1 },
+
+          majorSize   : { type:'float', value: 1 },
+          minorSize   : { type:'float', value: 0.2 },
+
+          majorThic   : { type:'float', value: 0.6 },
+          minorThic   : { type:'float', value: 1.2 },
+
+          majorCol    : { type:'vec3', value: new THREE.Color(0x327340) }, // red: 0x9d4b4b,  greenish: 0x3B8F72, lime: 0x3E8F50, cyan: 0x428F8C
+          minorCol    : { type:'vec3', value: new THREE.Color(0x404040) },
+        };
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.vertexShader = `
+        in vec3 position;
+        // in vec3 normal;
+        // in vec2 uv;
+
+        uniform highp float gridScl;
+
+        uniform highp vec3 cameraPosition;
+        // uniform mat4 modelMatrix;       // To WorldSpace
+        uniform mat4 viewMatrix;        // To ViewSpace
+        uniform mat4 projectionMatrix;  // To NDC ( Normalized Device Coordinate Space ) aka ScreenSpace
+
+        out vec3 fwPos;
+
+        void main(){
+            // vec4 wpos   = modelMatrix * vec4( position, 1.0 );
+            // fragUV      = uv;
+            // fragWNorm   = ( modelMatrix * vec4( normal, 0.0 ) ).xyz;
+
+            vec4 spos    = vec4( position * gridScl, 1.0 ); // Scale Plane
+            spos.x      += cameraPosition.x;                // Keep plane under camera
+            spos.z      += cameraPosition.z;
+
+            fwPos        = spos.xyz;                        // WorldSpace Position
+
+            gl_Position  = projectionMatrix * viewMatrix * spos;
+        }`;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.fragmentShader = `precision mediump float;
+        in vec3 fwPos;
+        out vec4 outColor;
+
+        uniform highp vec3 cameraPosition;
+        uniform float fadeRange;
+        uniform float fadePow;
+        uniform vec3 majorCol;
+        uniform vec3 minorCol;
+        uniform float majorThic;
+        uniform float minorThic;
+        uniform float majorSize;
+        uniform float minorSize;
+
+        float gridMask( vec2 pos, float size, float thick ){
+            vec2 cell = pos / size;                       // Divide space into cells
+            vec2 mask = abs( fract( cell - 0.5 ) - 0.5 ); // Remap: 0:1 to 0:1:0, Near 1 will be at cell border
+                 mask = mask / fwidth( cell );            // Turn gradient into 1 pixel thin lines
+            float fm  = min( mask.x, mask.y ) * thick;    // Create grid & apply a bit of thickness
+            return 1.0 - min( 1.0, fm );                  // Invert mask, Lines will be white
+        }
+
+        void main(){
+            outColor = vec4( vec3(0.0), 1.0 );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // MASK
+            float mMajor = gridMask( fwPos.xz, majorSize, majorThic );
+            float mMinor = gridMask( fwPos.xz, minorSize, minorThic );
+
+            // outColor.rgb = vec3( mMajor );
+            // outColor.rgb = vec3( max( mMinor, mMajor ) );
+            // outColor.rgb = mix( colInner, colOuter, min( 1.0, 1.0 * mMajor ) );
+
+            outColor.rgb = mix( minorCol, majorCol, mMajor );
+            outColor.a   = max( mMinor, mMajor );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // FADE
+            float dist   = distance( fwPos, cameraPosition );
+            float d      = 1.0 - min( dist / fadeRange, 1.0 );
+            outColor.a   = outColor.a * pow( d, fadePow );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            if( outColor.a <= 0.0 ) discard;
+            outColor.rgb = pow( outColor.rgb, vec3( 1.0 / 2.2 ) );    // gamma correction to get correct colors
+        }`;
+    }
+
+  // #region SETTERS
+//   setOffset( v ){
+//     this.uniforms.offset.value = v;
+//     return this;
+//   }
+  // #endregion
+}
+
+// vec2 px   = fwPos.xz;
+// vec2 div  = px / 1.0;
+// vec2 mask = abs( fract( div - 0.5 ) - 0.5 ); // Remap: 0:1 to 0:1:0, Near 1 will be at cell border
+//      mask = mask / fwidth( div );            // Turn gradient into 1 pixel thin lines
+// // outColor.rgb = vec3( mask.y );
+// float fm  = min( mask.x, mask.y ) * 0.7;
+
+</script></body></html>

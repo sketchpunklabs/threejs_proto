@@ -1,0 +1,211 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+    import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+    import { GLTFLoader } from 'three/GLTFLoader.js';
+    import * as util    from '@lib/util.js';
+    import OrbitCam     from '@lib/misc/OrbitCam.js';
+    import InfiniteGrid from '@lib/meshes/InfiniteGrid.js';
+
+    import Vec3         from '@lib/maths/Vec3.js';
+
+    import Pose         from '@lib/anim/Pose.js';
+    import Clip         from '@lib/anim/Clip.js';
+    import PoseSampler  from '@lib/anim/PoseSampler.js';
+    import RootMotion   from '@lib/anim/RootMotion.js';
+
+    import FixedFrame   from '@lib/misc/FixedFrame.js';
+// #endregion
+
+// #region MAIN
+    let App   = useDarkScene( useThreeWebGL2( { camCtrl:false} ), { grid:false } );
+    let Debug = {};
+    let Ref   = {
+        orbit : OrbitCam.use( App ),
+        run   : false,
+    };
+
+    window.addEventListener( 'load', async ()=>{
+    	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    	// App.sphericalLook( 90, 20, 5, [0,1.0,0] );
+        Ref.orbit.sphericalLook( 45, 20, 5, [0,1,0] );
+
+        Debug      = await useVisualDebug( App );
+        Ref.fixed  = new FixedFrame( 15, onFixedFrame );
+
+        App.scene.add( InfiniteGrid.mesh() );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // LOAD CHAR & ANIMATION
+        const url   = '../../../res/models/mewtwo/';
+        const [ [ charRoot, skinned ], aryAnim ] = await Promise.all([
+            loadCharacter( { url: `${url}/mewtwo.gltf`, toon:true, phong:0xffffff } ),
+            loadAnimations( `${url}/anim_land_traverse.gltf` ),
+        ]);
+
+        // aryAnim.forEach( i=>console.log( i.name ) );
+        const skel  = skinned.skeleton;
+        const pose  = new Pose( skel, ['origin','waist'] );
+        // pose.debug( Debug );
+        // pose.logHierarchy();
+        App.scene.add( charRoot );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Get Animation
+        // const cAnim = aryAnim.find( i=>(i.name==='defaultidle01') ); //defaultwait_loop
+        // const cAnim = aryAnim.find( i=>(i.name==='walk_loop') );
+        const cAnim = aryAnim.find( i=>(i.name==='run_loop') );
+
+        // Setup Animation / Root motion systems
+        const clip   = new Clip().fromClip3JS( cAnim, pose );
+        const samp   = new PoseSampler( clip ); // samp.scale = 1.25;
+        const motion = new RootMotion().forClip( clip, pose );
+
+        // Setup system to manage animation between fixed frames
+        const stepper = new PoseStepper( pose );
+        samp.updatePose( stepper.to ); // Set initial pose
+        motion.update( samp.clock, stepper.to );
+        stepper.to.toSkeleton( skel );
+
+        // Follow Cam
+        Ref.orbit.followObj( charRoot, { offset:[0,1,0], damp:1, osc:3.0 } );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Global Refs
+        Ref.samp        = samp;
+        Ref.pose        = pose;
+        Ref.skel        = skel;
+        Ref.clip        = clip;
+        Ref.stepper     = stepper;
+        Ref.motion      = motion;
+        Ref.charRoot    = charRoot;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        App.createRenderLoop( onPreRender ).start();
+        appendGithubLink( false );
+
+        setTimeout( ()=>{Ref.run=true}, 500 );
+    });
+
+    function onPreRender( dt, et, ts ){
+        if( !Ref.run ) return;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Animate Character
+        Ref.fixed.update( ts );                     // Run Fixed frame if time
+        Ref.stepper
+            .update( Ref.fixed.tStep, Ref.pose )    // Move Pose Lerp Forward
+            .toSkeleton( Ref.skel );                // Render Pose
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Make it an in place animation
+        Ref.skel.bones[1].position.x = 0;
+        Ref.skel.bones[1].position.z = 0;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Move Object
+        Ref.charRoot.position.x = Ref.stepper.pos[0];
+        Ref.charRoot.position.z = Ref.stepper.pos[2];
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Follow Object
+        Ref.orbit.follow( dt );
+    }
+
+    function onFixedFrame( dt, ts ){
+        Ref.samp.timeStep( dt );                                // Move Animation Forward
+        Ref.samp.updatePose( Ref.stepper.from );                // Set Next pose
+
+        Ref.motion.update( Ref.samp.clock, Ref.stepper.from );  // Compute delta since last update
+
+        Ref.stepper.next( Ref.motion.delta );                   // Swop Pose & pass in next delta movement
+    }
+// #endregion
+
+// #region LOADING
+    async function loadCharacter( props={} ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // LOAD
+        const opt = { skel:true, skelHelper:false, phong:undefined, toon:false, tpose:false, ...props };
+        const tf  = await new GLTFLoader().loadAsync( opt.url );
+        // const o  = firstFind( tf.scene, o=> (o.type === 'SkinnedMesh') );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Find Skeleton & Push Skinned Meshes to the scene
+        // let skel;
+        let skinned;
+        let mat = null;
+        for( const m of util.traverseFind( tf.scene, o=> (o.type === 'SkinnedMesh') ) ){
+            if( opt.phong != null ) mat = new THREE.MeshPhongMaterial( { color: opt.phong } );
+            if( opt.toon ) mat = new THREE.MeshToonMaterial( { map: m.material.map, normalMap: m.material.normalMap } );
+
+            if( mat )       m.material = mat;
+            // if( !skel )     skel = m.skeleton;  // First skeleton
+            if( !skinned )  skinned = m;  // First skeleton
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if( opt.tpose ){
+            const clip = tf.animations.find( i=>i.name.toLowerCase() === 'tpose' );
+            if( clip )  util.poseFromClip( clip, skel );
+            else        console.log( 'TPose animation clip not found' );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Push Skeleton Helper
+        // App.scene.add( skel.bones[0] );
+        if( opt.skelHelper ){
+            App.scene.add( new THREE.SkeletonHelper( skel.bones[0] ) );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        return [ tf.scene, skinned ];
+    }
+
+    async function loadAnimations( url ){
+        const tf = await new GLTFLoader().loadAsync( url );
+        return tf.animations ?? [];
+    }
+// #endregion
+
+class PoseStepper{
+    poses       = [];   // Hold a FROM & TO Pose
+    idx         = 0;    // Index to which pose is FROM
+
+    origin      = new Vec3();
+    delta       = new Vec3();
+    pos         = new Vec3();
+
+    constructor( pose ){
+        this.poses.push( pose.clone(), pose.clone() );
+    }
+
+    get from(){ return this.poses[ this.idx ]; }
+    get to(){ return this.poses[ (this.idx + 1) % 2 ]; }
+
+    // Pose swop & reset timing for next interpolation
+    next( delta ){
+        this.idx = ( this.idx + 1 ) % 2;    // Swop From/To Pose
+
+        this.origin.add( this.delta );      // Move origin point forward
+        this.delta.copy( delta );           // Save delta for the next cycle
+
+        return this;
+    }
+
+    // Lerp betweem FROM & TO poses based on timestamp
+    update( t, pose ){
+        const a = this.poses[ this.idx ];
+        const b = this.poses[ (this.idx + 1) % 2 ];
+
+        pose.fromLerp( a, b, t );
+
+        this.pos.fromScaleThenAdd( t, this.delta, this.origin );
+
+        return pose;
+    }
+}
+
+
+</script></body></html>
