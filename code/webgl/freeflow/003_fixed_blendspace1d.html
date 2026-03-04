@@ -61,9 +61,9 @@
         const cRun  = aryAnim.find( i=>(i.name==='run_loop') );
 
         // Setup Animation / Root motion systems
-        const clip   = new Clip().fromClip3JS( cWalk, pose );
-        const samp   = new PoseSampler( clip ); // samp.scale = 1.25;
-        const motion = new RootMotion().forClip( clip, pose );
+        // const clip   = new Clip().fromClip3JS( cWalk, pose );
+        // const samp   = new PoseSampler( clip ); // samp.scale = 1.25;
+        // const motion = new RootMotion().forClip( clip, pose );
 
         const blendSpace = new BlendSpace1D( pose, { rootMotion:true } );
         blendSpace
@@ -89,12 +89,13 @@
 
         // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         // Global Refs
-        Ref.samp        = samp;
+        // Ref.samp        = samp;
+        // Ref.motion      = motion;
+        // Ref.clip        = clip;
+
         Ref.pose        = pose;
         Ref.skel        = skel;
-        Ref.clip        = clip;
         Ref.stepper     = stepper;
-        Ref.motion      = motion;
         Ref.charRoot    = charRoot;
         Ref.blendSpace  = blendSpace;
 

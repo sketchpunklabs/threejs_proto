@@ -85,8 +85,6 @@
         // blendSpace.updatePose( stepper.to )
         // stepper.to.toSkeleton( skel );
 
-
-
         // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         Ref.ctrl = new Controller();
         Ref.ctrl.root.add(
@@ -104,8 +102,6 @@
         Ref.pose        = pose;
         Ref.skel        = skel;
         Ref.stepper     = stepper;
-        // Ref.charRoot    = charRoot;
-        // Ref.blendSpace  = blendSpace;
 
         // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         App.createRenderLoop( onPreRender ).start();
@@ -130,8 +126,8 @@
         Ref.skel.bones[1].position.x = 0;
         Ref.skel.bones[1].position.z = 0;
 
-        // // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        // // Move Object
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Move Object
         Ref.ctrl.root.position.x = Ref.stepper.posCur[0];
         Ref.ctrl.root.position.z = Ref.stepper.posCur[2];
         Ref.ctrl.root.quaternion.fromArray( Ref.stepper.rotCur );
@@ -403,4 +399,17 @@ class Controller{
 // #endregion
 }
 
-</script></body></html>
+</script
+<div style="position:fixed; top:10px; right:10px; font-family:monospace; color:white; font-size:16px; ">
+<b>[[ Keyboard ]]</b>
+<br>- WASD   : Move
+<br>- Hold Shift : Run
+<br>- Arrows : Orbit Camera
+
+<br><br>
+<b>[[ Xbox Controller ]]</b>
+<br>- Left Joystick   : Move
+<br>- Hold A : Run
+<br>- Right Joystick : Orbit Camera
+</div>
+</body></html>
