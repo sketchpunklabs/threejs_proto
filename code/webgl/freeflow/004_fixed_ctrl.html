@@ -1,0 +1,406 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+    import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+    import { GLTFLoader }   from 'three/GLTFLoader.js';
+    import * as util        from '@lib/util.js';
+
+    import OrbitCam         from '@lib/misc/OrbitCam.js';
+    import FixedFrame       from '@lib/misc/FixedFrame.js';
+    import KeyboardInput    from '@lib/input/KeyboardInput.js';
+    import GamepadInput     from '@lib/input/GamepadInput.js';
+    import InfiniteGrid     from '@lib/meshes/InfiniteGrid.js';
+    import Cursor3DMaterial from '@lib/shader/Cursor3DMaterial.js';
+
+    import Vec3             from '@lib/maths/Vec3.js';
+    import Quat             from '@lib/maths/Quat.js';
+    import Radian           from '@lib/maths/Radian.js';
+    import FImplicitEuler   from '@lib/maths/springs/FImplicitEuler.js';
+
+    import Pose         from '@lib/anim/Pose.js';
+    import Clip         from '@lib/anim/Clip.js';
+    import PoseSampler  from '@lib/anim/PoseSampler.js';
+    import RootMotion   from '@lib/anim/RootMotion.js';
+    import BlendSpace1D from '@lib/anim/BlendSpace1D.js';
+// #endregion
+
+// #region MAIN
+    let App   = useDarkScene( useThreeWebGL2( { camCtrl:false} ), { grid:false } );
+    let Debug = {};
+    let Ref   = {
+        orbit   : OrbitCam.use( App ),
+        gi      : new GamepadInput(),
+        ki      : new KeyboardInput(),
+        run     : false,
+    };
+    let IState = {
+        xAxis : 0,
+        yAxis : 0,
+        boost : false,
+    };
+
+    window.addEventListener( 'load', async ()=>{
+    	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    	// App.sphericalLook( 90, 20, 5, [0,1.0,0] );
+        Ref.orbit.sphericalLook( 45, 20, 5, [0,1,0] );
+
+        Debug      = await useVisualDebug( App );
+        Ref.fixed  = new FixedFrame( 15, onFixedFrame );
+
+        App.scene.add( InfiniteGrid.mesh() );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // LOAD CHAR & ANIMATION
+        const url   = '../../../res/models/mewtwo/';
+        const [ [ charRoot, skinned ], aryAnim ] = await Promise.all([
+            loadCharacter( { url: `${url}/mewtwo.gltf`, toon:true, phong:0xffffff } ),
+            loadAnimations( `${url}/anim_land_traverse.gltf` ),
+        ]);
+
+        // aryAnim.forEach( i=>console.log( i.name ) );
+        const skel  = skinned.skeleton;
+        const pose  = new Pose( skel, ['origin','waist'] );
+        // pose.debug( Debug );
+        // pose.logHierarchy();
+        // App.scene.add( charRoot );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Get Animation
+        const cIdle = aryAnim.find( i=>(i.name==='defaultidle01') ); //defaultwait_loop
+        const cWalk = aryAnim.find( i=>(i.name==='walk_loop') );
+        const cRun  = aryAnim.find( i=>(i.name==='run_loop') );
+
+        // Setup Animation / Root motion systems
+        const blendSpace = new BlendSpace1D( pose, { rootMotion:true } );
+        blendSpace
+            .addClip( new Clip().fromClip3JS( cIdle, pose ) )
+            .addClip( new Clip().fromClip3JS( cWalk, pose ) )
+            .addClip( new Clip().fromClip3JS( cRun, pose ), 0.53 );
+
+        // Setup system to manage animation between fixed frames
+        const stepper = new PoseStepper( pose );
+        // blendSpace.blend = 2;
+        // blendSpace.timeStep( 0.01 );
+        // blendSpace.updatePose( stepper.to )
+        // stepper.to.toSkeleton( skel );
+
+
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        Ref.ctrl = new Controller();
+        Ref.ctrl.root.add(
+            charRoot,
+        );
+
+        Ref.ctrl.anim = blendSpace;
+        App.scene.add( Ref.ctrl.root );
+
+        // Follow Cam
+        Ref.orbit.followObj( Ref.ctrl.root, { offset:[0,1,0], damp:1, osc:3.0 } );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Global Refs
+        Ref.pose        = pose;
+        Ref.skel        = skel;
+        Ref.stepper     = stepper;
+        // Ref.charRoot    = charRoot;
+        // Ref.blendSpace  = blendSpace;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        App.createRenderLoop( onPreRender ).start();
+        appendGithubLink( false );
+
+        setTimeout( ()=>{Ref.run=true}, 500 );
+    });
+
+    function onPreRender( dt, et, ts ){
+        if( !Ref.run ) return;
+        cameraInput();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Animate Character
+        Ref.fixed.update( ts );                     // Run Fixed frame if time
+        Ref.stepper
+            .update( Ref.fixed.tStep, Ref.pose )    // Move Pose Lerp Forward
+            .toSkeleton( Ref.skel );                // Render Pose
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Make it an in place animation
+        Ref.skel.bones[1].position.x = 0;
+        Ref.skel.bones[1].position.z = 0;
+
+        // // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // // Move Object
+        Ref.ctrl.root.position.x = Ref.stepper.posCur[0];
+        Ref.ctrl.root.position.z = Ref.stepper.posCur[2];
+        Ref.ctrl.root.quaternion.fromArray( Ref.stepper.rotCur );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Follow Object
+        Ref.orbit.follow( dt );
+    }
+
+    function onFixedFrame( dt, ts ){
+        characterInput();
+
+        Ref.ctrl
+            .updateMotion( App.camera, IState ) // Handle Input State
+            .fixedUpdate( dt, Ref.stepper );    // Compute everything for next frame
+    }
+
+    // Ref.gi.onControlReady = profile =>{ console.log( 'GAMEPAD Profile', profile ); };
+
+    function characterInput(){
+        let pad = null;
+        if( Ref.gi.count ) pad = Ref.gi.poll().getPad();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Joy Stick Axis
+        let x = 0;
+        let y = 0;
+
+        // Keyboard Input
+        let info = Ref.ki.getWASD();
+        x += info.x;
+        y += info.y;
+
+        // Gamepad Input
+        if( pad ){
+            const axes = pad.getAxesValue( 'joyStickR' );
+            x += axes[0];
+            y += -axes[1];
+        }
+
+        // Save to State
+        IState.xAxis = Math.max( -1, Math.min( 1, x ) );
+        IState.yAxis = Math.max( -1, Math.min( 1, y ) );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Boost
+        let b = false;
+
+        // Keyboard
+        b = b || Ref.ki.isDown( 'shift' );
+
+        if( pad ) b = b || pad.isButtonDown( 'a' );
+
+        // Save to State
+        IState.boost = b;
+
+        // console.log( IState );
+    }
+
+    function cameraInput(){
+        const STEP = 6;
+
+        let pad = null;
+        if( Ref.gi.count ) pad = Ref.gi.poll().getPad();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Keyboard  Input
+        let { x, y } = Ref.ki.getArrowState();
+        x = -x; // Invert
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Gamepad Input
+        if( pad ){
+            const axes = pad.getAxesValue( 'joyStickL' );
+            x += -axes[0];
+            y += axes[1];
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        x = Math.max( -1, Math.min( 1, x ) ) * STEP;
+        y = Math.max( -1, Math.min( 1, y ) ) * STEP;
+        if( x || y ) Ref.orbit.stepOrbit( x, y );
+    }
+// #endregion
+
+// #region LOADING
+    async function loadCharacter( props={} ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // LOAD
+        const opt = { skel:true, skelHelper:false, phong:undefined, toon:false, tpose:false, ...props };
+        const tf  = await new GLTFLoader().loadAsync( opt.url );
+        // const o  = firstFind( tf.scene, o=> (o.type === 'SkinnedMesh') );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Find Skeleton & Push Skinned Meshes to the scene
+        // let skel;
+        let skinned;
+        let mat = null;
+        for( const m of util.traverseFind( tf.scene, o=> (o.type === 'SkinnedMesh') ) ){
+            if( opt.phong != null ) mat = new THREE.MeshPhongMaterial( { color: opt.phong } );
+            if( opt.toon ) mat = new THREE.MeshToonMaterial( { map: m.material.map, normalMap: m.material.normalMap } );
+
+            if( mat )       m.material = mat;
+            // if( !skel )     skel = m.skeleton;  // First skeleton
+            if( !skinned )  skinned = m;  // First skeleton
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if( opt.tpose ){
+            const clip = tf.animations.find( i=>i.name.toLowerCase() === 'tpose' );
+            if( clip )  util.poseFromClip( clip, skel );
+            else        console.log( 'TPose animation clip not found' );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Push Skeleton Helper
+        // App.scene.add( skel.bones[0] );
+        if( opt.skelHelper ){
+            App.scene.add( new THREE.SkeletonHelper( skel.bones[0] ) );
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        return [ tf.scene, skinned ];
+    }
+
+    async function loadAnimations( url ){
+        const tf = await new GLTFLoader().loadAsync( url );
+        return tf.animations ?? [];
+    }
+// #endregion
+
+class PoseStepper{
+    poses       = [];   // Hold a FROM & TO Pose
+    idx         = 0;    // Index to which pose is FROM
+
+    // posBase     = new Vec3();
+    // posDelta    = new Vec3();
+    // posCur      = new Vec3();
+    //
+    posPrev     = new Vec3();
+    posNext     = new Vec3();
+    posCur      = new Vec3();
+
+    rotPrev     = new Quat();
+    rotNext     = new Quat();
+    rotCur      = new Quat();
+
+    constructor( pose ){
+        this.poses.push( pose.clone(), pose.clone() );
+    }
+
+    get from(){ return this.poses[ this.idx ]; }
+    get to(){ return this.poses[ (this.idx + 1) % 2 ]; }
+
+    // Pose swop & reset timing for next interpolation
+    next( delta, rot ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Manage Pose
+        this.idx = ( this.idx + 1 ) % 2;         // Swop From/To Pose
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Manage Position
+        this.posPrev.copy( this.posNext );
+        if( delta ) this.posNext.fromAdd( this.posPrev, delta );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Manage Rotation
+        this.rotPrev.copy( this.rotNext );
+        if( rot ) this.rotNext.copy( rot );
+
+        return this;
+    }
+
+    // Lerp betweem FROM & TO poses based on timestamp
+    update( t, pose ){
+        const a = this.poses[ this.idx ];
+        const b = this.poses[ (this.idx + 1) % 2 ];
+
+        pose.fromLerp( a, b, t );
+
+        // this.posCur.fromScaleThenAdd( t, this.posDelta, this.posBase );
+        this.posCur.fromLerp( this.posPrev, this.posNext, t );
+        this.rotCur.fromSlerp( this.rotPrev, this.rotNext, t );
+
+        return pose;
+    }
+}
+
+class Controller{
+// #region MAIN
+    root  = new THREE.Group();
+    anim  = null;
+
+    vel   = new FImplicitEuler( { osc:0.8 } );
+    dir   = new FImplicitEuler( { osc:2 } );
+
+    fwd   = new Vec3(); // View Forward
+    rit   = new Vec3(); // View Right
+    look  = new Vec3(); // Character direction from Input
+
+    tq    = new Quat(); // Temp vars to remove some GC hitches
+    tv    = new Vec3();
+
+    constructor(){}
+// #endregion
+
+// #region CALC
+    updateMotion( camera, istate ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Is there motion? If not, stop character & exit early
+        if( istate.xAxis === 0 && istate.yAxis === 0 ){
+            this.vel.target = 0;
+            return this;
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Compute XZ plane direction from camera view
+        const q = new Quat().copyObj( camera.quaternion );
+        this.fwd.fromQuat( q, [0,0,1] ).negate().sy(0).norm();
+        this.rit.fromCross( this.fwd, [0,1,0] ).norm();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Compute the look direction from input
+        this.look.zero()
+            .scaleThenAdd( istate.yAxis, this.fwd )
+            .scaleThenAdd( istate.xAxis, this.rit );
+
+        // For joysticks, what is the overall thottle or speed
+        const inpWgt = Math.max( 0, Math.min( 1, this.look.len ) );
+
+        this.look.norm();
+
+        // 180deg angle from world fwd & its sign
+        let rad = Vec3.angle( [0,0,1], this.look );
+        if( Vec3.dot( [1,0,0], this.look ) < 0 ) rad = -rad;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Fix angle to ignore 180deg boundary for smooth shortest path rotation
+        this.dir.target = Radian.continuousTarget( this.dir.value, rad );
+        this.vel.target = istate.boost ? 2 * inpWgt : 1 * inpWgt; // Run or Walk
+
+        return this;
+    }
+// #endregion
+
+// #region METHODS
+    fixedUpdate( dt, stepper ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Update spring physics
+        this.dir.update( dt );
+        this.vel.update( dt );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Compute next pose
+        this.anim.blend = this.vel.value;           // Vel changes the blend
+        this.anim.timeStep( dt );                   // Move Animation Forward
+        this.anim.updatePose( stepper.from );       // Set Next pose
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Next fixed rotation
+        this.tq.fromAxisAngle( [0,1,0], this.dir.value );
+
+        // Rotate delta, so Local Forward movement is in character's forward look
+        this.tv.fromQuat( this.tq, this.anim.delta );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        stepper.next( this.tv, this.tq );   // Swop Pose & pass in next delta movement
+    }
+// #endregion
+}
+
+</script></body></html>
