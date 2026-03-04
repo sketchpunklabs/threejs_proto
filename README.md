@@ -6,6 +6,9 @@
 [![sponsors](https://img.shields.io/badge/Sponsor-donate-blue?style=flat-square&logo=github)](https://github.com/sponsors/sketchpunklabs)
 [![Patreon](https://img.shields.io/badge/Patreon-donate-red?style=flat-square&logo=youtube)](https://www.patreon.com/sketchpunk)
 
+
+Preview: https://sketchpunklabs.github.io/threejs_proto/
+
 ## Setup
 ```
 git clone --depth=1 https://github.com/sketchpunklabs/threejs_proto.git
