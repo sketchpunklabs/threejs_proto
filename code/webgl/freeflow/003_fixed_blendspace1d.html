@@ -43,7 +43,7 @@
         // LOAD CHAR & ANIMATION
         const url   = '../../../res/models/mewtwo/';
         const [ [ charRoot, skinned ], aryAnim ] = await Promise.all([
-            loadCharacter( { url: `${url}/mewtwo.gltf`, toon:false, phong:0xffffff } ),
+            loadCharacter( { url: `${url}/mewtwo.gltf`, toon:true, phong:0xffffff } ),
             loadAnimations( `${url}/anim_land_traverse.gltf` ),
         ]);
 
@@ -74,9 +74,6 @@
 
         // Setup system to manage animation between fixed frames
         const stepper = new PoseStepper( pose );
-        // samp.updatePose( stepper.to ); // Set initial pose
-        // motion.update( samp.clock, stepper.to );
-        // stepper.to.toSkeleton( skel );
         // blendSpace.blend = 2;
         // blendSpace.timeStep( 0.01 );
         blendSpace.updatePose( stepper.to )
@@ -86,9 +83,9 @@
         Ref.orbit.followObj( charRoot, { offset:[0,1,0], damp:1, osc:3.0 } );
 
 
-        const c   = new Clip().fromClip3JS( cRun, pose );
-        const idx = c.findTrackIndex( 'origin', 'pos' );
-        c.sampleTrackAt( idx, 1.2 );
+        // const c   = new Clip().fromClip3JS( cRun, pose );
+        // const idx = c.findTrackIndex( 'origin', 'pos' );
+        // c.sampleTrackAt( idx, 1.2 );
 
         // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         // Global Refs
