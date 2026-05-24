@@ -1,0 +1,409 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 20, 6 );
+    // Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const url = '../../../res';
+    const tex = await new THREE.TextureLoader().loadAsync( `${url}/img/gaming_atlas.png` );
+    tex.flipY           = true;
+    // tex.colorSpace      = THREE.SRGBColorSpace;
+    tex.minFilter       = THREE.LinearMipmapLinearFilter;
+    tex.magFilter       = THREE.LinearFilter;
+    // tex.anisotropy      = App.renderer.capabilities.getMaxAnisotropy();
+    // tex.generateMipmaps = true;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Numbers : 0-9
+    // Last ( Skull ) : 224
+    // A to M : 15 - 27
+    // N to Z : 30 - 42
+    // F1 to F12 : 45 - 56
+    // Space : 60
+    // Mouse : 75
+    // Gamepad Btns : 90
+    // Joystick : 105
+    // DPad : 120
+    // Chess : 180
+    // Person : 195
+    // Pie : 210 - 2014
+    // Heart : 208, 209
+
+    const d3 = new AtlasQuads().setAtlas( tex, 15, 15 );
+    const d2 = new AtlasQuads()
+        .setAtlas( tex, 15, 15 )
+        .setScreen( App.getSize() );
+
+    App.scene.add( d2, d3 );
+
+    // SCREEN SPACE
+    const px  = 50;
+    const pxp = px * 0.5 + 40;
+    d2.add( [pxp,pxp,0], 215, px ); // BOTTOM - LEFT
+    d2.add( [pxp,pxp,1], 216, px ); // TOP    - LEFT
+    d2.add( [pxp,pxp,2], 217, px ); // TOP    - RIGHT
+    d2.add( [pxp,pxp,3], 218, px ); // BOTTOM - RIGHT
+
+    d2.add( [200+30*0,17,1], 208, 30, 0xEE7272 ); //0xFFA4A2
+    d2.add( [200+30*1,17,1], 208, 30, 0xEE7272 );
+    d2.add( [200+30*2,17,1], 208, 30, 0xEE7272 );
+    d2.add( [200+30*3,17,1], 208, 30, 0xEE7272 );
+    d2.add( [200+30*4,17,1], 209, 30, 0x707070 );
+    d2.add( [200+30*5,17,1], 209, 30, 0x707070 );
+
+    // WORLD SPACE
+    d3.add( [0,0.5,-1.0], 0, 0.5, 0xffff00 );
+    d3.add( [1.5,0.5,0], 105, 1.5, 0x00ff00 );
+    d3.add( [-1.5,0.5,0], 120, 1.0, 0x00ffff );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+    appendGithubLink( false );
+});
+
+function onPreRender( dt, et ){}
+// #endregion
+
+
+export default class AtlasQuads extends THREE.Mesh{
+    // #region MAIN
+    _defaultShape = 1;
+    _defaultSize  = 1;
+    _defaultColor = 0xFFFFFF;
+    _cnt          = 0;
+    _pos          = [];
+    _col          = [];
+    _cfg          = []; // [ size, shape ]
+    _dirty        = false;
+
+    constructor(initSize = 20) {
+        const mat = new AtlasQuadsMaterial();
+        const geo = createInstanceGeo(
+            null,
+            new Float32Array(initSize * 3),
+            new Float32Array(initSize * 3),
+            new Float32Array(initSize * 2),
+        );
+
+        super(geo, mat);
+
+        this.name = 'ShapeQuads';
+        this.onBeforeRender = () => {
+            if (this._dirty) this._updateGeometry();
+        };
+    }
+
+    // #endregion
+
+    // #region MANAGE DATA
+
+    reset() {
+        this._cnt           = 0;
+        this._pos.length    = 0;
+        this._col.length    = 0;
+        this._cfg.length    = 0;
+        this.geometry.instanceCount = 0;
+        return this;
+    }
+
+    add( pos, shape=this._defaultShape, size=this._defaultSize, color=this._defaultColor ){
+        this._pos.push( pos[0], pos[1], pos[2] );
+        this._col.push( ...glColor(color) );
+
+        this._cfg.push( size, shape );
+        this._cnt++;
+        this._dirty = true;
+        return this;
+    }
+
+    setColorAt(idx, color){
+        const c = glColor(color);
+        idx *= 3;
+
+        this._col[idx]      = c[0];
+        this._col[idx + 1]  = c[1];
+        this._col[idx + 2]  = c[2];
+        this._dirty         = true;
+        return this;
+    }
+
+    setPosAt( idx, pos ){
+        idx *= 3;
+        this._pos[idx + 0] = pos[0];
+        this._pos[idx + 1] = pos[1];
+        this._pos[idx + 2] = pos[2];
+        this._dirty        = true;
+        return this;
+    }
+
+    getPosAt(idx){
+        if (idx < this._cnt) {
+            const i = idx * 3;
+            return [this._pos[i + 0], this._pos[i + 1], this._pos[i + 2]];
+        }
+
+        return [0, 0, 0];
+    }
+
+    // #endregion
+
+    // #region ATLAS
+
+    setAtlas( tex, cols, rows ){
+        this.material.uniforms.tex.value  = tex;
+        this.material.uniforms.iRow.value = rows;
+        this.material.uniforms.iCol.value = cols;
+        return this;
+    }
+
+    setScreen( v ){
+        this.material.uniforms.screenSize.value[0] = v[0];
+        this.material.uniforms.screenSize.value[1] = v[1];
+        return this;
+    }
+
+    setColor( v ){ this._defaultColor = v; return this; }
+    setSize( v ){ this._defaultSize = v; return this; }
+
+    // #endregion
+
+    // #region MISC
+
+    forDebugging(order = 101) {
+        this.renderOrder        = order;
+        this.frustumCulled      = false;
+        this.material.depthTest = false;
+        return this;
+    }
+
+    _updateGeometry() {
+        const geo  = this.geometry;
+        const bPos = geo.attributes.ipos;
+        const bCol = geo.attributes.icol;
+        const bCfg = geo.attributes.icfg;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if(
+            this._pos.length > bPos.array.length ||
+            this._col.length > bCol.array.length ||
+            this._cfg.length > bCfg.array.length
+        ){
+            const oldGeo  = this.geometry;
+            this.geometry = createInstanceGeo( oldGeo, new Float32Array(this._pos), new Float32Array(this._col), new Float32Array(this._cfg) );
+
+            oldGeo.dispose();
+            this._dirty = false;
+            return;
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        bPos.array.set(this._pos);
+        bPos.count       = this._pos.length / 3;
+        bPos.needsUpdate = true;
+
+        bCol.array.set(this._col);
+        bCol.count       = this._col.length / 3;
+        bCol.needsUpdate = true;
+
+        bCfg.array.set(this._cfg);
+        bCfg.count       = this._cfg.length / 2;
+        bCfg.needsUpdate = true;
+
+        geo.instanceCount = bPos.count;
+        geo.computeBoundingBox();
+        geo.computeBoundingSphere();
+
+        this._dirty = false;
+    }
+
+    // #endregion
+}
+
+// #region HELPERS
+
+function createInstanceGeo( oldGeo, pos, col, cfg ){
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  const geo = new THREE.InstancedBufferGeometry();
+  let xGeo;
+
+  if (!oldGeo) {
+    // Brand new blank geo
+    xGeo = new THREE.PlaneGeometry (1, 1);
+    geo.instanceCount = 0;
+  } else {
+    // Rebuilding & Extending old Geo
+    geo.instanceCount = pos.length / 3;
+    xGeo = oldGeo;
+  }
+
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  geo.setAttribute(
+    'position',
+    new THREE.BufferAttribute(xGeo.attributes.position.array, 3),
+  );
+  geo.setAttribute(
+    'uv',
+    new THREE.BufferAttribute(xGeo.attributes.uv.array, 2),
+  );
+
+  if (xGeo.index) geo.setIndex(new THREE.BufferAttribute(xGeo.index.array, 1));
+
+  geo.setAttribute('ipos', new THREE.InstancedBufferAttribute(pos, 3));
+  geo.setAttribute('icol', new THREE.InstancedBufferAttribute(col, 3));
+  geo.setAttribute('icfg', new THREE.InstancedBufferAttribute(cfg, 2));
+
+  return geo;
+}
+
+function glColor( hex, out = null ){
+    const NORMALIZE_RGB = 1 / 255;
+    out = out || [0,0,0];
+
+    out[0] = ( hex >> 16 & 255 ) * NORMALIZE_RGB;
+    out[1] = ( hex >> 8 & 255 )  * NORMALIZE_RGB;
+    out[2] = ( hex & 255 )       * NORMALIZE_RGB;
+
+    return out;
+}
+
+// #endregion
+
+// #region MATERIAL
+
+class AtlasQuadsMaterial extends THREE.RawShaderMaterial {
+    constructor() {
+        super();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.name           = 'AtlasQuadsMaterial';
+        this.glslVersion    = THREE.GLSL3;
+        this.side           = THREE.DoubleSide;
+        this.depthTest      = true;
+        this.transparent    = true;
+        this.alphaToCoverage = true;
+
+        this.uniforms = {
+            tex         : { type: 'sampler2D', value: null },
+            screenSize  : { type: 'vec2',  value: [0,0] },
+            uniScale    : { type: 'float', value: 1.0 },
+            iRow        : { type: 'int',   value: 15 },
+            iCol        : { type: 'int',   value: 15 },
+        };
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.vertexShader = `
+        in vec3 position;
+        in vec2 uv;
+        in vec3 ipos;
+        in vec3 icol;
+        in vec2 icfg; // [size,shape]
+
+        uniform mat4 modelMatrix;
+        uniform mat4 viewMatrix;
+        uniform mat4 projectionMatrix;
+
+        uniform vec2 screenSize;
+
+        uniform float uniScale;
+
+        out vec2 fragUV;
+        out vec3 fragCol;
+        flat out int fragShape;
+
+        // #####################################################################
+
+        void main(){
+            if( screenSize.x == 0.0 ){
+                // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                // WORLD SPACE
+                // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+                // Get the transposed positions if we treat the viewMatrix as a 3x# matrix
+                // This allows us to avoid using invert to get the camera axes
+                vec3 xCam = vec3( viewMatrix[0].x, viewMatrix[1].x, viewMatrix[2].x );
+                vec3 yCam = vec3( viewMatrix[0].y, viewMatrix[1].y, viewMatrix[2].y );
+
+                // Spherical billboarding position
+                vec3 bPos = ipos + ( xCam * position.x * uniScale * icfg.x )
+                                 + ( yCam * position.y * uniScale * icfg.x );
+
+                // --------------------------
+                vec4 wPos   = modelMatrix * vec4( bPos, 1.0 );
+                gl_Position = projectionMatrix * viewMatrix * wPos;
+
+            }else{
+                // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                // SCREEN SPACE
+                // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+                // Figure out which corner is the origin
+                int corner = int( ipos.z );
+                vec2 pxPos = ipos.xy;
+                if( corner == 1 || corner == 2 ) pxPos.y = screenSize.y - ipos.y;
+                if( corner == 2 || corner == 3 ) pxPos.x = screenSize.x - ipos.x;
+
+                gl_Position.xy = position.xy * icfg.x + pxPos;
+                gl_Position.xy = ( gl_Position.xy / screenSize ) * 2.0 - 1.0;
+                gl_Position.z  = 0.0;
+                gl_Position.w  = 1.0;
+            }
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            fragUV    = uv;
+            fragCol   = icol;
+            fragShape = int( icfg.y );
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        in vec2 fragUV;
+        in vec3 fragCol;
+        flat in int fragShape;
+
+        uniform int iCol;
+        uniform int iRow;
+        uniform sampler2D tex;
+
+        out vec4 outColor;
+
+        // #####################################################################
+
+        vec2 atlasUV( vec2 uv, int idx, int cols, int rows ){
+            // Size of a single tile in the atlas
+            vec2 size = vec2( 1.0 / float(cols), 1.0 / float(rows) );
+
+            // Compute the tile grid position ( X,Y )
+            // row-1 is to invert Y position, atlas starts at TOP-LEFT, not BOT-LEFT
+            vec2 tile = vec2(
+                float( idx % cols ),
+                float( (rows-1) - idx / rows )
+            );
+
+            // Convert Grid position to Atlas UV then Add quad's UV sized to get
+            // Get all the pixels of the atlas tile
+            return tile * size + ( uv * size );
+        }
+
+        // #####################################################################
+
+        void main(){
+            vec4 px      = texture( tex, atlasUV( fragUV, fragShape, iCol, iRow ) );
+            outColor.rgb = fragCol * px.rgb;
+            outColor.a   = px.a;
+        }`;
+    }
+}
+
+</script></body></html>
