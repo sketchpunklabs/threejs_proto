@@ -1,0 +1,135 @@
+/* #region GLOBAL */
+* { font-family:monospace; }
+
+:root{
+    --bg-00: #181818;
+    --bg-01: #252525;
+    --bg-02: #3D3D3D;
+
+    --inp-bg: #1D1D1D;
+    --inp-bg-hover:#262626;
+    --inp-txt-col: #CDCDCD;
+    --inp-txt-col-2: #707070;
+    --inp-txt-col-3: #a0a0a0;
+    --inp-txt-col-4: #e0e0e0;
+}
+/* #endregion */
+
+/* #region STYLES */
+.grpItem{
+    display:flex; flex-direction:column; margin:4px 4px; gap:5px;
+
+    /* Apply spacing if there is another group before it */
+    & + .grpItem { margin-top: 6px; }
+
+    & > label{
+        margin-left    : 2px;
+        margin-bottom  : -3px;
+        font-size      : 0.7em;
+        font-weight    : bold;
+        color          : #b0b0b0;
+        text-transform : uppercase;
+        letter-spacing : 1.7px;
+        user-select    : none;
+    }
+}
+
+.txtArea{
+    background-color : var(--inp-bg);
+    border-radius    : 4px;
+    border           : none;
+    font-family      : monospace;
+    font-size        : 1.1rem;
+    color            : var(--inp-txt-col-2);
+    letter-spacing   : .02em;
+    padding          : 3px 4px;
+    resize           : vertical;
+
+    &:focus{
+        outline : none;
+        color   : var(--inp-txt-col);
+    }
+
+    /*scrollbar-color: rgba(121, 121, 121, 0.4) transparent;
+    scrollbar-width: thin;*/
+    scrollbar-gutter: stable;
+
+    &::-webkit-scrollbar{ width: 10px; height: 10px; }
+    &::-webkit-scrollbar-track { background: transparent; }
+    &::-webkit-scrollbar-thumb,
+    &::-webkit-scrollbar-thumb:hover{
+        background      : rgba(121, 121, 121, 0.4);
+        border          : 2px solid transparent;
+        background-clip : padding-box;
+        border-radius   : 4px;
+    }
+    &::-webkit-scrollbar-thumb:hover{
+        background      : rgba(100, 100, 100, 0.7);
+        border          : 2px solid transparent;
+        background-clip : padding-box;
+        border-radius   : 4px;
+    }
+    &::-webkit-scrollbar-corner { background: transparent; }
+    /*&::-webkit-resizer {
+        background: transparent; /* Makes the white box disappear
+        Optional: If you want to see the handle but match the theme:
+        border-bottom: 5px solid rgba(121, 121, 121, 0.4);
+        border-right: 5px solid rgba(121, 121, 121, 0.4);
+    }*/
+}
+
+.flexRow{ display: flex; flex-direction: row; }
+.flexRow.auto{
+    gap: 6px;
+    &> * { flex:1 1 auto; }
+}
+
+.tblText{
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    > span{ font-weight:bold; color:var(--inp-txt-col-3); margin-right:7px; }
+    > div:before{ content:": "; font-weight:bold; }
+    > div{ color:var(--inp-txt-col-4); }
+}
+/* #endregion */
+
+group-panel{
+    box-sizing:border-box;
+    padding:4px; gap:4px;
+    border-radius:6px; background-color:var(--bg-01);
+
+    font-family:monospace; color:white; font-size:1.2em;
+
+    &::part(header){ margin:0px 2px; color:var(--inp-tex-col); }
+    &::part(content){ background-color:var(--bg-02); border-radius:4px; }
+}
+
+drop-down{
+    --txt-col: var(--inp-txt-col);
+    background-color:var(--inp-bg);
+    border-radius:4px;
+
+    transition: background-color 400ms ease;
+
+    &:hover{ background-color:var(--inp-bg-hover); }
+    &::part(ico){ stroke:white; }
+}
+
+toast-stack{
+    font-family: monospace; font-size: 1.1em; color: white;
+
+    &::part(ico){ margin:2px 0px 0px 5px; height:22px; fill:white; }
+
+    &::part(toast){ border-radius: 4px; min-height:26px; overflow:hidden; }
+
+    &::part(success){ background-color:green; }
+    &::part(error){ background-color:red; }
+
+    &::part(progress){ background-color:#2a2a2a; }
+    &::part(progress-fill){ background-color:#4a90d9; }
+    &::part(progress-text){ margin-left:5px; }
+
+    &::part(infinite){ background-color:#00A3A3; padding:0px 6px;
+        --cursor-col:white; --cursor-size:8px; }
+    &::part(infinite-text){ color:white; font-weight: bold; }
+}

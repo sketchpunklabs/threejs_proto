@@ -1,0 +1,938 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<link rel="stylesheet" href="../../../lib/ui/App.css">
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+
+import GroupPanel       from '@lib/ui/GroupPanel.js';
+
+import { StateMachine, MachineBase }
+                        from '@lib/misc/StateMachine.js';
+import FixedFrame       from '@lib/misc/FixedFrame.js';
+import KeyboardInput    from '@lib/input/KeyboardInput.js';
+import GamepadInput     from '@lib/input/GamepadInput.js';
+import Cursor3DMaterial from '@lib/shader/Cursor3DMaterial.js';
+
+import Vec3             from '@lib/maths/Vec3.js';
+import Quat             from '@lib/maths/Quat.js';
+import Radian           from '@lib/maths/Radian.js';
+import FImplicitEuler   from '@lib/maths/springs/FImplicitEuler.js';
+
+import Easing           from '@lib/maths/Easing.js';
+import Gradient         from '@lib/maths/Gradient.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    ki : new KeyboardInput(),
+    gi : new GamepadInput(),
+};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 45, 20, 14 );
+    Debug        = await useVisualDebug( App );
+    Ref.inpState = new InputState();
+    Ref.inpBuf   = new InputBuffer();
+    Ref.fixed    = new FixedFrame( 30, onFixedFrame );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Ref.baller = new Baller();
+    App.scene.add( Ref.baller.grp );
+
+    // Ref.baller.weapon.quaternion.fromArray( new Quat().fromEuler( [-10,-60,-10] ) );
+    // Ref.baller.weapon.quaternion.fromArray( new Quat().fromEuler( [10,60,-10] ) );
+    // Ref.baller.weapon.quaternion.fromArray( new Quat().fromEuler( [-40,-20,-70] ) );
+    // Ref.baller.weapon.quaternion.fromArray( new Quat().fromEuler( [10,0,-90] ) );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.createRenderLoop( onPreRender ).start();
+    // App.renderLoop();
+    appendGithubLink( false );
+});
+
+function onPreRender( dt, et, ts ){
+    // Debug.reset();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // INPUTS
+    keyboardHandler( Ref.ki, Ref.inpState );
+    gamepadHandler( Ref.gi, Ref.inpState );
+    inputBufHandler( Ref.inpState );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Execute Fixed Frame Updates
+    Ref.fixed.update( ts );
+
+    // Apply in between fixed frame transforms
+    Ref.baller.onFrame( dt, Ref.fixed.tStep, Ref.inpState );
+}
+
+function onFixedFrame( dt, ts ){
+    // Debug.reset();
+
+    // Update directions based on camera
+    Ref.inpState.updateFromCamera( App.camera );
+
+    // Compute the next transform state for the baller
+    Ref.baller.onFixedFrame( dt, ts, Ref.inpState );
+}
+
+function keyboardHandler( ki, state ){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Movement
+    const info  = ki.getWASD();
+    state.xAxis = info.x;
+    state.yAxis = info.y;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Actions
+    state.setAction( 'run', ki.isDown( 'shift' ) );
+    state.setAction( 'attack', ki.isDown( 'arrowup' ) );
+}
+
+// Ref.gi.onControlReady = profile =>{ console.log( 'GAMEPAD Profile', profile ); };
+function gamepadHandler( gi, state ){
+    const pad = ( gi.count )? gi.poll().getPad() : null;
+    if( !pad ) return;
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Movement
+    const axes  = pad.getAxesValue( 'joyStickR' );
+    state.xAxis =  axes[0];
+    state.yAxis = -axes[1];
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Actions
+    state.setAction( 'run', pad.isButtonDown( 'a' ) );
+}
+
+function inputBufHandler( state ){
+    if( state.isInit( 'attack' ) ) Ref.inpBuf.push( 'attack' );
+}
+// #endregion
+
+class SphereMaterial extends THREE.RawShaderMaterial{
+    constructor( props={} ){
+        super();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Merge custom props with default options
+        // const opts = Object.assign({
+        //     offset : [ 0, 1, 0 ],
+        //     color  : new THREE.Color( '#00ff00' ),
+        // }, props );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.name               = 'SphereMaterial';
+        this.glslVersion        = THREE.GLSL3;
+        // this.side               = THREE.DoubleSide;
+        // this.depthTest          = true;
+        // this.transparent        = true;
+        // this.alphaToCoverage    = true;
+        // this.lights             = true;
+
+        this.uniforms           = {
+            // oRadius     : { value: 0.49 },
+            // color       : { value: new THREE.Color( '#202020' ) },
+            // tex         : { type: 'sampler2D', value: props.tex },
+        };
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.vertexShader = `
+        in vec3 position;
+        in vec3 normal;
+        in vec2 uv;
+
+        // uniform highp vec3 cameraPosition;
+
+        uniform mat4 modelMatrix;
+        uniform mat4 viewMatrix;
+        uniform mat4 projectionMatrix;
+
+        out vec3 fragLPos;
+        out vec3 fragWPos;
+        out vec3 fragNorm;
+        out vec2 fragUV;
+
+        // #####################################################################
+
+        void main(){
+            vec4 wPos 	= modelMatrix * vec4( position, 1.0 );  // World Space
+            vec4 vPos   = viewMatrix * wPos;                    // View Space
+
+            fragUV      = uv;
+            fragWPos    = wPos.xyz;
+            fragLPos    = position.xyz;
+            fragNorm    = ( modelMatrix * vec4( normal, 0.0 ) ).xyz;
+
+            gl_Position = projectionMatrix * vPos;
+        }`;
+
+        this.fragmentShader = `precision mediump float;
+        uniform vec3 cameraPosition;
+
+        in  vec3    fragWPos;
+        in  vec3    fragLPos;
+        in  vec3    fragNorm;
+        in  vec2    fragUV;
+
+        out vec4    outColor;
+
+        // #####################################################################
+
+        const int LITE_CNT = 1;
+
+        // #####################################################################
+
+        void main(){
+            vec3 color = vec3( 0.8 );
+            outColor   = vec4( color, 1.0 );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            // Lighting
+            vec3 LP   = vec3( 3.0, 3.0, 3.0 );      // Light Position
+            vec3 L    = normalize( LP - fragWPos ); // Light Direction
+            vec3 N    = normalize( fragNorm );      // Sphere point direction
+
+            // float NdL = max( dot( N, L ), 0.0 );    // Lambertian
+
+            float NdL = dot( N, L ) * 0.5 + 0.5;    // Half Lambert
+            // NdL = NdL * NdL;                        // Curve the value a bit for better shadows
+
+            // outColor = vec4( vec3( NdL ), 1.0 );
+
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            float mask      = smoothstep( 0.08, 0.09, abs( fragLPos.z ) );
+            vec3  yColor    = ( fragLPos.y >= 0.0 )? vec3( 1.0, 0.0, 0.0 ) : vec3( 0.0, 1.0, 0.0 );
+
+            // outColor.rgb    = vec3( mask );
+            // outColor.rgb = color * mask * NdL;
+
+            outColor.rgb = mix( yColor, color * NdL, mask );
+        }`;
+    }
+
+    // #region SETTERS
+    // setOffset( v ){
+    //     this.uniforms.offset.value = v;
+    //     return this;
+    // }
+    // #endregion
+}
+
+class Baller{
+    // #region MAIN
+    // Systems
+    cstate      = new CharState();      // Character State Object
+    machines    = new StateMachine( this );
+    player      = new TweenPlayer();
+
+    // ThreeJS Objects
+    grp         = new THREE.Group();    // Main Container ( XZ Rotation & Translationbg=)
+    sphere      = null;                 // Ball Mesh
+    weapon      = null;
+
+    constructor(){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // SPHERE Body
+        this.sphere = new THREE.Mesh(
+            new THREE.SphereGeometry( 1, 32, 16 ),
+            new SphereMaterial()
+        );
+        this.sphere.position.y = 1.0;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // CUBE Weapon
+        const geo = new THREE.BoxGeometry( 0.6, 0.2, 3 );
+        geo.translate( 0, 0, 3 ); // geo.rotateX( -Math.PI * 0.5 );
+
+        this.weapon = new THREE.Mesh( geo, new THREE.MeshPhongMaterial() );
+        this.weapon.position.y = 1;
+        this.weapon.scale.setScalar( 0 );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.grp.add(
+            this.sphere,
+            this.weapon,
+            Cursor3DMaterial.createMesh( { scale:1.5, factor:0.0, color:'#d0d0d0' } ),
+        );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Wrap object in a LerpTransform to handle transforms between fixed frames
+        this.cstate.ltRoot.obj = this.grp;
+        this.cstate.ltRoot.dur = Ref.fixed.timeStepSec;
+
+        this.cstate.ltBall.obj = this.sphere;
+        this.cstate.ltBall.dur = Ref.fixed.timeStepSec;
+
+        this.cstate.ltWeap.obj = this.weapon;
+        this.cstate.ltWeap.dur = Ref.fixed.timeStepSec;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.machines.reg(
+            new SM_Traversal(),
+            new SM_Combat(),
+        ).push( 'traversal' );
+    }
+    // #endregion
+
+    // #region UPDATES
+    onFixedFrame( dt, ts, iState ){
+        this.machines.current.onFixedFrame( dt, ts, iState );
+        // this.handleMotionInput( dt, ts, iState );
+
+        /*
+        action = InputBuffer.peek()
+        if( idle )
+            action === attack, switch to attack state, return
+
+        if( attacking )
+        */
+    }
+
+    onFrame( dt, tStep, iState ){
+        this.machines.current.onFrame( dt, tStep, iState );
+
+        // if( this.player.active ){
+        //     this.player.step( dt, this.weapon );
+        // }
+
+        // this.cstate.ltRoot.tick( tStep );
+        // this.cstate.ltBall.tick( tStep );
+
+        // if( iState.isInit( 'attack' ) ){
+        //     console.log( 'ATTACK' );
+        //     // Ref.aqueue.push( this.anim.show );
+        //     Ref.aqueue.push( this.anim.swing0 );
+        // }
+    }
+    // #endregion
+
+    // #region MOTION
+    applyMotion( dt, tStep, iState ){
+        this.cstate.ltRoot.step( dt );
+        this.cstate.ltBall.step( dt );
+    }
+
+    handleMotionInput( dt, ts, iState ){
+        const s = this.cstate;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // LOOK ROTATION
+
+        // Update look direction if joystick is being used
+        if( iState.joyWgt !== 0 ){
+            // 180deg angle from world fwd & its sign
+            let rad = Vec3.angle( [0,0,1], iState.viewJoy );
+            if( Vec3.dot( [1,0,0], iState.viewJoy ) < 0 ) rad = -rad;
+
+            // Fix angle to ignore 180deg boundary for smooth shortest path rotation
+            s.angle.target = Radian.continuousTarget( s.angle.value, rad );
+        }
+
+        s.angle.update( dt );
+        s.ltRoot.nextRot( [0,1,0], s.angle.value );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // TRANSLATION
+
+        // Figure out the current max speed
+        s.vel.target = iState.isOn( 'run' )
+            ? s.runSpeed  * iState.joyWgt
+            : s.walkSpeed * iState.joyWgt;
+
+        // How much to move during this deltaTime
+        s.vel.update( dt );
+        const delta = s.vel.value * dt;
+
+        s.ltRoot.nextDeltaMove( delta );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // SPIN ROTATION
+        const rad  = ( Math.PI * 2 ) * ( delta / s.arcLen ); // Speed to sphere arc rotation
+
+        s.spnRad = Radian.wrapTAU( s.spnRad + rad );
+        s.ltBall.nextRot( [1,0,0], s.spnRad );
+    }
+    // #endregion
+}
+
+
+class InputBuffer{
+    msWindow  = 200; // in milliseconds
+    action    = '';
+    timeStamp = 0;
+    constructor(){}
+
+    push( act ){
+        this.action    = act;
+        this.timeStamp = Date.now();
+        return this;
+    }
+
+    get peek(){
+        // No action queued
+        if( this.action === '' ) return this.action;
+
+        // Action expired
+        if( Date.now() - this.timeStamp > this.msWindow ) return ( this.action = '' );
+
+        // console.log( Date.now() - this.timeStamp, this.timeStamp, this.msWindow );
+
+        return this.action;
+    }
+
+    consume(){
+        const act   = this.action;
+        this.action = '';
+        return act;
+    }
+}
+
+// Committal Attacks - Lock in Place
+// Mobile Attacks    - Sliding or Walking into attack
+class CharState{
+    // Sphere Settings
+    radius    = 1;
+    arcLen    = Math.PI * this.radius * 2; // C = Pi * 2R; // Arc length of the sphere
+
+    // Motion / Rotation
+    walkSpeed = 4;                  // Max Walking Speed
+    runSpeed  = this.walkSpeed * 3; // Max Running Speed
+    spnRad    = 0;                  // Rotation spin in sync with translation ( radians )
+    vel       = new FImplicitEuler( { osc:0.8 } );  // Velocity controlled by spring
+    angle     = new FImplicitEuler( { osc:2 } );    // XY rotation angel controlled by spring
+
+    // Transformation
+    ltRoot    = new LerpTransform();
+    ltBall    = new LerpTransform();
+    ltWeap    = new LerpTransform();
+
+    cancelMotion(){
+        this.ltRoot.stop()
+        this.ltBall.stop()
+        this.vel.stop();
+        this.angle.stop();
+    }
+}
+
+class InputState{
+    static END = -1;
+    static OFF  = 0;
+    static INIT = 1;
+    static HOLD = 2;
+
+    // CAMERA
+    viewFwd  = new Vec3();  // Camera view firward direction on XZ plane
+    viewRit  = new Vec3();  // Camera view right direction on XZ plane
+    viewJoy  = new Vec3();  // Joysticks current direction in relation to camera view
+
+    // MOVEMENT
+    xAxis    = 0;
+    yAxis    = 0;
+    joyWgt   = 0;   // Value between -1 : 1
+
+    // ACTIONS
+    run      = 0;
+    attack   = 0;
+    block    = 0;
+    jump     = 0;
+    dodge    = 0;
+
+    setAction( key, v ){
+        if( !v ) this[key] = this[key] > 0  ? InputState.END  : InputState.OFF;
+        else     this[key] = this[key] <= 0 ? InputState.INIT : InputState.HOLD;
+    }
+
+    isInit( key ){ return ( this[key] === InputState.INIT ); }
+    isOn( key ){ return ( this[key] > 0 ); }
+    isOff( key ){ return ( this[key] <= 0 ); }
+
+    updateFromCamera( cam ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Compute XZ plane direction from camera view
+        const q = new Quat().copyObj( cam.quaternion );
+        this.viewFwd.fromQuat( q, [0,0,1] ).negate().sy(0).norm();
+        this.viewRit.fromCross( this.viewFwd, [0,1,0] ).norm();
+
+        // Debug.ln.addDir( null, this.viewFwd, 2, 0x00ff00 );
+        // Debug.ln.addDir( null, this.viewRit, 2, 0xff0000 );
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Compute the look direction from input
+        this.viewJoy.zero()
+            .scaleThenAdd( this.yAxis, this.viewFwd )
+            .scaleThenAdd( this.xAxis, this.viewRit );
+
+        // For joysticks, what is the overall thottle or speed
+        this.joyWgt = Math.max( 0, Math.min( 1, this.viewJoy.len ) );
+        this.viewJoy.norm();
+
+        // Debug.ln.addDir( null, this.viewJoy, 5, 0xff00ff );
+    }
+}
+
+class LerpTransform{
+    constructor( obj=null ){
+        this.obj     = obj;
+        this.dur     = 1;
+        this._clock  = 0;
+
+        this._usePos  = false;
+        this._prevPos = new Vec3();
+        this._nextPos = new Vec3();
+        this._currPos = new Vec3();
+
+        this._useRot  = false
+        this._prevRot = new Quat();
+        this._nextRot = new Quat();
+        this._currRot = new Quat();
+
+        this._useScl  = false;
+        this._prevScl = new Vec3();
+        this._nextScl = new Vec3();
+        this._currScl = new Vec3();
+    }
+
+    get isDone(){ return ( !this._usePos && !this._useScl && !this._useRot ); }
+
+    get rot(){ return this._currRot; }
+
+    stop(){
+        this._usePos = false;
+        this._prevPos.copy( this._currPos );
+        this._nextPos.copy( this._currPos );
+
+        this._useRot = false;
+        this._prevRot.copy( this._currRot )
+        this._nextRot.copy( this._currRot )
+
+        this._useScl = false;
+        this._prevScl.copy( this._currScl );
+        this._nextScl.copy( this._currScl );
+
+        return this;
+    }
+
+    nextRot( rot, angle=null ){
+        this._useRot = true;
+        this._clock  = 0;
+        this._prevRot.copy( this._nextRot );
+
+        if( angle == null ) this._nextRot.copy( rot );
+        else                this._nextRot.fromAxisAngle( rot, angle );
+        return this;
+    }
+
+    nextDeltaMove( delta ){
+        this._usePos = true;
+        this._clock  = 0;
+        this._prevPos.copy( this._nextPos );
+        this._nextPos
+            .fromQuat( this._nextRot, [0,0,1] )
+            .scale( delta )
+            .add( this._prevPos );
+
+        return this;
+    }
+
+    nextScalar( s ){
+        this._useScl = true;
+        this._clock  = 0;
+        this._prevScl.copy( this._nextScl );
+        this._nextScl.all( s );
+        return this;
+    }
+
+    nextScale( s ){
+        this._useScl = true;
+        this._clock  = 0;
+        this._prevScl.copy( this._nextScl );
+        this._nextScl.copy( s );
+        return this;
+    }
+
+    tick( t ){
+
+        if( t === this.lastT ) return this;
+
+        if( this._usePos )
+            this.obj.position.fromArray( this._currPos.fromLerp( this._prevPos, this._nextPos, t ) );
+
+        if( this._useScl )
+            this.obj.scale.fromArray( this._currScl.fromLerp( this._prevScl, this._nextScl, t ) );
+
+        if( this._useRot )
+            this.obj.quaternion.fromArray( this._currRot.fromSlerp( this._prevRot, this._nextRot, t ) );
+
+        this.lastT = t;
+
+        if( t >= 1 ){
+            this._usePos = false;
+            this._useScl = false;
+            this._useRot = false;
+        }
+
+        return this;
+    }
+
+    step( dt ){
+        if( !this._usePos && !this._useScl && !this._useRot ) return this;
+
+        const t = Math.min( 1, ( this._clock / this.dur ) );
+
+        if( t >= 1 ){  console.log( 'LerpTransform - last frame' ); }
+
+        if( this._usePos )
+            this.obj.position.fromArray( this._currPos.fromLerp( this._prevPos, this._nextPos, t ) );
+
+        if( this._useScl )
+            this.obj.scale.fromArray( this._currScl.fromLerp( this._prevScl, this._nextScl, t ) );
+
+        if( this._useRot )
+            this.obj.quaternion.fromArray( this._currRot.fromSlerp( this._prevRot, this._nextRot, t ) );
+
+        if( t >= 1 ){
+            this._usePos = false;
+            this._useScl = false;
+            this._useRot = false;
+        }else{
+            this._clock += dt;
+        }
+
+        return this;
+    }
+}
+
+
+class RootMachineBase extends MachineBase{
+    state = null;
+    sm    = null;
+    constructor(){ super(); }
+    onFrame( dt, tStep, iState ){}
+    onFixedFrame( dt, ts, iState ){}
+}
+
+class SM_Traversal extends RootMachineBase{
+    name = 'traversal';
+
+    onInit( sm, props=null ){
+        console.log( `${this.name}.onInit`, props );
+        this.sm = sm;
+    }
+
+    onRelease( sm ){
+        console.log( `${this.name}.onRelease` );
+        this.sm = null;
+    }
+
+    onFixedFrame( dt, ts, iState ){
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        // Handle Action Input
+        switch( Ref.inpBuf.peek ){
+            case 'attack':
+                Ref.inpBuf.consume();
+                this.sm.clear( 'combat' );
+                return;
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.sm.obj.handleMotionInput( dt, ts, iState );
+    }
+
+    onFrame( dt, tStep, iState ){
+        // Apply Motion
+        this.sm.obj.applyMotion( dt, tStep, iState );
+    }
+}
+
+class SM_Combat extends RootMachineBase{
+    name        = 'combat';
+    allowMotion = true;
+    isMashing   = false;
+    useCombo    = false;
+    attackOn    = null;
+
+    anim        = {
+        unsheathe   : new TweenClip(1, 'unsheathe', Easing.bounceOut ).scl( 0, 1 ).eul( [0,-120,0], [0,-60,0] ),
+        sheathe     : new TweenClip(1, 'sheathe', Easing.cubicInOut ).scl( 1, 0 ),
+
+        idle        : new TweenClip(0.3, 'idle', Easing.bounceOut )
+            .eul( [0,-60,0],[0,-60,0] )
+            .phase( 'active',0 ),
+
+        rtn         : new TweenClip(0.3, 'rtn', Easing.bounceOut )
+            .eul( [0,-60,0],[0,-60,0] ),
+
+        attack1     : new TweenClip(0.3, 'attack1', Easing.cubicInOut )
+            .eul( [-10,-60,-10], [10,60,-10] )
+            .phase( 'windup',0, 'active',0.15, 'recover',0.25 ),
+
+        attack2     : new TweenClip(0.3, 'attack2', Easing.cubicInOut )
+            .eul( [10,60,-10],[-50,-20,-70] )
+            .phase( 'windup',0, 'active',0.15, 'recover',0.25 ),
+
+        attack3     : new TweenClip(0.3, 'attack3', Easing.bounceOut )
+            .eul( [-50,-20,-70],[10,0,-90] )
+            .phase( 'windup',0, 'active',0.15, 'recover',0.25 ),
+    };
+
+    states = {
+        unsheathe   : { name:'unsheathe', next:'idle',    isAttack:false },
+        sheathe     : { name:'sheathe',   next:'',        isAttack:false },
+        idle        : { name:'idle',      next:'',        isAttack:false },
+        rtn         : { name:'rtn',       next:'idle',    isAttack:true },
+        attack1     : { name:'attack1',   next:'attack2', isAttack:true },
+        attack2     : { name:'attack2',   next:'attack3', isAttack:true },
+        attack3     : { name:'attack3',   next:'rtn',     isAttack:true },
+    }
+
+    // Check if animation is done PLUS if the final frame has tweened completely
+    get isTweenDone(){ return ( this.sm.obj.player.state === 'done' && this.sm.obj.cstate.ltWeap.isDone ); }
+
+    onInit( sm, props=null ){
+        console.log( `${this.name}.onInit`, props );
+        this.sm       = sm;
+        this.attackOn = Date.now();
+        this.nextState( 'unsheathe' );
+    }
+
+    onRelease( sm ){
+        console.log( `${this.name}.onRelease` );
+        this.sm = null;
+    }
+
+    onFixedFrame( dt, ts, iState ){
+        const obj = this.sm.obj;
+
+        if( this.allowMotion ) obj.handleMotionInput( dt, ts, iState );
+
+        if( this.state.name !== 'sheathe' && Date.now() - this.attackOn > 3000 ){
+            this.nextState( 'sheathe' ); return;
+        }
+
+        // Drive Tween Animation on Sword
+        if( obj.player.active ){
+            obj.player.step( dt, obj.cstate.ltWeap );
+            this.animOn = Ref.fixed.frame;
+        }
+
+        switch( this.state.name ){
+            case 'unsheathe':
+                if( this.isTweenDone ) this.nextState( 'attack1' );
+                break;
+
+            case 'sheathe':
+                if( this.isTweenDone ){ this.sm.clear( 'traversal' ); return; }
+                break;
+
+            case 'rtn':
+                if( this.isTweenDone ) this.nextState( 'idle' );
+                break;
+
+            case 'idle':
+                this.handleInput();
+                if( this.useCombo || this.isMashing ) this.nextState( 'attack1' );
+                break;
+
+            default:
+                this.handleInput();
+
+                // Animation & Lerp is complete
+                if( this.isTweenDone ){
+                    if( this.state.isAttack ){
+                        if( this.isMashing )        this.nextState( 'attack1' )
+                        else if( this.useCombo )    this.nextState( this.state.next );
+                        else                        this.nextState( 'rtn' );
+                    }else{
+                        if( this.state.next ) this.nextState( this.state.next );
+                    }
+                }
+                break;
+        }
+    }
+
+    onFrame( dt, tStep, iState ){
+        const obj = this.sm.obj;
+
+        // Apply Traversal
+        if( this.allowMotion ) obj.applyMotion( dt, tStep, iState );
+
+        // Animate Sword
+        obj.cstate.ltWeap.step( dt );
+    }
+
+    nextState( key ){
+        const st = this.states[ key ];
+        if( !st ){ console.log( 'State key unknown:', key ); return; }
+
+        // Stop motion if beginning attack animations
+        if( st.isAttack ) this.sm.obj.cstate.cancelMotion();
+
+        // Reset various states
+        this.isMashing   = false;
+        this.useCombo    = false;
+        this.allowMotion = !st.isAttack; // Allow movement when not attacking
+        this.state       = st;
+
+        // Special cases
+        if( key === 'rtn' ) this.anim.rtn.newStart( 'rot', this.sm.obj.cstate.ltWeap.rot );
+
+        // Switch Animation
+        this.sm.obj.player.clip( this.anim[ key ] ).play();
+        console.log( 'NextState', key );
+    }
+
+    handleInput(){
+        const obj = this.sm.obj;
+        const act = Ref.inpBuf.peek;
+
+        if( act === 'attack' ){
+            // console.log( 'InputAttack', this.state, obj.player.phase, this.isMashing, this.useCombo );
+            this.attackOn = Date.now();
+
+            switch( obj.player.phase ){
+                case 'windup': this.isMashing = true; break;
+                case 'active':
+                case 'recover':
+                    if( !this.isMashing ) this.useCombo = true;
+                    break;
+            }
+            Ref.inpBuf.consume();
+        }
+    }
+}
+
+class TweenClip{
+    name     = ''
+    duration = 0;
+    tracks   = [];
+    phases   = [];
+    ease     = null;
+
+    constructor( dur, name='unknown', ease=null ){
+        this.duration = dur;
+        this.name     = name;
+        this.ease     = ease;
+    }
+
+    scl( a, b, ease=null ){ this.tracks.push( { type:'scl', a, b, ease } ); return this; }
+    pos( a, b, ease=null ){ this.tracks.push( { type:'pos', a, b, ease } ); return this; }
+    rot( a, b, ease=null ){ this.tracks.push( { type:'rot', a, b, ease } ); return this; }
+
+    eul( a, b, ease=null ){
+        this.tracks.push( {
+            type    : 'rot',
+            a       : new Quat().fromEuler( a ),
+            b       : new Quat().fromEuler( b ),
+            ease
+        });
+        return this;
+    }
+
+    phase( ...ary ){
+        for( let i=0; i < ary.length; i+=2 ){
+            this.phases.push({
+                name : ary[i],
+                t    : ary[i+1],
+            });
+        }
+
+        this.phases.sort( (a, b) => a.t - b.t );
+        return this;
+    }
+
+    newStart( type, v ){
+        for( let t of this.tracks ){
+            if( t.type === type ){
+                t.a = v.slice();
+                return this;
+            }
+        }
+        return this;
+    }
+}
+
+class TweenPlayer{
+    active   = false;
+    state    = '';
+
+    _clip    = null;
+    _clock   = 0;
+    _v       = new Vec3();
+    _q       = new Quat();
+
+    get phase(){
+        const p = this._clip?.phases;
+        if( p?.length > 0 ){
+            for( let i = p.length-1; i >= 0; i-- ){
+                if( this._clock >= p[i].t ) return p[i].name;
+            }
+        }
+
+        return 'no-phase';
+    }
+
+    clip( c ){
+        this._clip  = c;
+        this._clock = 0;
+        this.active = false;
+        return this;
+    }
+
+    play(){
+        this.active = true;
+        this.state  = 'playing';
+        return this;
+    }
+
+    step( dt, obj ){
+        const t      = Math.min( 1, this._clock / this._clip.duration );
+        const ease   = this._clip.ease;
+        let tt;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        for( const trk of this._clip.tracks ){
+            tt = ( trk.ease )
+                ? trk.ease( t )
+                : ease ? ease( t ) : t;
+
+            switch( trk.type ){
+                case 'scl':
+                    // obj.scale.setScalar( Gradient.lerp( trk.a, trk.b, tt ) );
+                    obj.nextScalar( Gradient.lerp( trk.a, trk.b, tt ) );
+                    break;
+                case 'rot':
+                    // obj.quaternion.fromArray( this._q.fromSlerp( trk.a, trk.b, tt ) );
+                    obj.nextRot( this._q.fromSlerp( trk.a, trk.b, tt ) );
+                    break;
+            }
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if( t >= 1 ){
+            this.active = false;
+            this.state  = 'done';
+            return this;
+        }
+
+        this._clock += dt;
+    }
+}
+
+</script>
+
+<group-panel title="Controls" float style="position:fixed; left:calc(100vw - 310px); top:10px; width:300px;">
+    <section class="grpItem" style="padding-left:5px;">
+        <detail class="tblText">
+            <span>Move</span><div>WASD</div>
+            <span>Attack</span><div>Up Arrow</div>
+        </detail>
+    </section>
+</group-panel>
+
+</body></html>
