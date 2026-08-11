@@ -5,6 +5,7 @@
     --bg-00: #181818;
     --bg-01: #252525;
     --bg-02: #3D3D3D;
+    --bg-03: #505050;
 
     --inp-bg: #1D1D1D;
     --inp-bg-hover:#262626;
@@ -12,6 +13,8 @@
     --inp-txt-col-2: #707070;
     --inp-txt-col-3: #a0a0a0;
     --inp-txt-col-4: #e0e0e0;
+
+    --hilite-1: #14d90d;
 }
 /* #endregion */
 
@@ -81,16 +84,36 @@
 .flexRow{ display: flex; flex-direction: row; }
 .flexRow.auto{
     gap: 6px;
-    &> * { flex:1 1 auto; }
+    &> * { flex:1 1 auto; min-width:0px; }
+}
+
+.flexRow.center{ align-items:center; }
+.flexRow.top{ align-items:flex-start; }
+.flexRow.spread{
+    &> * { flex:1; min-width:0px; }
 }
 
 .tblText{
     display: grid;
     grid-template-columns: max-content 1fr;
+    margin:0px 3px;
+
     > span{ font-weight:bold; color:var(--inp-txt-col-3); margin-right:7px; }
     > div:before{ content:": "; font-weight:bold; }
     > div{ color:var(--inp-txt-col-4); }
 }
+
+.txtPanel{
+    background-color : var(--inp-bg);
+    border-radius    : 4px;
+    font-family      : monospace;
+    font-size        : 1.1rem;
+    color            : var(--inp-txt-col-2);
+    letter-spacing   : .02em;
+    padding          : 3px 4px;
+    user-select      : none;
+}
+
 /* #endregion */
 
 group-panel{
@@ -132,4 +155,40 @@ toast-stack{
     &::part(infinite){ background-color:#00A3A3; padding:0px 6px;
         --cursor-col:white; --cursor-size:8px; }
     &::part(infinite-text){ color:white; font-weight: bold; }
+}
+
+blendspace-1d{
+    --axis-color   : var(--inp-txt-col-2);
+    --target-color : var(--hilite-1);
+    --point-color  : var(--inp-txt-col-2);
+    --label-color  : var(--inp-txt-col);
+    border-radius : 4px;
+    overflow      : hidden;
+    &::part(svg){ background:var(--inp-bg); }
+}
+
+blendspace-2d{
+    --axis-color   : var(--inp-txt-col-2);
+    --target-color : var(--hilite-1);
+    --point-color  : var(--inp-txt-col-2);
+    --label-color  : var(--inp-txt-col);
+    --bg-color     : var(--inp-bg);
+    border-radius : 4px;
+    overflow      : hidden;
+}
+
+vec3-input{
+    --txt-col           : var(--inp-txt-col-2);
+    --txt-col-focus     : var(--inp-txt-col);
+    --txt-fam           : monospace;
+    --txt-size          : 1.2rem;
+
+    &::part(box){
+        background-color : var(--inp-bg);
+        border-radius    : 4px;
+    }
+    /*
+    &::part(inp){ font-family : monospace; font-size : 1.2rem; }
+    &::part(inp):focus{ color : var(--inp-txt-col); }
+    */
 }

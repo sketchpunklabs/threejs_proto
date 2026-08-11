@@ -1,0 +1,252 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<link rel="stylesheet" href="../../../lib/ui/App.css">
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+
+import { GLTFLoader }           from 'three/GLTFLoader.js';
+import ScreenPicker, { Tasker } from '@lib/misc/ScreenPicker.js';
+import { Store, Effect }        from '@lib/misc/Signals.js';
+
+import GroupPanel       from '@lib/ui/GroupPanel.js';
+import ToggleBtn        from '@lib/ui/ToggleBtn.js';
+import Vec3Input        from '@lib/ui/Vec3Input.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {
+    tasks  : new Tasker(),
+    picker : new ScreenPicker( App ),
+};
+let pStore = new Store({
+    selObj  : null,
+    plnShow : false,
+    offset  : [0,0,0],
+    scale   : [0,0,0],
+});
+
+/*
+## Inspiration
+- https://x.com/DX_Nacca/status/2082921697569591603
+
+## Idea for Resources
+- https://kenney.nl/assets/mini-dungeon
+*/
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 25, 4, [0,0.5,0] );
+    Debug = await useVisualDebug( App );
+
+    App.scene.add( (Ref.plane = planes()).assembly );
+    Ref.plane.hide();
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.scene.add( (Ref.cube = cube( new DynScaleMaterial() )) );
+
+    const tf = await new GLTFLoader().loadAsync( '../../../res/models/kenney_mini_dungeon.glb' );
+
+    const useMesh = ( name, prop )=>{
+        const mesh    = tf.scene.children.find( i=>( i.name === name ) );
+        const mat     = mesh.material;
+        mesh.material = new DynScaleMaterial( {map:mat.map} );
+
+        if( prop.off ) mesh.material.offset = prop.off;
+        if( prop.pos ) mesh.position.fromArray( prop.pos );
+
+        App.scene.add( mesh );
+    }
+
+    useMesh( 'chair',  { off:[0,0.05,0] } );
+    useMesh( 'banner', { off:[0,-0.1,0], pos:[-1,0.6,0] } );
+    useMesh( 'potion', { off:[0,0.1,0], pos:[-2,0,0] } );
+    useMesh( 'rocks',  { off:[0,0.2,0], pos:[1.5,0,0] } );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    App.createRenderLoop( null, onPostRender ).start();
+    appendGithubLink( false );
+    buildUI();
+});
+
+function onPreRender( dt, et ){}
+function onPostRender( dt, et ){
+    Ref.tasks.run();
+}
+
+window.addEventListener( 'pointerdown', e=>{
+    // if( !e.shiftKey ) return;
+    if( e.button !== 2 ) return;
+
+    Ref.tasks.push( Ref.picker.pixelTaskFromEvent( e, onPicker, true ) );
+});
+
+function onPicker( o ){
+    // console.log( 'Pick', o );
+    switch( o.type ){
+        case 'meshHit':
+            if( !( o.obj.material instanceof DynScaleMaterial) ) return;
+            pStore.state.selObj = o.obj;
+            return;
+        default: pStore.state.selObj = null; return;
+    }
+}
+
+function buildUI(){
+    const onChg = ( id, fn )=>{ document.getElementById( id ).addEventListener( 'change', fn ); }
+    onChg( 'plnShow',   e=>{ pStore.state.plnShow = e.detail.value; });
+    onChg( 'inpOffset', e=>{ pStore.state.offset = e.detail.value } );
+    onChg( 'inpScale',  e=>{ pStore.state.scale = e.detail.value } );
+}
+// #endregion
+
+// #region EFFECTS
+// new Effect( ()=>{ console.log( 'Effect Object', pStore.state.selObj ); });
+
+pStore.on( 'selObj', e=>{
+    const obj =  e.detail.value;
+    if( obj ){
+        if( !obj.geometry.boundingBox ) obj.geometry.computeBoundingBox();
+
+        pStore.state.offset = obj.material.offset;          // Reset Planes Offsets
+        pStore.state.scale  = obj.material.scale;
+        Ref.plane.toPos( obj.position.toArray() );          // Set Planes
+        pStore.state.plnShow = true;
+
+    }else pStore.state.plnShow = false;
+});
+
+pStore.on( 'plnShow', e=>{
+    Ref.plane[ e.detail.value ? 'show' : 'hide' ]();
+    document.getElementById( 'plnShow' ).value = e.detail.value;
+});
+
+pStore.on( 'offset', e=>{
+    const obj = pStore.state.selObj;
+    if( !obj ) return;
+
+    obj.material.offset = e.detail.value
+    Ref.plane.setOffset( e.detail.value );
+    document.getElementById( 'inpOffset' ).value = e.detail.value;
+});
+
+pStore.on( 'scale', e=>{
+    const obj = pStore.state.selObj;
+    if( !obj ) return;
+
+    obj.material.scale = e.detail.value
+    document.getElementById( 'inpScale' ).value = e.detail.value;
+});
+
+// #endregion
+
+function cube( mat ){
+    return new THREE.Mesh(
+        new THREE.BoxGeometry(1, 1, 1),
+        mat ?? new THREE.MeshBasicMaterial({ color: 0x00ff00 }),
+    );
+}
+
+// #region Dynamic Scaling
+function planes(){
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const prop = { transparent:true, opacity:0.05, side:THREE.DoubleSide };
+    const geo  = new THREE.PlaneGeometry( 2, 2 );
+    // geo.rotateX( -Math.PI / 2 );
+    // geo.translate( 0, 0.05, 0 );
+    // geo.scale( 3,1,3 );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const x   = new THREE.Mesh( geo, new THREE.MeshBasicMaterial( { color:0xff0000, ...prop } ) );
+    x.rotation.y = Math.PI * 0.5;
+
+    const y   = new THREE.Mesh( geo, new THREE.MeshBasicMaterial( { color:0x00ff00, ...prop } ) );
+    y.rotation.x = Math.PI * 0.5;
+
+    const z   = new THREE.Mesh( geo, new THREE.MeshBasicMaterial( { color:0x0000ff, ...prop } ) );
+
+    const grp = new THREE.Group();
+    grp.add( x, y, z );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    const self = {
+        x, y, z, assembly : grp,
+        hide  : ()=>{ grp.visible = false; return self; },
+        show  : ()=>{ grp.visible = true; return self; },
+        toPos : v=>{ grp.position.fromArray( v ); return self; },
+        reset : ()=>{ x.position.fromArray( [0,0,0] ); y.position.fromArray( [0,0,0] ); z.position.fromArray( [0,0,0] ); return self; },
+        setOffset : v=>{
+            x.position.x = v[0];
+            y.position.y = v[1];
+            z.position.z = v[2];
+            return self;
+        },
+    };
+
+    return self;
+}
+
+class DynScaleMaterial extends THREE.MeshToonMaterial{
+    _uniforms = {
+        dScale  : { value: [0,0,0] },
+        dOffset : { value: [0,0,0] },
+    };
+
+    constructor( props ){
+        super( props );
+        this.name = 'DynScaleMaterial';
+    }
+
+    set scale( v ){ this._uniforms.dScale.value = v; }
+    get scale(){ return this._uniforms.dScale.value; }
+
+    set offset( v ){ this._uniforms.dOffset.value = v; }
+    get offset(){ return this._uniforms.dOffset.value; }
+
+    onBeforeCompile = sh=>{
+        // #region UNIFORM
+        Object.assign( sh.uniforms, this._uniforms ); // Merge in any default values
+        this._uniforms = sh.uniforms;
+
+        sh.vertexShader  = `
+            uniform vec3 dScale;
+            uniform vec3 dOffset;
+        ` + sh.vertexShader;
+        // #endregion
+
+        sh.vertexShader = sh.vertexShader.replace( '#include <begin_vertex>', `#include <begin_vertex>
+            // transformed is the local space pos before matrices
+
+            // Only want to shift up for Y
+            if( transformed.y >= dOffset.y ) transformed.y += dScale.y;
+
+            // Expand in XZ Plane
+            transformed.x += ( transformed.x >= dOffset.x )? dScale.x : -dScale.x;
+            transformed.z += ( transformed.z >= dOffset.z )? dScale.z : -dScale.z;
+        `);
+    };
+}
+// #endregion
+</script>
+
+<group-panel label="Controls" float style="position:fixed; left:calc(100vw - 260px); top:10px; width:250px;">
+    <section class="grpItem">
+        <label>Gizmo</label>
+        <toggle-btn id="plnShow" label="show" labeloff="hide"></toggle-btn>
+
+        <label>Plane Offsets</label>
+        <vec3-input id="inpOffset" value="[0,0,0]" step="0.1"></vec3-input>
+
+        <label>Scale</label>
+        <vec3-input id="inpScale" value="[1,1,1]" step="0.1"></vec3-input>
+
+        <label>Info</label>
+        <div class="txtPanel">
+            Right click to select 3D Object
+        </div>
+    </section>
+</group-panel>
+
+</body></html>

@@ -53,3 +53,14 @@ double SkeletonModifier3D::get_roll_angle(const Quaternion &p_rotation, const Ve
 
 	return symmetrize_angle(angle * direction);
 }
+
+### mathcat
+- circle from 3 points : https://github.com/shrjrd/rbxts-mathcat/blob/main/src/circumcircle.ts
+- bbox with intersect tests : https://github.com/shrjrd/rbxts-mathcat/blob/main/src/box3.ts
+- obb with intersect tests : https://github.com/shrjrd/rbxts-mathcat/blob/main/src/obb3.ts
+- euler : https://github.com/shrjrd/rbxts-mathcat/blob/main/src/euler.ts
+- QuickHull algorithm with HalfEdge : https://github.com/shrjrd/rbxts-mathcat/blob/main/src/quickhull3.ts
+  - https://github.com/shrjrd/rbxts-mathcat/blob/main/src/quickhull2.ts
+- RNGs : https://github.com/shrjrd/rbxts-mathcat/blob/main/src/random.ts
+  - Inc Random Quat, Vec3
+- https://github.com/shrjrd/rbxts-mathcat/blob/main/src/raycast3.ts
