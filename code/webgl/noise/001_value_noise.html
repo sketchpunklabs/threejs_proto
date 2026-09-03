@@ -1,0 +1,495 @@
+<!DOCTYPE html><html lang="en"><head><title></title></head>
+<link rel="stylesheet" href="../../../lib/ui/App2.css">
+<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<body><script src="../../../import-map.js"></script><script type="module">
+// #region IMPORTS
+import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
+
+import TextureRender    from '@lib/util/TextureRender.js';
+import ScreenSpaceQuad  from '@lib/meshes/ScreenSpaceQuad.js';
+
+import GroupPanel       from '@lib/ui/GroupPanel.js';
+import ToggleBtn        from '@lib/ui/ToggleBtn.js';
+import Vec3Input        from '@lib/ui/Vec3Input.js';
+// import ToggleBtnBar     from '@lib/ui/ToggleBtnBar.js';
+import DropDown         from '@lib/ui/DropDown.js';
+// #endregion
+
+// #region MAIN
+let App   = useDarkScene( useThreeWebGL2() );
+let Debug = {};
+let Ref   = {};
+
+window.addEventListener( 'load', async ()=>{
+	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	App.sphericalLook( 0, 30, 5, [2,0.2,2] );
+    // Debug = await useVisualDebug( App );
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // Setup texture generation
+    Ref.mat     = new NoiseMat();
+    Ref.texRend = new TextureRender( 512, 512, false )
+        .fromMaterial( Ref.mat )
+        .render( App.renderer );
+
+    // -----------------------------
+    // See Texture in screen space
+    Ref.ssQuad = ScreenSpaceQuad.asMesh( { map: Ref.texRend.tex, qsize:[256,256], qorigin:0, qoffset:[10,10], gamma:false, } );
+    App.scene.add( Ref.ssQuad );
+
+    // -----------------------------
+    // See texture in quad in world space
+    // const geo  = new THREE.PlaneGeometry( 1, 1, 2, 2 );
+    // geo.translate( 0, 1*0.5, 0 );
+    // const wmesh = new THREE.Mesh( geo, Ref.mat );
+    // App.scene.add( wmesh );
+
+    // -----------------------------
+    // Displacement Mesh
+    const size = 4, div = 80, geo = new THREE.PlaneGeometry( size, size, div, div );
+    geo.rotateX( -Math.PI / 2 );
+    geo.translate( size*0.5, 0, size*0.5 );
+
+    const mat  = new DisplacementMaterial( {color: 0xffffff, map:Ref.texRend.tex } );
+    const mesh = new THREE.Mesh( geo, mat );
+    mesh.position.y += 0.0001;
+    App.scene.add( mesh )
+
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    // App.createRenderLoop( onPreRender ).start();
+    App.renderLoop();
+    buildUI();
+    appendGithubLink( false );
+});
+
+// function onPreRender( dt, et ){}
+
+function buildUI(){
+    const inp    = ( id, evt, fn )=>{ document.getElementById( id ).addEventListener( evt, fn ); };
+    const toFMat = ( id )=>inp( id, 'change', e=>{ Ref.mat[ id ] = parseFloat( e.target.value ); Ref.texRend.render() } );
+    const toIMat = ( id )=>inp( id, 'change', e=>{ Ref.mat[ id ] = parseInt( e.target.value ); Ref.texRend.render() } );
+    const wcIMat = ( id )=>inp( id, 'change', e=>{ Ref.mat[ id ] = parseInt( e.detail.value ); Ref.texRend.render() } );
+
+    toFMat( 'uFreq' );
+    toFMat( 'uLac' );
+    toFMat( 'uAmp' );
+    toFMat( 'uPers' );
+    toFMat( 'uExp' );
+    toIMat( 'uOct' );
+    wcIMat( 'uTest' );
+}
+// #endregion
+
+
+// #region MAIN SHADERS
+
+class NoiseMat extends THREE.RawShaderMaterial{
+    set uFreq( v ){ this.uniforms.uFreq.value = v; return this; }
+    set uLac( v ){  this.uniforms.uLac.value  = v; return this; }
+    set uAmp( v ){  this.uniforms.uAmp.value  = v; return this; }
+    set uPers( v ){ this.uniforms.uPers.value = v; return this; }
+    set uExp( v ){  this.uniforms.uExp.value  = v; return this; }
+    set uOct( v ){  this.uniforms.uOct.value  = v; return this; }
+    set uTest( v ){ this.uniforms.uTest.value = v; return this; }
+
+    constructor( props={} ){
+        super();
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.name           = 'NoiseMat';
+        this.glslVersion    = THREE.GLSL3;
+        // this.depthTest      = true;
+        // this.transparent    = true;
+        this.side           = THREE.DoubleSide;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.uniforms = {
+            uTest   : { type:'int',   value: 0 },
+            uOct    : { type:'int',   value: 1 },
+            uFreq   : { type:'float', value: 5.0 },
+            uLac    : { type:'float', value: 2.0 },
+            uAmp    : { type:'float', value: 0.5 },
+            uPers   : { type:'float', value: 0.5 },
+            uExp    : { type:'float', value: 3.0 },
+            // color   : { type:'vec3',  value: new THREE.Color( opt.color ) }
+        };
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        this.vertexShader = `
+        in vec3 position;
+        in vec2 uv;
+
+        // uniform mat4 modelMatrix;
+        // uniform mat4 viewMatrix;
+        uniform mat4 modelViewMatrix;
+        uniform mat4 projectionMatrix;
+
+        out vec2 fragUV;
+
+        // ################################################################
+
+        void main(){
+            fragUV      = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+        }`;
+
+        this.fragmentShader  = `precision highp float;
+        in vec2 fragUV;
+
+        uniform int   uTest;
+        uniform int   uOct;
+        uniform float uFreq;
+        uniform float uLac;
+        uniform float uAmp;
+        uniform float uPers;
+        uniform float uExp;
+
+        out vec4 outColor;
+
+        // {VAL_NOISE}
+        ${IQ_VAL_NOISE}
+        ${FBM_VAL_NOISE}
+
+        // #####################################################################
+        void main(){
+            float n = 0.0;
+
+            // ---------------------------------
+            // Basic
+            if( uTest == 0 ){
+                n  = val_noise( fragUV * uFreq );
+                n  = n * 0.5 + 0.5; // remap to 0:1
+                n *= uAmp;
+            }
+
+            // ---------------------------------
+            // Ridge
+            if( uTest == 1 ){
+                n = val_noise( fragUV * uFreq );
+                n = 1.0 - abs( n );
+                n = pow( n, 1.0 ) * uAmp;
+            }
+
+            // ---------------------------------
+            // FBM
+            if( uTest == 2 ){
+                n = fbm_val_noise( fragUV * uFreq, uOct, uAmp, uPers, uLac, uExp );
+                n  = n * 0.5 + 0.5; // remap to 0:1
+            }
+
+            // ---------------------------------
+            // Ridge FBM
+            if( uTest == 3 ){
+                n = fbm_ridge_val_noise( fragUV * uFreq, uOct, uAmp, uPers, uLac, uExp );
+                n  = n * 0.5 + 0.5; // remap to 0:1
+                n  = pow( n, uExp );
+            }
+
+            // ---------------------------------
+            // Turbulance FBM
+            if( uTest == 4 ){
+                n = fbm_turbulance_val_noise( fragUV * uFreq, uOct, uAmp, uPers, uLac, uExp );
+                n  = n * 0.5 + 0.5; // remap to 0:1
+                n  = pow( n, uExp );
+            }
+
+            // ---------------------------------
+            outColor = vec4( vec3( n ), 1.0 );
+
+            if( n < 0.0 ) outColor.rgb = vec3( 1.0, 0.0, 0.0 );
+        }`;
+    }
+}
+
+class DisplacementMaterial extends THREE.MeshPhongMaterial{
+    _uniforms = {
+        // dScale  : { value: [0,0,0] },
+        // dOffset : { value: [0,0,0] },
+    };
+
+    constructor( props ){
+        super( props );
+        this.name = 'DisplacementMaterial';
+        this.side = THREE.DoubleSide;
+    }
+
+    // set scale( v ){ this._uniforms.dScale.value = v; }
+    // get scale(){ return this._uniforms.dScale.value; }
+
+    onBeforeCompile = sh=>{
+        Object.assign( sh.uniforms, this._uniforms ); // Merge in any default values
+        this._uniforms = sh.uniforms;
+
+        sh.vertexShader  = `
+            uniform sampler2D map;
+            float displaymentTransform( vec2 pos ){
+                return texture( map, pos ).r;
+            }
+        ` + sh.vertexShader;
+
+        sh.vertexShader = sh.vertexShader.replace( '#include <begin_vertex>', `#include <begin_vertex>
+            // transformed is the local space pos before matrices
+            // transformed.y = displaymentTransform( transformed.xz );
+            transformed.y = displaymentTransform( uv );
+        `);
+
+        sh.vertexShader = sh.vertexShader.replace( '#include <beginnormal_vertex>', `#include <beginnormal_vertex>
+            float e = 0.09; // Small spatial offset for gradient sampling
+
+            // float hL = displaymentTransform( position.xz + vec2(-e, 0.0) );
+            // float hR = displaymentTransform( position.xz + vec2( e, 0.0) );
+            // float hD = displaymentTransform( position.xz + vec2(0.0, -e) );
+            // float hU = displaymentTransform( position.xz + vec2(0.0,  e) );
+
+            float hL = displaymentTransform( uv + vec2(-e, 0.0) );
+            float hR = displaymentTransform( uv + vec2( e, 0.0) );
+            float hD = displaymentTransform( uv + vec2(0.0, -e) );
+            float hU = displaymentTransform( uv + vec2(0.0,  e) );
+
+            // Tangent vectors along X and Z axes
+            vec3 tanX = vec3( 2.0 * e, hR - hL, 0.0 ); // Right Vector
+            vec3 tanZ = vec3( 0.0, hU - hD, 2.0 * e ); // Up Vector
+
+            // Cross product produces the surface normal in local object space
+            objectNormal = normalize( cross( tanZ, tanX ) );
+        `);
+
+        // Force normal matrix update so vNormal carries to fragment shader
+        // sh.vertexShader = sh.vertexShader.replace( '#include <defaultnormal_vertex>', `#include <defaultnormal_vertex>
+        //     transformedNormal = normalMatrix * objectNormal;
+        // `);
+
+        // sh.fragmentShader = sh.fragmentShader.replace( '#include <map_fragment>', `#include <map_fragment>
+        //     // vec4 texelColor = texture2D( map, vUv );
+        //     // diffuseColor *= texelColor;
+        // `);
+
+        sh.fragmentShader = sh.fragmentShader.replace( '#include <map_fragment>', `
+            #include <map_fragment>
+            diffuseColor.rgb = diffuse;
+        `);
+    };
+}
+
+// #endregion
+
+// #region SHADER SNIPPETS
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// https://x.com/iced_coffee_dev/status/2084276805792338228
+// height = val_noise( position.xy * frequency ) * amplitude;
+const VAL_NOISE = `
+// Original hash generates lots of artifacts.
+// float hash( vec2 p ){ return fract( sin(dot(p,vec2(127.1,311.7))) * 43758.5453 ); }
+
+// float hash(vec2 p) {
+//     p = fract(p * vec2(123.34, 456.21));
+//     p += dot(p, p + 45.32);
+//     return fract(p.x * p.y);
+// }
+
+// float hash( vec2 p ) {
+//     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+//     p3     += dot(p3, p3.yzx + 33.33);
+//     return fract((p3.x + p3.y) * p3.z);
+// }
+
+// float hash( vec2 p ) {
+//     uvec2 q = uvec2(ivec2(p)) * uvec2(1597334673u, 3812015801u);
+//     uint n  = (q.x ^ q.y) * 1597334673u;
+//     return float(n) * (1.0 / float(0xffffffffu));
+// }
+
+float hash( vec2 p ){
+    uvec2 q = uvec2(ivec2(p)) * uvec2(1597334677u, 3812015801u);
+    uint n = (q.x ^ q.y) * 1597334677u;
+    return float(n) * (1.0 / 4294967296.0);
+}
+
+float val_noise( vec2 p ){
+    vec2 i   = floor(p), f = fract(p);
+    f        = smoothstep(vec2(0.0), vec2(1.0), f);
+    float a  = hash(i);
+    float b  = hash(i + vec2(1.0, 0.0));
+    float c  = hash(i + vec2(0.0, 1.0));
+    float d  = hash(i + vec2(1.0, 1.0));
+    float h1 = mix(a, b, f.x);
+    float h2 = mix(c, d, f.x);
+
+    return mix(h1, h2, f.y) * 2.0 - 1.0;
+    // return mix(h1, h2, f.y); // Keep noise in 0 to 1 range to replicate the image from the post
+}
+`;
+
+// https://www.shadertoy.com/view/lsf3WH
+const IQ_VAL_NOISE = `
+    // float hash( in ivec2 p ){
+    //     int n = p.x*3 + p.y*113; // 2D -> 1D
+    //     // 1D hash by Hugo Elias
+    //     n = (n << 13) ^ n;
+    //     n = n * (n * n * 15731 + 789221) + 1376312589;
+    //     return -1.0 + 2.0 * float( n & 0x0fffffff ) / float(0x0fffffff);
+    // }
+
+    float hash( in vec2 ip ){
+        ivec2 p = ivec2( floor( ip ) );
+        int n   = p.x*3 + p.y*113; // 2D -> 1D
+        // 1D hash by Hugo Elias
+        n = (n << 13) ^ n;
+        n = n * (n * n * 15731 + 789221) + 1376312589;
+        return -1.0 + 2.0 * float( n & 0x0fffffff ) / float(0x0fffffff);
+    }
+
+    // float hash( vec2 p ) {
+    //     uvec2 q = uvec2(ivec2(p)) * uvec2(1597334673u, 3812015801u);
+    //     uint n  = (q.x ^ q.y) * 1597334673u;
+    //     return float(n) * (1.0 / float(0xffffffffu));
+    // }
+
+    float val_noise( vec2 p ){
+        vec2 i = floor( p );
+        vec2 f = fract( p );
+
+        vec2 u = f * f * f * ( f * ( f * 6.0-15.0 ) + 10.0); // quintic interpolant
+        // vec2 u = f * f * ( 3.0 - 2.0 * f ); // cubic interpolant, smoothstep??
+
+        // float a  = hash( i );
+        // float b  = hash( i + vec2(1.0, 0.0) );
+        // float c  = hash( i + vec2(0.0, 1.0) );
+        // float d  = hash( i + vec2(1.0, 1.0) );
+        // float h1 = mix( a, b, u.x );
+        // float h2 = mix( c, d, u.x );
+        // return mix( h1, h2, u.y );
+
+        return mix( mix( hash( i + vec2(0.0,0.0) ),
+                         hash( i + vec2(1.0,0.0) ), u.x),
+                    mix( hash( i + vec2(0.0,1.0) ),
+                         hash( i + vec2(1.0,1.0) ), u.x), u.y);
+    }
+
+`;
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// https://x.com/iced_coffee_dev/status/2084276807688176110
+// Extra trick: pow() reshapes the height range. I used a value of "3"
+// to flatten valleys and make peaks stand out.
+// persistence = 0.5  // Shrink Amplitude per octive, 0.5 keeps halfing
+// lacunarity  = 2.0  // Increase the frequence per octive, 2 doubles
+// height = fbm( position.xy * frequency );
+//
+// Smoother, Rolling Terrain/Clouds: persistence = 0.35 to 0.45 (higher octaves fade out faster, leaving a softer overall look).
+
+// Rougher, Jagged Mountains/Rock: persistence = 0.55 to 0.65 (higher octaves keep more amplitude, adding sharp noise and grit).
+
+// Sparse/Stretched Features: lacunarity = 1.5 to 1.8 (creates more gradual, organic transitions between frequency steps).
+
+// Dense, Fine Details: lacunarity = 2.2 to 2.5 (rapidly introduces tiny, high-frequency surface noise).
+
+const FBM_VAL_NOISE = `
+float fbm_val_noise( vec2 p, int octave, float amplitude, float persistence, float lacunarity, float exponentiation ){
+    float value = 0.0;
+    for( int i=0; i < octave; ++i ){
+        value     += amplitude * val_noise( p );
+        amplitude *= persistence;
+        p         *= lacunarity;
+    }
+    value = value * 0.5 + 0.5;            // Remap -1:1 to 0:1
+    value = pow( value, exponentiation ); // contrast curve
+    return value * 2.0 - 1.0;             // Remap 0:1 to -1:1
+}
+
+
+float fbm_ridge_val_noise( vec2 p, int octave, float amplitude, float persistence, float lacunarity, float exponentiation ){
+    float value = 0.0;
+    float n     = 0.0;
+    // float norm  = 0.0;
+
+    for( int i=0; i < octave; ++i ){
+        n          = 1.0 - abs( val_noise( p ) ); // Ridge
+        value     += amplitude * n;
+        amplitude *= persistence;
+        p         *= lacunarity;
+
+        // norm      += amplitude;
+    }
+
+    // value /= norm;  // Normalize final result, optional
+    // value *= value;
+
+    // value = value * 0.5 + 0.5;            // Remap -1:1 to 0:1
+    // value = pow( value, exponentiation ); // contrast curve
+    // return value * 2.0 - 1.0;             // Remap 0:1 to -1:1
+    return value;
+}
+
+float fbm_turbulance_val_noise( vec2 p, int octave, float amplitude, float persistence, float lacunarity, float exponentiation ){
+    float value = 0.0;
+    float n     = 0.0;
+    // float norm  = 0.0;
+
+    for( int i=0; i < octave; ++i ){
+        n          = abs( val_noise( p ) ); // turbulance
+        value     += amplitude * n;
+        amplitude *= persistence;
+        p         *= lacunarity;
+
+        // norm      += amplitude;
+    }
+
+    // value /= norm;  // Normalize final result, optional
+
+    // value = value * 0.5 + 0.5;            // Remap -1:1 to 0:1
+    // value = pow( value, exponentiation ); // contrast curve
+    // return value * 2.0 - 1.0;             // Remap 0:1 to -1:1
+    //
+    return value;
+}`;
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// https://x.com/iced_coffee_dev/status/2084290800255463751
+// Ridge, This gives you sharp ridges.
+// height = 1.0 - abs( val_noise( position.xy * frequency ) );
+
+// #endregion
+
+</script>
+
+<group-panel label="NOISE" float style="position:fixed; left:calc(100vw - 260px); top:10px; width:250px;">
+    <section class="grpItem">
+        <!--<toggle-btn-bar id="uTest" valuex="0">
+            <button data-value="0">Noise</button>
+            <button data-value="1">Ridge</button>
+            <button data-value="2">FBM</button>
+            <button data-value="3">Fbm Ridge</button>
+        </toggle-btn-bar>-->
+
+        <label>Tests</label>
+        <drop-down id="uTest" msg="pick item" value="0">
+            <option value="0">Plane Noise</option>
+            <option value="1">Ridge/option>
+            <option value="2">Fbm</option>
+            <option value="3">Fbm Ridge</option>
+            <option value="4">Fbm Turbulance</option>
+        </drop-down>
+
+        <label>Octave</label>
+        <input type="number" class="txtInp" id="uOct" value="1" step="1" min="1">
+
+        <label>Frequency</label>
+        <input type="number" class="txtInp" id="uFreq" value="5" step="0.1" min="0.001">
+
+        <label>Lacunarity ( ↑ Freq )</label>
+        <input type="number" class="txtInp" id="uLac" value="2.0" step="0.1">
+
+        <label>Amptitude</label>
+        <input type="number" class="txtInp" id="uAmp" value="0.5" step="0.1">
+
+        <label>Persistence ( ↓ Amp )</label>
+        <input type="number" class="txtInp" id="uPers" value="0.5" step="0.1">
+
+        <label>Exp ( Contrast Curve )</label>
+        <input type="number" class="txtInp" id="uExp" value="3" step="0.1">
+    </section>
+</group-panel>
+
+</body></html>

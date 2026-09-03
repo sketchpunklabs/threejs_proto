@@ -1,0 +1,248 @@
+/* #region GLOBAL */
+* { font-family: monospace; font-size:1.01em; } /* 'Cascadia Mono', Consolas */
+
+:root{
+    --bg:            #0B1017;
+    --bg-deep:       #05070A;
+    --panel:         rgba( 17, 24, 33, 0.82 );
+    --panel-solid:   #111821;
+    --line:          #1E2A38;
+    --line-bright:   #2E4055;
+    --text:          #D7E2EE;
+    --text-dim:      #7C8EA3;
+    --text-faint:    #4F6076;
+
+    --hilite:        #2FE3D6;
+    --hilite2:       #6BE58C;
+
+    /*
+    --c-input:       #FF9E4B;
+    --c-asc:         #2FE3D6;
+    --c-ability:     #5AB9FF;
+    --c-effect:      #FFC24B;
+    --c-attribute:   #6BE58C;
+    --c-cue:         #B07CFF;
+    --c-tag:         #FF6FB5;
+
+    --c-health:      #45DE8C;
+    --c-shield:      #5AD9FF;
+    --c-poison:      #7CE577;
+    --c-stamina:     #FFC24B;
+    --c-damage:      #FF5F5F;
+    --c-enemy:       #FF7A66;
+    --c-net:         #8FA4BC;
+    */
+}
+/* #endregion */
+
+/* #region FLOW */
+.flexRow{ display: flex; flex-direction: row; }
+.flexRow.auto{
+    gap: 6px;
+    &> * { flex:1 1 auto; min-width:0px; }
+}
+
+.flexRow.center{ align-items:center; }
+.flexRow.top{ align-items:flex-start; }
+.flexRow.spread{
+    &> * { flex:1; min-width:0px; }
+}
+/* #endregion */
+
+
+/* #region INPUT */
+
+.txtArea{
+    background-color : var(--bg-deep);
+    border-radius    : 4px;
+    border           : none;
+    color            : var(--text-dim);
+    font-family      : monospace;
+    letter-spacing   : .02em;
+    padding          : 3px 4px;
+    resize           : vertical;
+
+    &:focus{
+        outline : none;
+        color   : var(--text);
+    }
+
+    /*scrollbar-color: rgba(121, 121, 121, 0.4) transparent;
+    scrollbar-width: thin;*/
+    scrollbar-gutter: stable;
+
+    &::-webkit-scrollbar{ width: 10px; height: 10px; }
+    &::-webkit-scrollbar-track { background: transparent; }
+    &::-webkit-scrollbar-thumb,
+    &::-webkit-scrollbar-thumb:hover{
+        background      : rgba(121, 121, 121, 0.4);
+        border          : 2px solid transparent;
+        background-clip : padding-box;
+        border-radius   : 4px;
+    }
+    &::-webkit-scrollbar-thumb:hover{
+        background      : rgba(100, 100, 100, 0.7);
+        border          : 2px solid transparent;
+        background-clip : padding-box;
+        border-radius   : 4px;
+    }
+    &::-webkit-scrollbar-corner { background: transparent; }
+    /*&::-webkit-resizer {
+        background: transparent; /* Makes the white box disappear
+        Optional: If you want to see the handle but match the theme:
+        border-bottom: 5px solid rgba(121, 121, 121, 0.4);
+        border-right: 5px solid rgba(121, 121, 121, 0.4);
+    }*/
+}
+
+.txtInp{
+    border           : none;
+    background-color : var(--bg-deep);
+    border-radius    : 4px;
+    padding-left     : 5px;
+
+    font-size : 1.2rem;
+    color     : var(--text-dim);
+
+    &:focus{
+        outline : none;
+        color   : var(--text);
+    }
+}
+
+/* #endregion */
+
+
+/* #region STRUCT */
+
+.grpItem{
+    display:flex; flex-direction:column; margin:4px 4px; gap:5px;
+
+    /* Apply spacing if there is another group before it */
+    & + .grpItem { margin-top: 6px; }
+
+    & > label{
+        margin-left    : 2px;
+        margin-bottom  : -3px;
+        font-size      : 0.9em;
+        font-weight    : bold;
+        color          : var( --text );
+        text-transform : uppercase;
+        letter-spacing : 1.9px;
+        user-select    : none;
+    }
+}
+
+.tblText{
+    display : grid;
+    grid-template-columns: max-content 1fr;
+    margin : 0px 3px;
+    gap    : 5px;
+
+    > span{ font-weight:bold; color:var(--text-faint); margin-right:7px; }
+    > div:before{ content:":"; font-weight:bold; margin-right:5px; }
+    > div{
+        color   :var(--text-dim);
+        display :flex;
+        > * { flex:1; }
+    }
+}
+
+.txtPanel{
+    background-color : var(--bg-deep);
+    border-radius    : 4px;
+    font-size        : 1.1rem;
+    letter-spacing   : .02em;
+    padding          : 3px 5px;
+    user-select      : none;
+}
+
+.scrollPanel{
+    overflow-y      : auto;
+    overflow-x      : hidden;
+    display         : flex;
+    flex-direction  : column;
+    border-radius   : 4px;
+    background-color: var(--bg-01);
+
+    /*scrollbar-color: rgba(121, 121, 121, 0.4) transparent;
+    scrollbar-width: thin;*/
+    /*scrollbar-gutter: stable;*/
+
+    &::-webkit-scrollbar{ width: 10px; height: 10px; }
+    &::-webkit-scrollbar-track { background: transparent; }
+    &::-webkit-scrollbar-thumb,
+    &::-webkit-scrollbar-thumb:hover{
+        background      : rgba(121, 121, 121, 0.4);
+        border          : 2px solid transparent;
+        background-clip : padding-box;
+        border-radius   : 4px;
+    }
+    &::-webkit-scrollbar-thumb:hover{
+        background      : rgba(100, 100, 100, 0.7);
+        border          : 2px solid transparent;
+        background-clip : padding-box;
+        border-radius   : 4px;
+    }
+    &::-webkit-scrollbar-corner { background: transparent; }
+}
+
+/* #endregion */
+
+
+/* #region WEB COMPONENTS - GROUPS */
+group-panel{
+    padding:4px; gap:4px;
+    border:1px solid var(--line);
+    border-radius:6px; background-color: var(--panel);
+
+    color:var(--text-faint); font-size:1em;
+
+    &::part(header){ margin:0px 2px; color:var(--text-faint); font-weight:bold; }
+    &::part(content){ background-color:var(--bg-02); border-radius:4px; }
+}
+/* #endregion */
+
+/* #region WEB COMPONENTS - BUTTONS */
+
+toggle-btn{
+    --bg-off   : var(--bg-deep);
+    --bg-on    : var(--hilite);
+    --txt-off  : var(--text-dim);
+    --txt-on   : var(--bg-deep);
+    --knob-off : var(--text-dim);
+    --knob-on  : var(--bg);
+}
+
+toggle-btn-bar{
+    --col-bg            : var(--bg-deep);
+    --col-active        : var(--hilite);
+    --txt-col           : var(--text-dim);
+    --txt-active-col    : var(--bg);
+    --txt-hover-col     : var(--text);
+}
+
+/* #endregion */
+
+/* #region WEB COMPONENTS - INPUT */
+
+ring-input{
+    --bg            : transparent;
+    --ring-fill     : var(--bg-deep);
+    --ring-stroke   : var(--line);
+    --ring-width    : 2;
+    --pnt-fill      : var(--c-attribute);
+}
+
+drop-down{
+    --txt-col           : var(--text-dim);
+    background-color    : var(--bg-deep);
+    border-radius       : 4px;
+
+    transition          : background-color 0.3s ease-in-out;
+
+    &:hover{ background-color:var(--bg); }
+    &::part(ico){ stroke:var(--hilite); }
+}
+
+/* #endregion */

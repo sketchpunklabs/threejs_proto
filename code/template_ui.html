@@ -1,6 +1,8 @@
 <!DOCTYPE html><html lang="en"><head><title></title></head>
-<link rel="stylesheet" href="../../lib/ui/App.css">
-<style>canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
+<link rel="stylesheet" href="../../lib/ui/App2.css">
+<style>
+body{ background-color: #080B0F; }
+canvas{ display:block; } body, html { padding:0px; margin:0px; width:100%; height:100%; }</style>
 <body><script src="../import-map.js"></script><script type="module">
 // #region IMPORTS
 // import useThreeWebGL2, { THREE, useDarkScene, useVisualDebug } from '@lib/useThreeWebGL2.js';
@@ -9,6 +11,9 @@ import GroupPanel       from '@lib/ui/GroupPanel.js';
 import ToggleBtn        from '@lib/ui/ToggleBtn.js';
 import ToggleBtnBar     from '@lib/ui/ToggleBtnBar.js';
 import Vec3Input        from '@lib/ui/Vec3Input.js';
+import RingInput        from '@lib/ui/RingInput.js';
+import DraggableList    from '@lib/ui/DraggableList.js';
+import DropDown         from '@lib/ui/DropDown.js';
 // #endregion
 
 // #region MAIN
@@ -23,6 +28,15 @@ window.addEventListener( 'load', async ()=>{
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+    document.getElementById( 'inpRing' ).addEventListener( 'input', e=>{
+
+        console.log( e.detail.value, e.detail.target.angle );
+
+    })
+
+    document.getElementById( 'inpDragList' ).loadArray( ["aaaa", 'bbbb', 'cccc' ] );
+
+
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // App.createRenderLoop( onPreRender ).start();
     // App.renderLoop();
@@ -32,15 +46,32 @@ function onPreRender( dt, et ){}
 // #endregion
 </script>
 
+<!---->
 <group-panel label="Info" float style="position:fixed; right:calc(100vw - 310px); top:10px; width:300px;">
     <section class="grpItem">
         <detail class="tblText">
             <span>Move</span><div>WASD</div>
             <span>Attack</span><div>Up Arrow</div>
         </detail>
+
+        <label>Info</label>
+        <div class="txtPanel">
+            Right click to select 3D Object
+        </div>
+
+
+        <draggable-list id="inpDragList">
+
+        </draggable-list>
     </section>
 </group-panel>
+<!--
+<div class="list-item">Item 1: Organic Bananas</div>
+<div class="list-item">Item 2: Almond Milk</div>
+<div class="list-item">Item 3: Whole Wheat Bread</div>
+ -->
 
+<!---->
 <group-panel label="Controls" float style="position:fixed; left:calc(100vw - 310px); top:10px; width:300px;">
     <section class="grpItem">
         <toggle-btn label="on" labeloff="off"></toggle-btn>
@@ -53,7 +84,67 @@ function onPreRender( dt, et ){}
         </toggle-btn-bar>
 
         <vec3-input value="[1,2,3]" label='["R:","G:","B:"]' step="0.1"></vec3-input>
+
+        <input type="number" class="txtInp" value="0">
+
+        <textarea class="txtArea">Testing One</textarea>
+
+        <drop-down msg="pick item" value="">
+            <option value="test">default</option>
+            <option value="yo">Yo</option>
+            <option value="x">Three</option>
+            <option value="y">Four</option>
+        </drop-down>
+
+        <label>Stuff</label>
+        <detail class="tblText">
+            <span>A</span><div><input type="number" class="txtInp" value="0"></div>
+            <span>BBB</span><div><input type="number" class="txtInp" value="0"></div>
+        </detail>
+
+        <div class="flexRow">
+            <ring-input id="inpRingx" mode="joy" auto-center></ring-input>
+            <ring-input id="inpRing" mode="dir" auto-center></ring-input>
+        </div>
+
+
     </section>
 </group-panel>
+
+
+<div class="scrollPanel" style="position:fixed; left:calc(100vw * 0.5 - 310px); top:10px; width:300px; max-height:200px;">
+
+    <group-panel label="Controls Stack">
+        <section class="grpItem">
+            <toggle-btn label="on" labeloff="off"></toggle-btn>
+
+            <toggle-btn-bar valuex="week">
+                <button data-value="day">A</button>
+                <button data-value="week">off</button>
+                <button data-value="month">Month1234567</button>
+                <button data-value="year">Year</button>
+            </toggle-btn-bar>
+
+            <vec3-input value="[1,2,3]" label='["R:","G:","B:"]' step="0.1"></vec3-input>
+
+            <input type="number" class="txtInp" value="0">
+        </section>
+    </group-panel>
+
+    <group-panel label="Info">
+        <section class="grpItem">
+            <detail class="tblText">
+                <span>Move</span><div>WASD</div>
+                <span>Attack</span><div>Up Arrow</div>
+            </detail>
+
+            <label>Info</label>
+            <div class="txtPanel">
+                Right click to select 3D Object
+            </div>
+        </section>
+    </group-panel>
+
+</div>
 
 </body></html>
