@@ -46,7 +46,7 @@ window.addEventListener( 'load', async ()=>{
 
     // -----------------------------
     // Displacement Mesh
-    const size = 4, div = 80, geo = new THREE.PlaneGeometry( size, size, div, div );
+    const size = 4, div = 100, geo = new THREE.PlaneGeometry( size, size, div, div );
     geo.rotateX( -Math.PI / 2 );
     geo.translate( size*0.5, 0, size*0.5 );
 
@@ -75,6 +75,7 @@ function buildUI(){
     toFMat( 'uAmp' );
     toFMat( 'uPers' );
     toFMat( 'uExp' );
+    toFMat( 'uStep' );
     toIMat( 'uOct' );
     wcIMat( 'uTest' );
 }
@@ -90,6 +91,7 @@ class NoiseMat extends THREE.RawShaderMaterial{
     set uPers( v ){ this.uniforms.uPers.value = v; return this; }
     set uExp( v ){  this.uniforms.uExp.value  = v; return this; }
     set uOct( v ){  this.uniforms.uOct.value  = v; return this; }
+    set uStep( v ){ this.uniforms.uStep.value  = v; return this; }
     set uTest( v ){ this.uniforms.uTest.value = v; return this; }
 
     constructor( props={} ){
@@ -111,6 +113,7 @@ class NoiseMat extends THREE.RawShaderMaterial{
             uAmp    : { type:'float', value: 0.5 },
             uPers   : { type:'float', value: 0.5 },
             uExp    : { type:'float', value: 3.0 },
+            uStep   : { type:'float', value: 5.0 },
             // color   : { type:'vec3',  value: new THREE.Color( opt.color ) }
         };
 
@@ -143,6 +146,7 @@ class NoiseMat extends THREE.RawShaderMaterial{
         uniform float uAmp;
         uniform float uPers;
         uniform float uExp;
+        uniform float uStep;
 
         out vec4 outColor;
 
@@ -191,6 +195,22 @@ class NoiseMat extends THREE.RawShaderMaterial{
                 n = fbm_turbulance_val_noise( fragUV * uFreq, uOct, uAmp, uPers, uLac, uExp );
                 n  = n * 0.5 + 0.5; // remap to 0:1
                 n  = pow( n, uExp );
+            }
+
+            // ---------------------------------
+            // Terrance
+            if( uTest == 5 ){
+                n = fbm_val_noise( fragUV * uFreq, uOct, uAmp, uPers, uLac, uExp );
+                n  = n * 0.5 + 0.5; // remap to 0:1
+
+                // @iced_coffee_dev : https://x.com/iced_coffee_dev/status/2084291247045304709
+                // Split the height range into steps, but keep a short ramp between each plateau.
+                // That gives us broad, flat areas without making every transition a vertical cliff.
+
+                float band = n * uStep;                       // What step is the noise in.
+                float lvl  = floor( band );                   // Current step level for noise
+                float ramp = min( 2.0 * fract( band ), 1.0 ); // How much to the next level, at least 1 but can be more
+                n          = ( lvl + ramp ) / uStep;          // Current level plus ramp to next level, then normalize
             }
 
             // ---------------------------------
@@ -470,6 +490,7 @@ float fbm_turbulance_val_noise( vec2 p, int octave, float amplitude, float persi
             <option value="2">Fbm</option>
             <option value="3">Fbm Ridge</option>
             <option value="4">Fbm Turbulance</option>
+            <option value="5">Terrance</option>
         </drop-down>
 
         <label>Octave</label>
@@ -489,6 +510,9 @@ float fbm_turbulance_val_noise( vec2 p, int octave, float amplitude, float persi
 
         <label>Exp ( Contrast Curve )</label>
         <input type="number" class="txtInp" id="uExp" value="3" step="0.1">
+
+        <label>Step ( Terrance )</label>
+        <input type="number" class="txtInp" id="uStep" value="5" step="1" min="1">
     </section>
 </group-panel>
 
