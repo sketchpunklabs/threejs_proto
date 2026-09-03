@@ -21,7 +21,7 @@ import * as CameraKit        from '@tp/tweakpane/tweakpane-plugin-camerakit.js';
 
 // #region MAIN
 let App   = useDarkScene( useThreeWebGL2() );
-let Gizmo = useTransformControl( App ).useAxes()
+let Gizmo = useTransformControl( App ).useDetachless()
 let Debug = {};
 let Ref   = {
     showDebug    : false,

@@ -12,7 +12,7 @@ import { Pane } from '@tp/tweakpane/tweakpane-4.0.4.min.js';
 let App   = useDarkScene( useThreeWebGL2() );
 let Debug = {};
 let Ref   = {
-    gizmo    : useTransformControl( App ).useAxes(),
+    gizmo    : useTransformControl( App ).useDetachless(),
 
     steps    : 10,
     arcLen   : 2.5,

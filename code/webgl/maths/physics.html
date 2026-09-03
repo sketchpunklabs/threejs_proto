@@ -18,6 +18,12 @@ let Ref   = {
     force   : [ 0, 0, -40 ],
 };
 
+// Erin Catto  impulse solvers GDC Talk
+// https://gdcvault.com/play/1020603/Physics-for-Game-Programmers-Understanding
+
+// contact point generation info from Dirk Gregorius
+// https://media.steampowered.com/apps/valve/2015/DirkGregorius_Contacts.pdf
+
 // https://allenchou.net/game-physics-series/
 // https://allenchou.net/2013/12/game-physics-motion-dynamics-fundamentals/
 // https://allenchou.net/2013/12/game-physics-motion-dynamics-implementations/
@@ -87,8 +93,8 @@ let Ref   = {
   - deltaL = r(t) * delta
   - Angular impulse is equal to the change of angular momentum
   - Change of angular velocity due to impulse is the product between inverse inertial tensor
-    and angular impulse. NOTE: we have to convert the angular impulse to the object’s model 
-    space and then convert the change of angular velocity back to world space, since the 
+    and angular impulse. NOTE: we have to convert the angular impulse to the object’s model
+    space and then convert the change of angular velocity back to world space, since the
     inertia tensor is computed in the object’s model space
     - deltaW = Q * inverse( I ) * tranpose( Q ) * deltaL
     - Q is obj's orientation matrix. Q is orthogonal, so inverse( Q ) === transpose( Q )
@@ -135,7 +141,7 @@ window.addEventListener( 'load', async ()=>{
 
     Ref.rb = new RigidBody();
     InertiaTensor.solidCuboid( 1, 1, 1, 1, Ref.rb.inertialTensor );
-    
+
     Ref.rb.linearDamping = 0.8;
     Ref.rb.setMass( 1 );
     // Ref.rb.applyForce( [0,0,-60] );
@@ -207,7 +213,7 @@ class InertiaTensor{
         out[0] = i; // I_xx
         out[1] = 0;
         out[2] = 0;
-        
+
         out[3] = 0;
         out[4] = i; // I_yy
         out[5] = 0;
@@ -225,7 +231,7 @@ class InertiaTensor{
         out[0] = ( 1 / 12 ) * m * ( h * h + d * d ); // x - width
         out[1] = 0;
         out[2] = 0;
-        
+
         out[3] = 0;
         out[4] = ( 1 / 12 ) * m * ( w * w + d * d ); // y - height
         out[5] = 0;
@@ -245,7 +251,7 @@ class InertiaTensor{
         out[0] = I_xx_yy;
         out[1] = 0;
         out[2] = 0;
-        
+
         out[3] = 0;
         out[4] = I_xx_yy;
         out[5] = 0;
@@ -264,7 +270,7 @@ class InertiaTensor{
         out[0] = (1 / 12) * m * h * h;
         out[1] = 0;
         out[2] = 0;
-        
+
         out[3] = 0;
         out[4] = ( 1 / 12) * m * ( w * w + h * h );
         out[5] = 0;
@@ -306,7 +312,7 @@ class RigidBody{
     consstructor(){
         console.log( this.quat );
     }
-    
+
     // colliders           = [];
     inertialTensor = new Mat3();
 
@@ -325,22 +331,22 @@ class RigidBody{
 
     UpdateOrientation(){
         // Notes:
-        // - Not using Gram-Schmidt process to re-orthonormalize the matrix 
+        // - Not using Gram-Schmidt process to re-orthonormalize the matrix
         //   as it does not treat all axes equally
 
         // orthonormalize orientation matrix
         // Quat q = m_orientation.ToQuat();
         // q.Normalize();
         // m_orientation = q.ToMatrix();
-        
+
         // // compute inverse orientation matrix
         // m_inverseOrientation = m_orientation.Transposed();
     }
- 
+
     AddCollider( collider ){
         // // add collider to collider list
         // m_colliders.Add(collider);
-        
+
         // // reset local centroid & mass
         // m_localCentroid.Zero();
         // m_mass = 0.0f;
@@ -351,7 +357,7 @@ class RigidBody{
         //     m_mass += collider.m_mass;
 
         //     // accumulate weighted contribution
-        //     m_localCentroid += 
+        //     m_localCentroid +=
         //         collider.m_mass * collider.m_localCentroid;
         // }
 
@@ -369,17 +375,17 @@ class RigidBody{
         //     const float rDotR = r.Dot(r);
         //     const Mat3 rOutR = r.OuterProduct(r);
 
-        //     // accumulate local inertia tensor contribution, 
+        //     // accumulate local inertia tensor contribution,
         //     // using Parallel Axis Theorem
-        //     localInertiaTensor += 
-        //         collider.localInertiaTensor 
+        //     localInertiaTensor +=
+        //         collider.localInertiaTensor
         //         + collider.m_mass * (rDotR * Mat3::Identity() - rOutR);
         // }
 
         // // compute inverse inertia tensor
         // m_localInverseInertiaTensor = localInertiaTensor.Inverted();
     }
-    
+
     // #region SPACE CONVERSIOON
     LocalToGlobal( p ){
         // return m_orientation * p + m_position;
@@ -396,7 +402,7 @@ class RigidBody{
         // return m_inverseOrientation * v;
     }
     // #endregion
-    
+
     // Continuous force applied over time, acceleration
     applyForce( force, hitPos=null ){
         this.forceAccumulator.add( force ); // m_forceAccumulator  += f;
@@ -408,7 +414,7 @@ class RigidBody{
                 .cross( force );
 
             Debug.pnt.add( this.position, 0x00ffff, 3 );
-            
+
             Debug.ln.add( this.position, new Vec3(this.position).add( force ), 0xffff00 );
             Debug.ln.add( this.position, new Vec3(this.position).add( v ), 0x00ffff );
 
@@ -423,7 +429,7 @@ class RigidBody{
 
         return this;
     }
- 
+
     applyTorque( v ){ this.torqueAccumulator.add( v ); return this; }
 
     // Impulse is a sudden & instant increase of velocity
@@ -454,7 +460,7 @@ class RigidBody{
 
         // Move tensor to worldspace, First rotation moves it to ws but the transpose ensures
         // that the tensor is properly aligned with world space. With how the tensor transforms
-        // vectors needs this extra mul with the transpose to make it correctly transform torque 
+        // vectors needs this extra mul with the transpose to make it correctly transform torque
         // vectors in that world space into angular acceleration
 
         // glm::mat3 inertiaTensor = m_rotation * m_inertiaTensor * glm::transpose(m_rotation);
@@ -465,7 +471,7 @@ class RigidBody{
             .transpose()
             .pmul( this.inertialTensor )
             .pmul( this.orientation );
-        
+
         tensor.invert().transformVec3( this.torqueAccumulator ); // calc acceleration
 
         // Velocity
@@ -516,27 +522,27 @@ class RigidBody{
         this.torqueAccumulator.zero();
 
         //     // integrate linear velocity
-        //     body.m_linearVelocity += 
+        //     body.m_linearVelocity +=
         //         body.m_massData.inverseMass
         //         * (body.m_forceAccumulator * dt);
-            
+
         //     // integrate angular velocity
-        //     body.m_angularVelocity += 
-        //         body.m_globalInverseInertiaTensor 
+        //     body.m_angularVelocity +=
+        //         body.m_globalInverseInertiaTensor
         //         * (body.m_torqueAccumulator * dt);
-            
+
         //     // zero out accumulated force and torque
         //     body.m_forceAccumulator.Zero();
         //     body.m_torqueAccumulator.Zero();
-            
+
         //     // integrate position
         //     m_globalCentroid += m_linearVelocity * dt;
-            
+
         //     // integrate orientation
         //     const Vec3 axis = m_angularVelocity.Normalized();
         //     const float angle = m_angularVelocity.Length() * dt;
         //     m_orientation = RotationMatrix(axis, angle) * m_orientation;
-            
+
         //     // update physical properties
         //     body.UpdateOrientation();
         //     body.UpdatePositionFromGlobalCentroid();
@@ -616,40 +622,40 @@ class PhysicsEngine{
         // for each rigid body
         // for (auto &body : rigidBodies){
         //     // integrate linear velocity
-        //     body.m_linearVelocity += 
+        //     body.m_linearVelocity +=
         //         body.m_massData.inverseMass
         //         * (body.m_forceAccumulator * dt);
-            
+
         //     // integrate angular velocity
-        //     body.m_angularVelocity += 
-        //         body.m_globalInverseInertiaTensor 
+        //     body.m_angularVelocity +=
+        //         body.m_globalInverseInertiaTensor
         //         * (body.m_torqueAccumulator * dt);
-            
+
         //     // zero out accumulated force and torque
         //     body.m_forceAccumulator.Zero();
         //     body.m_torqueAccumulator.Zero();
-            
+
         //     // integrate position
         //     m_globalCentroid += m_linearVelocity * dt;
-            
+
         //     // integrate orientation
         //     const Vec3 axis = m_angularVelocity.Normalized();
         //     const float angle = m_angularVelocity.Length() * dt;
         //     m_orientation = RotationMatrix(axis, angle) * m_orientation;
-            
+
         //     // update physical properties
         //     body.UpdateOrientation();
         //     body.UpdatePositionFromGlobalCentroid();
 
 
-                    
+
             /* tut says to do this somewhere, maybe here will work.
             Inverse Inertia Tensor Update - https://allenchou.net/2013/12/game-physics-motion-dynamics-implementations/
             NOTE: Where the hell is massData???
-            
-            m_globalInverseInertiaTensor = 
-        m_orientation 
-        * m_massData.localInertiaTensor 
+
+            m_globalInverseInertiaTensor =
+        m_orientation
+        * m_massData.localInertiaTensor
         * m_inverseOrientation;
             */
 
@@ -844,7 +850,7 @@ class Mat3 extends Array{
         this[8] = a[8];
         return this;
     }
-    
+
     invert(){
         const a00 = this[0];
         const a01 = this[1];
@@ -901,7 +907,7 @@ class Mat3 extends Array{
         out[2]      = x * this[2] + y * this[5] + z * this[8];
         return out;
     }
-    
+
     // pmul's axis angle rotation onto matrix
     applyAxisAngle( axis, rad, doPMUL=true ){
         // Compute sine and cosine of the angle
@@ -920,20 +926,20 @@ class Mat3 extends Array{
         ];
 
         ( doPMUL )
-            ? this.fromMul( r, this ) 
-            : this.fromMul( this, r ); 
+            ? this.fromMul( r, this )
+            : this.fromMul( this, r );
 
         return this;
     }
-    
+
     orthoNorm(){
-        // Not using Gram-Schmidt process to orthonormalize the matrix 
+        // Not using Gram-Schmidt process to orthonormalize the matrix
         // as it does not treat all axes equally, so quaternions it is.
         this.fromQuat( new Quat().fromMat3( this ).norm() );
     }
     // #endregion
 
-    // #region FROM 
+    // #region FROM
     fromMul( a, b ){
         const a00 = a[0];
         const a01 = a[1];
@@ -1029,7 +1035,7 @@ class Mat3 extends Array{
             const a01 = a[1],
                   a02 = a[2],
                   a12 = a[5];
-            
+
             out[1] = a[3];
             out[2] = a[6];
             out[3] = a01;
@@ -1084,14 +1090,14 @@ class Mat3 extends Array{
         const rit = [
             up[1] * fwd[2] - up[2] * fwd[1],
             up[2] * fwd[0] - up[0] * fwd[2],
-            up[0] * fwd[1] - up[1] * fwd[0] 
+            up[0] * fwd[1] - up[1] * fwd[0]
         ];
 
         let len = Math.sqrt( rit[0]**2 + rit[1]**2 + rit[2]**2 );
         rit[0] /= len;
         rit[1] /= len;
         rit[2] /= len;
-        
+
         // Recompute the up unit vector (Y-axis) to ensure all vectors are orthogonal
         this[3]  = fwd[1] * rit[2] - fwd[2] * rit[1]; // m10
         this[4]  = fwd[2] * rit[0] - fwd[0] * rit[2]; // m11
@@ -1178,7 +1184,7 @@ class Mat3 extends Array{
         this[8] = a[10];
         return this;
     }
-    
+
     // Calculates a mat3 normal matrix (adjoint) from the upper 3x3 of a Mat4
     // https://www.shadertoy.com/view/3s33zj for details.
     normalFromMat4( a ){
@@ -1308,7 +1314,7 @@ class Vec3 extends Array{
         this[ 2 ] = ax * by - ay * bx;
         return this;
     }
-    
+
     norm(){
         let mag = Math.sqrt( this[0]**2 + this[1]**2 + this[2]**2 );
         if( mag != 0 ){
@@ -1407,7 +1413,7 @@ class Quat extends Array{
               a2  = this[ 2 ],
               a3  = this[ 3 ],
               dot = a0*a0 + a1*a1 + a2*a2 + a3*a3;
-        
+
         if(dot == 0){ this[0] = this[1] = this[2] = this[3] = 0; return this }
 
         const invDot = 1.0 / dot; // let invDot = dot ? 1.0/dot : 0;
@@ -1431,7 +1437,7 @@ class Quat extends Array{
             // |w| > 1/2, may as well choose w > 1/2
             fRoot	= Math.sqrt( fTrace + 1.0 );  // 2w
             this[3]	= 0.5 * fRoot;
-            
+
             fRoot	= 0.5 / fRoot;  // 1/(4w)
             this[0]	= (m[5]-m[7])*fRoot;
             this[1]	= (m[6]-m[2])*fRoot;
@@ -1442,7 +1448,7 @@ class Quat extends Array{
 
             if ( m[4] > m[0] )		i = 1;
             if ( m[8] > m[i*3+i] )	i = 2;
-            
+
             const j = (i+1) % 3;
             const k = (i+2) % 3;
 
@@ -1518,7 +1524,8 @@ requestAnimationFrame(gameLoop);
 */
 
 
-/* COLLIDERS
+/* https://github.com/sebis/Motion/blob/85556143851d424232b3273b3ce5e277b49111be/engine/src/rigidbody/CollisionDetector.cpp
+ COLLIDERS
 
 	bool SphereCollider::isInside(const glm::vec3 & point, Contact * contact) const
 	{

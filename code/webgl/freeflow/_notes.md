@@ -12,6 +12,11 @@
 - Controller : https://www.youtube.com/watch?v=E3BxMgmP4m0
 - Advanced Controller : https://www.youtube.com/watch?v=qIf5YQ8qJng
 - Animation Tree : https://www.youtube.com/watch?v=jzuvd0Lstuw
+- https://github.com/Snaiel/Godot4ThirdPersonCombatPrototype
+- Jump & Combat  : https://www.youtube.com/watch?v=RmdtA7G7cAE
+- Unity Melee Combat : https://www.youtube.com/watch?v=B1jWeO5dlAA
+- Data Driven Combat System : https://www.youtube.com/watch?v=bDbvpMHJL4A
+- Fighting Game Frame Data System : https://www.youtube.com/watch?v=Dptztdm1rtg
 
 ### Examples
 - Flying + FreeFlow : https://www.youtube.com/watch?v=wE5ShDXlxQQ
@@ -24,6 +29,9 @@
   - https://gdbooks.gitbooks.io/3dcollisions/content/Chapter7/capsule.html
 - https://kayacang.com/posts/capsules
 
+### Data
+- Hierarchical State Machine - https://medium.com/dotcrossdot/hierarchical-finite-state-machine-c9e3f4ce0d9e
+
 ### API
 - Pose : Pose State
 - Clip : Animation Data
@@ -32,7 +40,7 @@
 - Transition : Lerp or CrossFade
 - BlendSpace1D
 - BlendSpace2D
-- StageSpace
+- StageSpace / PoseCascade
 - StateMachine
 - Interface
   - evaluate( deltaTime, params, outPose )
@@ -48,3 +56,19 @@
     }
 
 }
+
+Jump
+- LiftOff ( No Loop )
+- Falling ( Loop )
+- Landing ( No Loop )
+
+c = PoseCascade([
+    { clip:'liftOff', loop:false, },
+    { clip:'falling', loop:true, },
+    { clip:'landing', loop:false,  },
+]);
+
+Attack Animation Data
+- Windup - 10 frames
+- Active - 4 frames
+- CoolDown - 6 frames
